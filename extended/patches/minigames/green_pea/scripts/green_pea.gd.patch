@@ -1,0 +1,414 @@
+diff --git a/minigames/green_pea/scripts/green_pea.gd b/minigames/green_pea/scripts/green_pea.gd
+--- a/minigames/green_pea/scripts/green_pea.gd
++++ b/minigames/green_pea/scripts/green_pea.gd
+@@ -35,9 +35,28 @@ var ach_timer: float = 0.0
+ var ach_duration: float = 20.0
+ var ach_active: bool = false
+ 
++
++# [MP8] 8 seats: the 4 stock seats stay where they are, and each side gets 2 more at these z.
++# The table cannot be lengthened (+z runs into the camera, -z into the coach's chair), and moving
++# the stock seats would break the coach's per-seat aim animations. The +0.28 chairs overlap their neighbours.
++const MP8_NEW_SEAT_Z: Array[float] = [0.28, -2.15]
++
++# network_manager reads this with `Object.get()` and then leaves our spawn container alone: its generic
++# filler would put new seats at midpoints, in the middle of the table.
++var mp8_owns_spawns: bool = true
++
++var _mp8_seat_z: Array[float] = []      # seat index -> that seat's world z
++
++# [MP8] Order in which the coach shot players; the stock game keeps none, and the rank scores need it.
++var _mp8_dead_order: Array[int] = []
++
++
+ func _ready() -> void :
+ 	super._ready()
+ 
++	# [MP8] Before anyone reads the spawn points, and on every peer: chairs and decals are local visuals.
++	_mp8_setup_seats()
++
+ 	camera.current = true
+ 
+ 	if multiplayer.is_server():
+@@ -113,12 +132,292 @@ func spawn_players():
+ 	coach_handler.set_players(player_characters)
+ 
+ 
++# ---------- [MP8] 8 seats and rank scores ----------
++
++func _mp8_setup_seats() -> void :
++
++	# [MP8] A mixed room keeps the game's 4 seats, chairs, decals and the table's cans (D120).
++	if not NetworkManager.mp8_room_extended():
++		return
++
++	if player_spawn_positions == null:
++		push_warning("[MP8] Table Manners: no spawn container, 8 seats skipped")
++		return
++
++	var base: int = player_spawn_positions.get_child_count()
++	if base != 4:
++		print("[MP8] Table Manners: %d spawn points (expected 4), the game may have changed; 8 seats skipped" % base)
++		return
++
++	# The stock seats' z are read live, never copied.
++	_mp8_seat_z.clear()
++	for i in base:
++		_mp8_seat_z.append(player_spawn_positions.get_child(i).position.z)
++
++	# One stock marker per side is the template: its x, y and facing, a new z.
++	var left_src: Node3D = null
++	var right_src: Node3D = null
++	for i in base:
++		var m: Node3D = player_spawn_positions.get_child(i)
++		if m.position.x < 0.0:
++			if left_src == null:
++				left_src = m
++		elif right_src == null:
++			right_src = m
++
++	if left_src == null or right_src == null:
++		print("[MP8] Table Manners: cannot tell left and right spawn points apart, 8 seats skipped")
++		return
++
++	# Left then right for each new z, alternating like the stock seats.
++	for z in MP8_NEW_SEAT_Z:
++		for src in [left_src, right_src]:
++			var dup: Node3D = src.duplicate()
++			dup.name = "MP8Seat%d" % _mp8_seat_z.size()
++			player_spawn_positions.add_child(dup)
++			dup.transform = src.transform
++			dup.position = Vector3(src.position.x, src.position.y, z)
++			_mp8_seat_z.append(z)
++
++	_mp8_add_chairs(left_src, right_src)
++	_mp8_extend_decals(base)
++	_mp8_map_animations(base)
++	_mp8_clear_table_cans()
++
++	print("[MP8] Table Manners: seats %d -> %d, z = %s" % [base, _mp8_seat_z.size(), str(_mp8_seat_z)])
++
++
++# Copies a stock chair per side. `walls` has an identity basis, so position is world-aligned; if that
++# ever changes, convert through `basis.inverse()` instead of translating.
++func _mp8_add_chairs(left_src: Node3D, right_src: Node3D) -> void :
++
++	var walls := get_node_or_null("pea dinner scene4/walls")
++	if walls == null:
++		print("[MP8] Table Manners: walls not found, new seats get no chairs")
++		return
++
++	var chair_l := walls.get_node_or_null("chair player0")   # left, z~1.29
++	var chair_r := walls.get_node_or_null("chair player3")   # right, z~1.29
++	if chair_l == null or chair_r == null:
++		print("[MP8] Table Manners: template chairs not found, new seats get no chairs")
++		return
++
++	# Chairs sit slightly off their spawn point's z; the offset is computed, not hard-coded.
++	var off_l: float = chair_l.position.z - left_src.position.z
++	var off_r: float = chair_r.position.z - right_src.position.z
++
++	var n: int = 0
++	for z in MP8_NEW_SEAT_Z:
++		for pair in [[chair_l, off_l], [chair_r, off_r]]:
++			var src: Node3D = pair[0]
++			var d: Node3D = src.duplicate()
++			d.name = "MP8Chair%d" % n
++			walls.add_child(d)
++			d.transform = src.transform
++			d.position = Vector3(src.position.x, src.position.y, z + float(pair[1]))
++			n += 1
++
++	print("[MP8] Table Manners: %d chairs added" % n)
++
++
++# `decals_by_seat_index` has 4 entries, indexed by seat. Each new seat copies the nearest same-side
++# group, shifted along z; the parent's basis is identity, so the groups' own yaw does not matter.
++func _mp8_extend_decals(base: int) -> void :
++
++	var coach = coach_handler.coach if coach_handler != null else null
++	if coach == null or coach.decals_by_seat_index == null:
++		return
++
++	var arr: Array = coach.decals_by_seat_index
++	if arr.size() != base:
++		print("[MP8] Table Manners: decal array has %d entries (expected %d), not extended" % [arr.size(), base])
++		return
++
++	for i in range(base, _mp8_seat_z.size()):
++
++		var v: int = _mp8_nearest_vanilla(i, base)
++		var src = arr[v]
++		if src == null or not is_instance_valid(src):
++			arr.append(null)
++			continue
++
++		var d: Node3D = src.duplicate()
++		src.get_parent().add_child(d)
++		d.name = "MP8Decals%d" % i
++		d.transform = src.transform
++		d.position = src.position + Vector3(0.0, 0.0, _mp8_seat_z[i] - _mp8_seat_z[v])
++		d.visible = false
++		arr.append(d)
++
++	print("[MP8] Table Manners: decal groups %d -> %d" % [base, arr.size()])
++
++
++# A new seat borrows the animation of the nearest same-side stock seat: only
++# `coach_shoot_position_0..3` exist.
++func _mp8_map_animations(base: int) -> void :
++
++	var coach = coach_handler.coach if coach_handler != null else null
++	if coach == null:
++		return
++
++	var table: Array = []
++	var desc := PackedStringArray()
++
++	for i in _mp8_seat_z.size():
++		if i < base:
++			table.append(i)                       # stock seats keep their own
++			continue
++		var v: int = _mp8_nearest_vanilla(i, base)
++		table.append(v)
++		desc.append("seat%d->anim%d(off %.2f m)" % [i, v, absf(_mp8_seat_z[i] - _mp8_seat_z[v])])
++
++	coach.mp8_anim_by_seat = table
++	print("[MP8] Table Manners: animation map %s" % " ".join(desc))
++
++
++# [MP8] Rank scores, worst to best: died before halfway, died after halfway (each by death order),
++# then finishers in reverse finishing order. Score = index, then +1 for the first to finish; the stock
++# fixed points do not separate 8 players. A disconnected player is in no list and keeps 0.
++func _mp8_apply_rank_scores() -> void :
++
++	var order: Array = []
++
++	for want_half in [false, true]:
++		for nid in _mp8_dead_order:
++			if finished_players.has(nid):
++				continue                      # finished, then shot: counts as finished
++			if halfway_done_players.has(nid) == want_half:
++				order.append(nid)
++
++	var fin: Array = finished_players.duplicate()
++	fin.reverse()
++	order.append_array(fin)
++
++	for i in order.size():
++		player_scores[order[i]] = i
++
++	if not finished_players.is_empty():
++		player_scores[finished_players[0]] += 1
++
++	_mp8_log_scores(order.size())
++
++
++func _mp8_log_scores(ranked: int) -> void :
++
++	if not multiplayer.is_server():
++		return
++
++	var keys: Array = player_scores.keys()
++	keys.sort_custom(func(a, b): return player_scores[a] > player_scores[b])
++
++	var parts: PackedStringArray = []
++	for i in keys.size():
++		var nid = keys[i]
++		var nm: String = "id%d" % nid
++		if PlayerManager.player_presences.has(nid):
++			nm = String(PlayerManager.player_presences[nid].network_name)
++		var how := "disconnected?"
++		if finished_players.has(nid):
++			how = "finished #%d" % (finished_players.find(nid) + 1)
++		elif _mp8_dead_order.has(nid):
++			how = ("shot after halfway" if halfway_done_players.has(nid) else "shot before halfway")
++		parts.append("#%d %s %d pts (%s)" % [i + 1, nm, player_scores[nid], how])
++
++	print("[MP8] Table Manners results (%d present / %d finished / %d shot / %d ranked): %s" % [
++		player_scores.size(), finished_players.size(), _mp8_dead_order.size(),
++		ranked, " / ".join(parts)
++	])
++
++
++# Hides the cans on the table, which block the new seats' plates. Chosen by position, not name: other
++# `pea can*` meshes are set dressing on a far ledge. Hidden, not freed; their collision is left alone.
++func _mp8_clear_table_cans() -> int :
++
++	var scene := get_node_or_null("pea dinner scene4")
++	if scene == null:
++		return 0
++
++	var table := scene.find_child("table", true, false)
++	if table == null or not (table is MeshInstance3D) or (table as MeshInstance3D).mesh == null:
++		print("[MP8] Table Manners: table mesh not found, cans left")
++		return 0
++
++	var tb: AABB = (table as MeshInstance3D).global_transform * (table as MeshInstance3D).mesh.get_aabb()
++	var n: int = 0
++
++	for m in scene.find_children("pea can*", "MeshInstance3D", true, false):
++
++		if (m as MeshInstance3D).mesh == null:
++			continue
++
++		var c: Vector3 = ((m as MeshInstance3D).global_transform * (m as MeshInstance3D).mesh.get_aabb()).get_center()
++
++		if c.y < tb.end.y - 0.10:
++			continue
++		if c.x < tb.position.x - 0.30 or c.x > tb.end.x + 0.30:
++			continue
++		if c.z < tb.position.z - 0.30 or c.z > tb.end.z + 0.30:
++			continue
++
++		m.visible = false
++		n += 1
++
++	print("[MP8] Table Manners: hid %d table cans (table x[%.2f,%.2f] z[%.2f,%.2f] top y=%.2f)" % [
++		n, tb.position.x, tb.end.x, tb.position.z, tb.end.z, tb.end.y
++	])
++	return n
++
++
++# The stock seat on the same side (same sign of x) with the nearest z.
++func _mp8_nearest_vanilla(seat: int, base: int) -> int :
++
++	var mine: Node3D = player_spawn_positions.get_child(seat)
++	var best: int = 0
++	var best_d: float = INF
++
++	for v in base:
++		var vm: Node3D = player_spawn_positions.get_child(v)
++		if signf(vm.position.x) != signf(mine.position.x):
++			continue
++		var d: float = absf(vm.position.z - mine.position.z)
++		if d < best_d:
++			best_d = d
++			best = v
++
++	return best
++
++
+ func initialize_debug_specifics():
+ 	super.initialize_debug_specifics()
+ 
+ 
+ func check_game_end():
+ 
++	# [MP8] A mixed room runs the game's check_game_end (D120).
++	if not NetworkManager.mp8_room_extended():
++		await _mp8_game_check_game_end()
++		return
++
++	if finished:
++		return
++
++	if active_players.size() > 0:
++		return
++
++	finished = true
++
++	_mp8_apply_rank_scores()          # [MP8]
++	player_scores_finalized.emit(player_scores)
++
++	await get_tree().create_timer(3.0).timeout
++	set_minigame_sfx_linear_volume_rpc.rpc(0.0)
++
++	state_machine.transition_to_rpc.rpc(&"Finished")
++	set_effects_visibility_rpc.rpc(false)
++
++# The game's check_game_end, for a mixed room (D120).
++func _mp8_game_check_game_end():
++
+ 	if finished:
+ 		return
+ 
+@@ -152,6 +451,9 @@ func remove_player_rpc(_network_id: int):
+ 
+ 
+ func player_disconnected(_network_id: int):
++	# [MP8] The room is read before the await, which can outlast this minigame's latch. A mixed room
++	# keeps the game's own end check (D116).
++	var mp8_ext: bool = NetworkManager.mp8_room_extended()
+ 	super.player_disconnected(_network_id)
+ 
+ 	if not multiplayer.is_server():
+@@ -162,10 +464,37 @@ func player_disconnected(_network_id: int):
+ 	await get_tree().create_timer(1.0).timeout
+ 
+ 	if multiplayer.is_server():
++
++		# [MP8] Before the round starts `active_players` is empty, so `check_game_end()` would end it.
++		if mp8_ext and not is_all_player_loaded:
++			print("[MP8] Table Manners: %d left before the round started, end check skipped" % _network_id)
++			return
++
+ 		check_game_end()
+ 
+ func _on_player_finished(_network_id: int):
+ 
++	# [MP8] A mixed room runs the game's _on_player_finished (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_on_player_finished(_network_id)
++		return
++
++	if player_characters.has(_network_id):
++		if ach_active:
++			player_characters[_network_id].trigger_achievement_rpc.rpc()
++
++	# [MP8] No points here: `_mp8_apply_rank_scores()` scores from the order lists, first finisher's +1 included.
++	if active_players.has(_network_id):
++		active_players.erase(_network_id)
++
++	if not finished_players.has(_network_id):
++		finished_players.append(_network_id)
++
++	check_game_end()
++
++# The game's _on_player_finished, for a mixed room (D120).
++func _mp8_game_on_player_finished(_network_id: int):
++
+ 	if player_characters.has(_network_id):
+ 		if ach_active:
+ 			player_characters[_network_id].trigger_achievement_rpc.rpc()
+@@ -185,6 +514,21 @@ func _on_player_finished(_network_id: int):
+ 
+ func _on_player_died(_network_id: int):
+ 
++	# [MP8] A mixed room runs the game's _on_player_died (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_on_player_died(_network_id)
++		return
++
++	if active_players.has(_network_id):
++		active_players.erase(_network_id)
++		if not _mp8_dead_order.has(_network_id):
++			_mp8_dead_order.append(_network_id)
++
++	check_game_end()
++
++# The game's _on_player_died, for a mixed room (D120).
++func _mp8_game_on_player_died(_network_id: int):
++
+ 	if active_players.has(_network_id):
+ 		active_players.erase(_network_id)
+ 
+@@ -192,6 +536,18 @@ func _on_player_died(_network_id: int):
+ 
+ func _on_player_halfway(_network_id: int):
+ 
++	# [MP8] A mixed room runs the game's _on_player_halfway (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_on_player_halfway(_network_id)
++		return
++
++	# [MP8] Halfway is a rank tier in `_mp8_apply_rank_scores()`, not a point of its own.
++	if not halfway_done_players.has(_network_id):
++		halfway_done_players.append(_network_id)
++
++# The game's _on_player_halfway, for a mixed room (D120).
++func _mp8_game_on_player_halfway(_network_id: int):
++
+ 	if not halfway_done_players.has(_network_id):
+ 		halfway_done_players.append(_network_id)
+ 		player_scores[_network_id] += 1

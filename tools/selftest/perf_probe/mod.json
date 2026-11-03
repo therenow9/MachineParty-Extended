@@ -1,0 +1,1 @@
+{ "id": "perf_probe", "name": "Perf probe", "version": "0.0.1", "entry": "main.gd", "priority": 1000 }

@@ -1,0 +1,37 @@
+diff --git a/modules/multiplayer/backends/steam_backend.gd b/modules/multiplayer/backends/steam_backend.gd
+--- a/modules/multiplayer/backends/steam_backend.gd
++++ b/modules/multiplayer/backends/steam_backend.gd
+@@ -81,6 +81,8 @@ func set_lobby_joinable(_joinable: bool):
+ func _on_lobby_created(_status: int, _new_lobby_id: int):
+ 
+ 	Steam.setLobbyData(_new_lobby_id, "name", TEST_SERVER_NAME)
++	# [MP8] The wire carries vanilla's version, so a joiner on another Extended learns ours here (mp8_mismatch_text).
++	Steam.setLobbyData(_new_lobby_id, "mp8", NetworkManager.mp8_full_version())
+ 	Steam.setLobbyType(_new_lobby_id, Steam.LobbyType.LOBBY_TYPE_FRIENDS_ONLY)
+ 
+ 	lobby_id = _new_lobby_id
+@@ -114,6 +116,8 @@ func _on_lobby_joined(_new_lobby_id: int, permissions: int, locked: bool, respon
+ 		return
+ 
+ 	var lobby_owner: int = Steam.getLobbyOwner(_new_lobby_id)
++	# [MP8] Read now: a refusal leaves the lobby before its text is made (lobby_scene.gd's _on_join_refused).
++	NetworkManager._mp8_host_version = Steam.getLobbyData(_new_lobby_id, "mp8")
+ 
+ 
+ 	multiplayer_peer.create_client(lobby_owner, 0)
+@@ -167,8 +171,15 @@ func receive_client_data_rpc(client_network_id: int, client_data: Dictionary):
+ 
+ 	var client_game_version = client_data.get("game_version", "error")
+ 	if client_game_version != Globals.game_version:
++		NetworkManager.mp8_note_refusal(client_network_id, NetworkManager.RefuseReason.VersionMismatch, client_data)  # [MP8]
+ 		refuse_client_rpc.rpc_id(client_network_id, client_network_id, NetworkManager.RefuseReason.VersionMismatch)
+ 		return
++	# [MP8] Mixed rooms: another Extended version, or a room over 4 with someone lacking our key.
++	var mp8_reason: int = NetworkManager.mp8_join_refusal(client_network_id, client_data)
++	if mp8_reason >= 0:
++		NetworkManager.mp8_note_refusal(client_network_id, mp8_reason, client_data)
++		refuse_client_rpc.rpc_id(client_network_id, client_network_id, mp8_reason)
++		return
+ 
+ 	acknowledge_client_data_rpc.rpc(
+ 		client_network_id, 

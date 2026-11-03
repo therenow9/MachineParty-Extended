@@ -1,0 +1,766 @@
+diff --git a/minigames/manufacture_gun/scripts/manufacture_gun.gd b/minigames/manufacture_gun/scripts/manufacture_gun.gd
+--- a/minigames/manufacture_gun/scripts/manufacture_gun.gd
++++ b/minigames/manufacture_gun/scripts/manufacture_gun.gd
+@@ -2,6 +2,9 @@ extends Minigame
+ 
+ class_name ManufactureGun
+ 
++const MP8_LAYOUT_LIMIT: float = 10000.0
++var _mp8_sequences_sent: Dictionary = {}
++
+ const player_scene = preload("res://minigames/manufacture_gun/components/player/manufacture_gun_player.tscn")
+ const workstation_scene = preload("res://minigames/manufacture_gun/components/workstation/manufacture_gun_workstation.tscn")
+ const item_scene = preload("res://minigames/manufacture_gun/components/item/manufacture_gun_item.tscn")
+@@ -57,9 +60,39 @@ var local_item_sequence: Dictionary
+ 
+ var ach_players_with_gun: Array[int]
+ 
++
++# [MP8] Firearm Factory with 8 players. Each of the 26 item markers gives one item, consumed and never
++# respawned, and every recipe takes one of each of 5 variations, so 26 items cannot arm 8 players. There
++# is no timeout: the game ends only when one player is left alive, so a shortage hangs it.
++# recipe_indicator_ligths is indexed by recipe step (0-4), not by player.
++
++# How far an empty desk may lie from its workstation slot and still match (the two share x/z exactly).
++const MP8_DESK_MATCH_TOL: float = 1.0
++
++# Height of the stand-here probe in _mp8_spot_free: the 0.7 sphere spans y 0.68-2.08, clear of the floor.
++# Touching the floor collider would read every spot inside the level as occupied and only outside it as free.
++const MP8_SPOT_PROBE_Y: float = 1.375
++
++var mp8_player_count: int = 0
++# The physics space for _mp8_spot_free, taken in _mp8_unstick_players().
++var _mp8_space: PhysicsDirectSpaceState3D = null
++# Every player's body, which _mp8_spot_free's probe leaves out.
++var _mp8_player_rids: Array[RID] = []
++
++
+ func _ready() -> void :
+ 	super._ready()
+ 
++	mp8_player_count = PlayerManager.player_presences.size()
++	# Every peer's MultiplayerSpawner enforces spawn_limit on the spawns it receives, so PlayerSpawner's
++	# shipped limit of 4 is raised on each machine. The scene gives the other two no limit (0, unlimited).
++	# A mixed room keeps the scene's limits (D120).
++	if NetworkManager.mp8_room_extended():
++		for spawner_name in ["PlayerSpawner", "WorkstationSpawner", "ItemSpawner"]:
++			var sp: MultiplayerSpawner = get_node_or_null(NodePath(spawner_name)) as MultiplayerSpawner
++			if sp != null:
++				sp.spawn_limit = _mp8v_raised_spawn_limit(sp.spawn_limit, mp8_player_count)
++
+ 	for c in item_sequence_preview_node_parent.get_children():
+ 		sequence_preview_nodes.append(c)
+ 
+@@ -90,6 +123,141 @@ func _ready() -> void :
+ 		await get_tree().create_timer(1.0).timeout
+ 		minigame_ready.emit(1)
+ 
++
++func _mp8_flat(a: Vector3, b: Vector3) -> float :
++	return Vector2(a.x - b.x, a.z - b.z).length()
++
++
++func _mp8_server_command() -> bool:
++	var sender: int = multiplayer.get_remote_sender_id()
++	return sender == get_multiplayer_authority() or (sender == 0 and multiplayer.is_server())
++
++# For relay-only targets. Online the host sends them from initialize(), inside the last client's player_loaded
++# RPC, so its own call carries that client's sender id; on the server the relay delivers them only from the host.
++func _mp8_host_command() -> bool:
++	return multiplayer.is_server() or _mp8_server_command()
++
++func _mp8_valid_layout_position(pos: Vector3) -> bool:
++	return pos.is_finite() and absf(pos.x) <= MP8_LAYOUT_LIMIT and absf(pos.y) <= MP8_LAYOUT_LIMIT and absf(pos.z) <= MP8_LAYOUT_LIMIT
++
++
++# Every workstation slot's position, in WorkstationSpawns child order (the shipped 4 first).
++func _mp8_desk_points() -> Array[Vector3] :
++	var out: Array[Vector3] = []
++	var ws: Node3D = get_node_or_null("WorkstationSpawns") as Node3D
++	if ws == null:
++		return out
++	for c in ws.get_children():
++		if c is Node3D:
++			out.append((c as Node3D).global_position)
++	return out
++
++
++# Whether a player fits at p, probing only the waist-up band: the floor and the 0.65 m recipe light
++# strips would fail a probe near the ground. Use it to reject a spot, never to pick a direction:
++# outside the map is always the freest.
++func _mp8_spot_free(p: Vector3, shrink: float) -> bool :
++
++	if _mp8_space == null:
++		return true      # no space to query: let it through rather than silently drop a player
++
++	var shape := SphereShape3D.new()
++	shape.radius = maxf(0.2, 0.7 - shrink)
++
++	var q := PhysicsShapeQueryParameters3D.new()
++	q.shape = shape
++	# Mask 3 (layers 1|2, level geometry), as the player's Dropcast / Wallcast use. The players' own bodies are
++	# on those layers too (collision_layer 1283), so they are left out: each would block its own spot.
++	q.collision_mask = 3
++	q.exclude = _mp8_player_rids
++	q.transform = Transform3D(Basis(), Vector3(p.x, MP8_SPOT_PROBE_Y, p.z))
++
++	return _mp8_space.intersect_shape(q, 1).is_empty()
++
++
++# [MP8] Moves any player stuck in a static collider at the start: initialize() spawns the players
++# before the workstations, so a desk (a 2.40 x 3.80 static box) can appear on top of one.
++# Waits for physics frames first: a collider just added is not in the space yet, so every check would pass.
++func _mp8_unstick_players() -> void :
++
++	if not multiplayer.is_server():
++		return
++	# A mixed room leaves the players where the game put them (D116).
++	if not NetworkManager.mp8_room_extended():
++		print("[MP8] Firearm Factory: a mixed room, no start-of-game stuck check")
++		return
++
++	await get_tree().physics_frame
++	await get_tree().physics_frame
++
++	var sp: Node3D = get_node_or_null("SpawnPositions") as Node3D
++	if sp == null:
++		return
++	_mp8_space = sp.get_world_3d().direct_space_state
++	if _mp8_space == null:
++		return
++
++	var desks: Array[Vector3] = _mp8_desk_points()
++	var rows := PackedStringArray()
++
++	_mp8_player_rids.clear()
++	for body in active_players.values():
++		if body != null and is_instance_valid(body):
++			_mp8_player_rids.append((body as CollisionObject3D).get_rid())
++
++	for id in active_players.keys():
++
++		var p = active_players[id]
++		if p == null or not is_instance_valid(p):
++			continue
++
++		var here: Vector3 = (p as Node3D).global_position
++		var nm: String = String(p.player_presence.network_name)
++
++		# Distance to the nearest desk; under about 2.95 (half-diagonal 2.25 + player radius 0.7) can stick.
++		var nd: float = INF
++		for d in desks:
++			nd = minf(nd, _mp8_flat(here, d))
++
++		if _mp8_spot_free(here, 0.0):
++			rows.append("%s(%.1f,%.1f) nearest desk %.2fm ✓" % [nm, here.x, here.z, nd])
++			continue
++
++		# Stuck: look for a free spot from here toward the arena centre and move the player there.
++		var fixed := Vector3.INF
++		var base := Vector2(-here.x, -here.z)
++		if base.length() < 0.01:
++			base = Vector2(1.0, 0.0)
++		base = base.normalized()
++
++		for r in [1.0, 1.6, 2.2, 3.0]:
++			for k in 24:
++				var side: float = (1.0 if (k % 2) == 0 else -1.0)
++				var ang: float = deg_to_rad(float((k + 1) / 2) * 15.0) * side
++				var d2: Vector2 = base.rotated(ang)
++				var cand := Vector3(here.x + d2.x * r, here.y, here.z + d2.y * r)
++				if _mp8_spot_free(cand, 0.0):
++					fixed = cand
++					break
++			if fixed != Vector3.INF:
++				break
++
++		if fixed == Vector3.INF:
++			rows.append("%s(%.1f,%.1f) nearest desk %.2fm ❌stuck, no free spot" % [nm, here.x, here.z, nd])
++			push_warning("[MP8] Firearm Factory: %s is stuck in a collider, no free spot within 3 m" % nm)
++			continue
++
++		p.teleport_rpc.rpc(fixed, (p as Node3D).global_rotation)
++		rows.append("%s(%.1f,%.1f) nearest desk %.2fm ⚠️stuck -> moved to (%.1f,%.1f)" % [
++			nm, here.x, here.z, nd, fixed.x, fixed.z
++		])
++		push_warning("[MP8] Firearm Factory: %s spawned inside a collider (nearest desk %.2f m), moved to (%.2f, %.2f)" % [
++			nm, nd, fixed.x, fixed.z
++		])
++
++	print("[MP8] Firearm Factory: start-of-game stuck check - %s" % " | ".join(rows))
++
++
+ func fade_in_ambience():
+ 	for speaker_controller in ambience_speaker_controllers:
+ 		speaker_controller.speaker.volume_linear = 0
+@@ -99,10 +267,25 @@ func fade_in_ambience():
+ func initialize(_round_number: int, _total_rounds: int, _scores: Dictionary = {}):
+ 	super.initialize(_round_number, _total_rounds, _scores)
+ 
++	# A mixed room runs only the game's three spawns here (D120).
++	var mp8_ext: bool = NetworkManager.mp8_room_extended()
++	if mp8_ext:
++		_mp8v_expand_for_roster()
++
+ 	spawn_players()
+ 	spawn_workstations()
+ 	spawn_items()
+ 
++	if mp8_ext:
++		# The host decides from its roster; every peer then changes its own copy of the room.
++		if not _mp8v_layout.is_empty():
++			NetworkManager.mp8_rpc(self, &"zz_mp8v_bench_room_rpc", [PlayerManager.player_presences.size()])
++		_mp8v_log_layout()
++
++	# [MP8] The desks spawn after the players and can land on one. Not awaited: it waits for
++	# physics frames itself, and initialize() must not wait for it.
++	_mp8_unstick_players()
++
+ 	state_machine.transition_to_rpc.rpc(&"Round", {"round": _round_number, "total": _total_rounds})
+ 
+ func initialize_debug_specifics():
+@@ -150,14 +333,21 @@ func spawn_players():
+ 
+ 		var player_presence: PlayerPresence = PlayerManager.player_presences[key]
+ 
++		# [MP8] Bound check: if the spawns were not expanded, spawn one player fewer rather than index past the end.
++		if NetworkManager.mp8_room_extended() and counter >= spawn_positions.size():
++			push_warning("[MP8] Firearm Factory: only %d player spawn points, player %d has none" % [
++				spawn_positions.size(), counter + 1
++			])
++			break
++
+ 		var player_character = player_scene.instantiate()
+ 		players_node_parent.add_child(player_character, true)
+ 
+ 		player_character.set_player_presence.rpc(player_presence.network_id)
+ 		player_character.set_manager_from_path_rpc.rpc(self.get_path())
+ 		player_character.teleport_rpc.rpc(
+-			spawn_positions[counter].global_position, 
+-			spawn_positions[counter].global_rotation, 
++			spawn_positions[counter].global_position,
++			spawn_positions[counter].global_rotation,
+ 		)
+ 
+ 		player_characters[player_presence.network_id] = player_character
+@@ -176,11 +366,23 @@ func spawn_workstations():
+ 		spawn_positions.append(c.global_position)
+ 		spawn_rotations.append(c.rotation_degrees)
+ 
++	# [MP8] Read-only log: how far each player starts from their own desk.
++	var pair := PackedStringArray()
++
++	# [MP8] Read once: a peer joining mid-loop must not split the seats between the two paths.
++	var extended_room := NetworkManager.mp8_room_extended()
+ 	var counter: int = 0
+ 	for player in active_players.values():
+ 
+ 		var player_presence: PlayerPresence = player.player_presence
+ 
++		# [MP8] Bound check: reached only when _mp8v_expand_for_roster could not place the desks.
++		if extended_room and counter >= spawn_positions.size():
++			push_warning("[MP8] Firearm Factory: only %d workstation slots, player %d has no workstation" % [
++				spawn_positions.size(), counter + 1
++			])
++			break
++
+ 		var workstation_instance = workstation_scene.instantiate()
+ 		workstations_node_parent.add_child(workstation_instance, true)
+ 
+@@ -190,16 +392,33 @@ func spawn_workstations():
+ 		workstation_instance.teleport_rpc_with_rot.rpc(spawn_positions[counter], spawn_rotations[counter])
+ 		workstation_instance.item_assembled.connect(_on_item_assembled)
+ 
+-		remove_empty_workstation_rpc.rpc(counter)
++		# [MP8] Sends the slot's position, not vanilla's seat index into the 4-entry empty_desk_array:
++		# each peer removes the empty desk nearest to it. With a vanilla peer in, the game's own call.
++		# At 5-8 the bench layout's room call clears or moves every empty desk instead.
++		if extended_room:
++			if _mp8v_layout.is_empty():
++				NetworkManager.mp8_rpc(self, &"mp8_remove_empty_workstation_rpc", [spawn_positions[counter]])
++		else:
++			remove_empty_workstation_rpc.rpc(counter)
+ 		workstations.append(workstation_instance)
+ 
++		pair.append("%s desk(%.1f,%.1f) %.1f m from spawn" % [
++			String(player_presence.network_name),
++			spawn_positions[counter].x, spawn_positions[counter].z,
++			_mp8_flat(spawn_positions[counter], player.global_position)
++		])
++
+ 		if GameManager.local_game:
+ 			local_setup_workstation(player_presence.network_id)
++		elif extended_room:
++			NetworkManager.mp8_rpc_id(player_presence.network_id, self, &"mp8_spawned_workstation_rpc")
+ 		else:
+ 			spawned_workstation_rpc.rpc_id(player_presence.network_id)
+ 
+ 		counter += 1
+ 
++	print("[MP8] Firearm Factory: %d workstations placed - %s" % [counter, " | ".join(pair)])
++
+ func local_setup_workstation(network_id: int):
+ 
+ 
+@@ -219,6 +438,14 @@ func local_setup_workstation(network_id: int):
+ 
+ func spawn_items():
+ 
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_spawn_items()
++		return
++	_mp8v_spawn_items()
++
++# The game's spawn_items, for a mixed room (D120).
++func _mp8_game_spawn_items():
++
+ 	var spawn_positions: Array[Vector3]
+ 	for c in $ItemSpawner / ItemSpawns.get_children():
+ 		spawn_positions.append(c.global_position)
+@@ -258,6 +485,8 @@ func check_game_end():
+ 			player.finished_rpc.rpc()
+ 			break
+ 
++	_mp8_log_scores()
++
+ 	player_scores_finalized.emit(player_scores)
+ 
+ 	await get_tree().create_timer(2.0).timeout
+@@ -267,6 +496,30 @@ func check_game_end():
+ 	set_effects_visibility_rpc.rpc(false)
+ 
+ 
++# [MP8] Server-side log of the final ranks and scores; changes none. Scores start at 0 and gain
++# +1 for building a gun, for each kill, and for surviving last.
++func _mp8_log_scores() -> void :
++
++	if not multiplayer.is_server():
++		return
++
++	var rows: Array = []
++	for id in player_scores.keys():
++		var nm: String = "id%d" % id
++		if PlayerManager.player_presences.has(id):
++			nm = String(PlayerManager.player_presences[id].network_name)
++		rows.append({"name": nm, "score": player_scores[id], "gun": ach_players_with_gun.has(id)})
++	rows.sort_custom(func(a, b): return a["score"] > b["score"])
++
++	var parts := PackedStringArray()
++	for i in rows.size():
++		parts.append("#%d %s %d pts%s" % [
++			i + 1, rows[i]["name"], rows[i]["score"],
++			("(built a gun)" if rows[i]["gun"] else "(no gun)")
++		])
++	print("[MP8] Firearm Factory scores (%d players): %s" % [mp8_player_count, " / ".join(parts)])
++
++
+ @rpc("authority", "call_local", "reliable")
+ func set_tutorial_variables(current_minigame_identifier, custom_game, minigame_round):
+ 	Globals.current_minigame_identifier = current_minigame_identifier
+@@ -275,7 +528,17 @@ func set_tutorial_variables(current_minigame_identifier, custom_game, minigame_r
+ 
+ @rpc("any_peer", "call_local", "reliable")
+ func spawned_workstation_rpc():
++	# [MP8] An Extended room sends it through the relay only, so mp8_spawned_workstation_rpc can trust the server.
++	if NetworkManager.mp8_room_extended():
++		return
++	mp8_spawned_workstation_rpc()
+ 
++
++# [MP8] The game's spawned_workstation_rpc, refused unless the server sent it; the relay sends it in an
++# Extended room. A mixed room takes it from any peer, as the game does (D116).
++func mp8_spawned_workstation_rpc():
++	if NetworkManager.mp8_room_extended() and not _mp8_host_command():
++		return
+ 	for w in workstations_node_parent.get_children():
+ 		if w.player_presence.network_id == multiplayer.get_unique_id():
+ 			workstation = w
+@@ -286,6 +549,51 @@ func spawned_workstation_rpc():
+ 
+ @rpc("any_peer", "call_local", "reliable")
+ func request_item_sequence_rpc(network_id: int):
++	# [MP8] A mixed room runs the game's body, without the sender, bench and repeat checks (D116).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_item_sequence(network_id)
++		return
++	if not multiplayer.is_server():
++		return
++	var sender: int = multiplayer.get_remote_sender_id()
++	if sender != 0 and sender != network_id:
++		return
++	if not PlayerManager.player_presences.has(network_id):
++		return
++	var own_workstation = null
++	for w in workstations:
++		if is_instance_valid(w) and w.player_presence.network_id == network_id:
++			own_workstation = w
++			break
++	if own_workstation == null:
++		return
++	if GameManager.local_game:
++		if sender == 0:
++			local_setup_workstation(network_id)
++		return
++	if network_id <= 0 or _mp8_sequences_sent.has(network_id):
++		return
++
++	var sequence: Array = ManufactureGunItem.Variation.values()
++	sequence.erase(0)
++	sequence.shuffle()
++	if sequence[0] == ManufactureGunItem.Variation.Three:
++		sequence.pop_front()
++		sequence.insert(randi_range(1, sequence.size()), ManufactureGunItem.Variation.Three)
++	_mp8_sequences_sent[network_id] = true
++	if network_id == 1:
++		update_sequence(sequence)
++	elif NetworkManager.mp8_room_extended():
++		NetworkManager.mp8_rpc_id(network_id, self, &"mp8_receive_item_sequence_rpc", [sequence])
++	else:
++		receive_item_sequence_rpc.rpc_id(network_id, sequence)
++	for w in workstations:
++		if w == own_workstation:
++			w.set_item_sequence_rpc.rpc_id(network_id, sequence)
++
++
++# The game's request_item_sequence_rpc body.
++func _mp8_game_item_sequence(network_id: int) -> void :
+ 	if multiplayer.is_server():
+ 
+ 		var sequence: Array = ManufactureGunItem.Variation.values()
+@@ -307,6 +615,25 @@ func request_item_sequence_rpc(network_id: int):
+ 
+ @rpc("any_peer", "call_remote", "reliable")
+ func receive_item_sequence_rpc(sequence: Array):
++	mp8_receive_item_sequence_rpc(sequence)
++
++
++# [MP8] The game's receive_item_sequence_rpc, refused unless the server sent a well-formed sequence;
++# the relay sends it in an Extended room. A mixed room takes any sequence from any peer, as the game does (D116).
++func mp8_receive_item_sequence_rpc(sequence: Array):
++	if not NetworkManager.mp8_room_extended():
++		update_sequence(sequence)
++		return
++	if not _mp8_server_command():
++		return
++	var expected: Array = ManufactureGunItem.Variation.values()
++	expected.erase(0)
++	if sequence.size() != expected.size():
++		return
++	for item in sequence:
++		if typeof(item) != TYPE_INT or not expected.has(item):
++			return
++		expected.erase(item)
+ 	update_sequence(sequence)
+ 
+ 
+@@ -316,10 +643,67 @@ func remove_empty_workstation_rpc(index: int):
+ 	empty_desk_array[index].queue_free()
+ 
+ 
++# [MP8] Extended's version, sent by the relay: the slot's position instead of the game's index, since
++# empty_desk_array has 4 entries and the index reaches 7. The empty desk nearest the slot is removed;
++# with 4 players each slot shares its desk's x/z, so the match is exact.
++func mp8_remove_empty_workstation_rpc(slot_position: Vector3):
++	if not _mp8_host_command() or not _mp8_valid_layout_position(slot_position):
++		return
++	var best: int = -1
++	var bd: float = INF
++
++	for k in empty_desk_array.size():
++		var d: Node3D = empty_desk_array[k]
++		if d == null or not is_instance_valid(d):
++			continue
++		var dd: float = _mp8_flat(d.global_position, slot_position)
++		if dd < bd:
++			bd = dd
++			best = k
++
++	if best < 0 or bd > MP8_DESK_MATCH_TOL:
++		# At 1-4 every slot shares its empty desk's x/z, so a slot this far off has none.
++		return
++
++	empty_desk_array[best].queue_free()
++	empty_desk_array[best] = null
++
++
+ 
+ func player_disconnected(_network_id: int):
++	# [MP8] A mixed room keeps the game's own handler (D116, D120).
++	var mp8_ext: bool = NetworkManager.mp8_room_extended()
+ 	super.player_disconnected(_network_id)
+ 
++	if not mp8_ext:
++		_mp8_game_player_disconnected_tail(_network_id)
++		return
++
++	# [MP8] get(), not vanilla's raw index: a player who drops while loading was never spawned and a dead
++	# one was already erased; the raw read gives null there in a release build, an error in a debug one.
++	var player_instance = active_players.get(_network_id, null)
++
++	active_players.erase(_network_id)
++
++	if player_instance:
++		player_instance.queue_free()
++		active_players.erase(_network_id)
++
++	if player_characters.has(_network_id):
++		player_characters.erase(_network_id)
++
++	# [MP8] Before everyone has loaded, active_players is empty and check_game_end() would finish a game
++	# that never started. is_server() too: unlike most minigames this function has no server-only return,
++	# and is_all_player_loaded is set only on the server, so without it clients would always return here.
++	if mp8_ext and multiplayer.is_server() and not is_all_player_loaded:
++		print("[MP8] Firearm Factory: %d disconnected before the game started, skipping the end check" % _network_id)
++		return
++
++	check_game_end()
++
++# The game's player_disconnected after its super call, for a mixed room (D120).
++func _mp8_game_player_disconnected_tail(_network_id: int):
++
+ 	var player_instance = active_players[_network_id]
+ 
+ 	active_players.erase(_network_id)
+@@ -360,3 +744,242 @@ func _on_player_dead(network_id, killer_network_id):
+ 	active_players.erase(network_id)
+ 
+ 	check_game_end()
++
++
++# [MP8V] Firearm Factory at 5-8 players: the item copies and the vanilla gun are machine-party-8p's, adapted from
++# its manufacture_gun.gd; the bench layout is the owner's (D128). Every step is gated on roster > 4, so a 1-4 game
++# plays the shipped scene.
++const MP8V_VANILLA_SLOTS: int = 4
++# Two items stop touching at (w1 + w2) / 2, 1.07 for the average pair. World space, because 25 of the 26
++# item markers are rotated and one lies on its side, so a marker-local nudge would bury a copy.
++const MP8V_ITEM_SPREAD: float = 1.10
++
++# The benches, [x, z, yaw degrees] in seat order: each flush against a wall, long side along it, none between the
++# recipe slots and the main counter, mirrored left and right. 5 and 7 players use the 6 and 8 layouts, and the
++# unused far-right corner keeps one of the game's empty desks. The side walls' collision stands 0.7 m behind
++# their visible face (the baseboard trim, z +-12.0), so the side benches are placed against the face.
++const MP8V_BENCHES_6: Array = [
++	[-8.00, -7.50, 0.0], [-8.00, 7.50, 0.0], [1.75, -10.70, 90.0], [1.75, 10.70, 90.0], [11.75, -8.00, 0.0], [11.75, 8.00, 0.0],
++]
++const MP8V_BENCHES_8: Array = [
++	[-7.75, -7.75, 0.0], [-7.75, 7.75, 0.0], [-1.50, -10.70, 90.0], [-1.50, 10.70, 90.0],
++	[5.50, -10.70, 90.0], [5.50, 10.70, 90.0], [11.75, -8.00, 0.0], [11.75, 8.00, 0.0],
++]
++# The game's spawns stand 3.4-3.7 m from their bench toward the middle, facing it; these stand 3.5 m from theirs
++# toward the main counter's middle (its collision outline's centre).
++const MP8V_SPAWN_FROM_BENCH: float = 3.5
++const MP8V_COUNTER_MIDDLE: Vector2 = Vector2(1.73, -0.20)
++# The props the side benches replace, with their collision. The pallet stands in the 8 layout's left side-bench
++# run, where the benches slide for an even spacing.
++const MP8V_GONE_PROPS: Array[String] = [
++	"manufacture gun artwork pass2/desk left", "manufacture gun artwork pass2/desk trolley", "manufacture gun artwork pass2/pallet",
++]
++const MP8V_GONE_SHAPES: Array[String] = [
++	"Colliders/StaticBody3D/CollisionShape3D2", "Colliders/StaticBody3D/CollisionShape3D4",
++	"Colliders/StaticBody3D2/CollisionShape3D", "Colliders/StaticBody3D2/CollisionShape3D3",
++]
++# The three part markers on the tops of the desks this layout hides, put on the floor in front of the benches
++# that stand there: [x, z] for the 6 layout, then for the 8 layout.
++const MP8V_DESK_PARTS: Dictionary = {
++	"part_010": [[0.72, -8.75], [0.72, -8.75]],
++	"part_013": [[5.46, 10.53], [4.46, 8.78]],
++	"part_014": [[2.98, 8.77], [2.98, 8.77]],
++}
++# A bench's lamp hangs 6.35 m up (shade 5.90-6.33), 1.0 m over its recipe hologram, inside the right wall's pipes
++# (5.17-6.71 m, 3 m deep) and beside their mounts (from 4.25 m). A lamp low enough to clear them hangs in the
++# hologram, so the run and its mounts go up; 2.1 m lifts the mounts' feet over the shades.
++const MP8V_PIPES: Array[String] = [
++	"manufacture gun artwork pass2/pipe wall", "manufacture gun artwork pass2/pipe wall mount",
++	"manufacture gun artwork pass2/pipe wall mount_001", "manufacture gun artwork pass2/pipe wall mount_002",
++]
++const MP8V_PIPES_RAISE: float = 2.1
++
++# network_manager's generic spawn top-up skips a minigame that sets this; _mp8v_expand_for_roster places its own.
++var mp8_owns_spawns: bool = true
++var _mp8v_spawns_added: int = 0
++var _mp8v_desks_added: int = 0
++var _mp8v_items_each: int = 0
++# The host's bench layout for this round, empty at 1-4 players.
++var _mp8v_layout: Array = []
++var _mp8v_room_changed: bool = false
++
++
++static func _mp8v_per_marker(roster: int) -> int :
++	return maxi(int(ceil(float(roster) / float(MP8V_VANILLA_SLOTS))), 1)
++
++
++# A spawner's limit raised to the roster, or left alone when it is unlimited (0) or already big enough.
++static func _mp8v_raised_spawn_limit(limit: int, roster: int) -> int :
++	return roster if limit > 0 and limit < roster else limit
++
++
++# The bench layout for a roster: 6 benches for 5-6 players, 8 for 7-8, none otherwise.
++static func _mp8v_benches_for(roster: int) -> Array :
++	if roster <= MP8V_VANILLA_SLOTS or roster > 8:
++		return []
++	return MP8V_BENCHES_6 if roster <= 6 else MP8V_BENCHES_8
++
++
++# A bench's spawn, [x, z, yaw degrees]: toward the counter's middle, turned toward the bench as the game's own
++# spawns are (its far-right spawn is -90; this formula on that spawn and its bench gives -96).
++static func _mp8v_spawn_for(bench: Array) -> Array :
++	var b := Vector2(float(bench[0]), float(bench[1]))
++	var s: Vector2 = b + (MP8V_COUNTER_MIDDLE - b).normalized() * MP8V_SPAWN_FROM_BENCH
++	var f: Vector2 = b - s
++	return [s.x, s.y, rad_to_deg(atan2(- f.x, - f.y))]
++
++
++# Before spawn_players() and spawn_workstations(), which index both containers by seat. Server only: the
++# markers and the item spawns are read on the host; the room itself changes on every peer (the room call).
++func _mp8v_expand_for_roster() -> void :
++
++	var roster: int = PlayerManager.player_presences.size()
++	_mp8v_layout = _mp8v_benches_for(roster)
++	if _mp8v_layout.is_empty():
++		return
++
++	var seats: Array = _mp8v_layout.slice(0, roster)
++	var spawns: Array = []
++	for bench in seats:
++		spawns.append(_mp8v_spawn_for(bench))
++	_mp8v_desks_added = _mp8v_place_markers(get_node_or_null("WorkstationSpawns") as Node3D, seats, false)
++	_mp8v_spawns_added = _mp8v_place_markers(get_node_or_null("SpawnPositions") as Node3D, spawns, true)
++
++	var which: int = 0 if roster <= 6 else 1
++	for part in MP8V_DESK_PARTS:
++		var m: Node3D = get_node_or_null(NodePath("ItemSpawner/ItemSpawns/" + part)) as Node3D
++		if m == null:
++			push_warning("[MP8] Firearm Factory 8p: no item marker %s to move off its desk" % part)
++			continue
++		var at: Array = MP8V_DESK_PARTS[part][which]
++		m.global_position = Vector3(float(at[0]), 0.0, float(at[1]))
++
++
++# The container's markers put at the entries, the shipped four first and markers added for the rest. A desk's
++# yaw goes into rotation_degrees (spawn_workstations sends it), a spawn's into global_rotation (spawn_players).
++func _mp8v_place_markers(container: Node3D, entries: Array, spawns: bool) -> int :
++
++	if container == null or container.get_child_count() < MP8V_VANILLA_SLOTS:
++		push_warning("[MP8] Firearm Factory 8p: a spawn container is missing or short, not placed")
++		return 0
++
++	# Anything past the shipped four would be the generic top-up, which mp8_owns_spawns already stops.
++	for extra in container.get_children().slice(MP8V_VANILLA_SLOTS):
++		container.remove_child(extra)
++		extra.queue_free()
++
++	var added: int = 0
++	for i in entries.size():
++		var marker: Node3D
++		if i < container.get_child_count():
++			marker = container.get_child(i) as Node3D
++		else:
++			marker = Marker3D.new()
++			marker.name = "Marker3D%d_MP8V" % (i + 1)
++			container.add_child(marker)
++			added += 1
++		var e: Array = entries[i]
++		marker.global_position = Vector3(float(e[0]), 0.0, float(e[1]))
++		if spawns:
++			marker.global_rotation = Vector3(0.0, deg_to_rad(float(e[2])), 0.0)
++		else:
++			marker.rotation_degrees = Vector3(0.0, float(e[2]), 0.0)
++
++	return added
++
++
++func zz_mp8v_bench_room_rpc(roster: int) -> void :
++	if not _mp8_host_command():
++		return
++	_mp8v_change_room(roster)
++
++
++# Every peer's own copy of the room for the bench layout: the replaced props and their collision gone, the empty
++# desks cleared but one moved into the unused corner at 5 and 7, the right wall's pipes raised.
++func _mp8v_change_room(roster: int) -> void :
++
++	var layout: Array = _mp8v_benches_for(roster)
++	if layout.is_empty() or _mp8v_room_changed:
++		return
++	_mp8v_room_changed = true
++
++	for path in MP8V_GONE_PROPS:
++		var prop: Node3D = get_node_or_null(NodePath(path)) as Node3D
++		if prop != null:
++			prop.visible = false
++	for path in MP8V_GONE_SHAPES:
++		var shape: CollisionShape3D = get_node_or_null(NodePath(path)) as CollisionShape3D
++		if shape != null:
++			shape.set_deferred("disabled", true)
++
++	var kept: bool = false
++	for k in empty_desk_array.size():
++		var desk: Node3D = empty_desk_array[k]
++		if desk == null or not is_instance_valid(desk):
++			continue
++		if not kept and roster < layout.size():
++			var spot: Array = layout[roster]
++			desk.global_position = Vector3(float(spot[0]), desk.global_position.y, float(spot[1]))
++			desk.rotation_degrees = Vector3(0.0, float(spot[2]), 0.0)
++			kept = true
++			continue
++		desk.queue_free()
++		empty_desk_array[k] = null
++
++	var raised: int = 0
++	for path in MP8V_PIPES:
++		var pipe: Node3D = get_node_or_null(NodePath(path)) as Node3D
++		if pipe != null:
++			pipe.global_position.y += MP8V_PIPES_RAISE
++			raised += 1
++
++	print("[MP8] Firearm Factory 8p: room for %d players - %d benches, empty desk %s, %d pipe parts raised" % [
++		roster, layout.size(), ("kept" if kept else "none"), raised,
++	])
++
++
++# Copy 0 sits where vanilla puts it; the others are spread round it, since an item is a plain Node3D
++# with no physics and two at one point would intersect for the whole round.
++func _mp8v_spawn_items() -> void :
++
++	var spawn_positions: Array[Vector3]
++	for c in $ItemSpawner / ItemSpawns.get_children():
++		spawn_positions.append(c.global_position)
++	spawn_positions.shuffle()
++
++	var variations = ManufactureGunItem.Variation.values().duplicate()
++	variations.pop_front()
++	variations.shuffle()
++
++	_mp8v_items_each = _mp8v_per_marker(PlayerManager.player_presences.size())
++
++	for spawn_position in spawn_positions:
++		for copy in _mp8v_items_each:
++
++			var item_instance: ManufactureGunItem = item_scene.instantiate()
++			items_node_parent.add_child(item_instance, true)
++
++			var offset: Vector3 = Vector3.ZERO
++			if copy > 0:
++				var ang: float = TAU * (float(copy) / float(_mp8v_items_each))
++				offset = Vector3(cos(ang), 0.0, sin(ang)) * MP8V_ITEM_SPREAD
++
++			item_instance.teleport_rpc.rpc(spawn_position + offset, Vector3.ZERO)
++			item_instance.set_variation_rpc.rpc(variations.pop_front(), true)
++			items.append(item_instance)
++
++			if variations.is_empty():
++				variations = ManufactureGunItem.Variation.values().duplicate()
++				variations.pop_front()
++				variations.shuffle()
++
++
++func _mp8v_log_layout() -> void :
++	var sp: Node = get_node_or_null("SpawnPositions")
++	var ws: Node = get_node_or_null("WorkstationSpawns")
++	print("[MP8] Firearm Factory 8p: %d players, %d-bench layout, spawns %d (+%d), desks %d (+%d), workstations %d, items %d (%d per marker), gun x1.0" % [
++		PlayerManager.player_presences.size(), _mp8v_layout.size(),
++		(sp.get_child_count() if sp != null else -1), _mp8v_spawns_added,
++		(ws.get_child_count() if ws != null else -1), _mp8v_desks_added,
++		workstations.size(), items.size(), _mp8v_items_each,
++	])

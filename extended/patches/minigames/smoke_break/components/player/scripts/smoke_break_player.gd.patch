@@ -1,0 +1,34 @@
+diff --git a/minigames/smoke_break/components/player/scripts/smoke_break_player.gd b/minigames/smoke_break/components/player/scripts/smoke_break_player.gd
+--- a/minigames/smoke_break/components/player/scripts/smoke_break_player.gd
++++ b/minigames/smoke_break/components/player/scripts/smoke_break_player.gd
+@@ -27,6 +27,9 @@ var manager: SmokeBreakMinigame
+ var player_presence: PlayerPresence
+ 
+ var active_player_seat_index = 0
++# [MP8] Death animation for seats 4-7, picked by the minigame from the nearest original seat.
++# Empty for the game's four seats, which use anim_handler's match.
++var mp8_death_anim: String = ""
+ 
+ var camera_offset_parent: Node3D
+ var default_camera_position: Vector3
+@@ -313,6 +316,20 @@ func setup_rpc(_position: Vector3, _rotation: Vector3, _seat_index: int):
+ 	active_player_seat_index = _seat_index
+ 
+ 
++# [MP8] Extended's setup, sent by the relay in an Extended room (smoke_break.gd) with the seat's death
++# animation; a mixed room sends the game's setup_rpc above (D120).
++func mp8_setup_rpc(_position: Vector3, _rotation: Vector3, _seat_index: int, _mp8_death_anim: String = ""):
++
++	global_position = _position
++	global_rotation = _rotation
++
++	active_player_seat_index = _seat_index
++
++	# [MP8] anim_handler's match covers seats 0-3 only, so seats 4-7 would play "". The fourth
++	# argument has a default; with 4 players or fewer it is empty and the game's match applies.
++	mp8_death_anim = _mp8_death_anim
++
++
+ 
+ func _on_paused():
+ 

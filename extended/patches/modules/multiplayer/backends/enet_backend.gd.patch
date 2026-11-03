@@ -1,0 +1,19 @@
+diff --git a/modules/multiplayer/backends/enet_backend.gd b/modules/multiplayer/backends/enet_backend.gd
+--- a/modules/multiplayer/backends/enet_backend.gd
++++ b/modules/multiplayer/backends/enet_backend.gd
+@@ -131,8 +131,15 @@ func receive_client_data_rpc(client_network_id: int, client_data: Dictionary):
+ 
+ 	var client_game_version = client_data.get("game_version", "error")
+ 	if client_game_version != Globals.game_version:
++		NetworkManager.mp8_note_refusal(client_network_id, NetworkManager.RefuseReason.VersionMismatch, client_data)  # [MP8]
+ 		refuse_client_rpc.rpc_id(client_network_id, client_network_id, NetworkManager.RefuseReason.VersionMismatch)
+ 		return
++	# [MP8] Mixed rooms: another Extended version, or a room over 4 with someone lacking our key.
++	var mp8_reason: int = NetworkManager.mp8_join_refusal(client_network_id, client_data)
++	if mp8_reason >= 0:
++		NetworkManager.mp8_note_refusal(client_network_id, mp8_reason, client_data)
++		refuse_client_rpc.rpc_id(client_network_id, client_network_id, mp8_reason)
++		return
+ 	if not joinable:
+ 		refuse_client_rpc.rpc_id(client_network_id, client_network_id, NetworkManager.RefuseReason.SessionEnded)
+ 		return

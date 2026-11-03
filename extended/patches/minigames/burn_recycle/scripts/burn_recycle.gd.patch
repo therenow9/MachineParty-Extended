@@ -1,0 +1,1808 @@
+diff --git a/minigames/burn_recycle/scripts/burn_recycle.gd b/minigames/burn_recycle/scripts/burn_recycle.gd
+--- a/minigames/burn_recycle/scripts/burn_recycle.gd
++++ b/minigames/burn_recycle/scripts/burn_recycle.gd
+@@ -62,9 +62,109 @@ var spark_ratio: float = 0.01
+ signal player_item_queues_cleared
+ signal elimination_finished
+ 
++# ============================================================== [MP8] The Filter for 8 players
++#
++# Seats have no spawn markers: setup_rpc turns each player instance about the world origin, so above four
++# players the step is 45 degrees and the scene's four belts, presses, indicators and frames are copied to one
++# per seat (_mp8_expand_stations); the player script picks each by seat. Four or fewer: vanilla. The slot count
++# is the server's: move_items_data() derives its erase index from the items length (_mp8_sync_rpc, setup_rpc).
++# ==============================================================================
++
++const MP8_ORIG_SEATS: int = 4
++const MP8_ORIG_SLOTS: int = 18
++# Conveyor slots above four players: three to preview, the press's, and two that carry a recycled item off. A longer
++# tail reaches the next seat at 45 degrees: its belt in the same plane as that seat's (a flashing strip) and its items
++# onto that seat's press. `mp8burnslots=<N>` on the host overrides it.
++const MP8_SLOT_COUNT: int = 6
++
++# The player scene root has a baked 90-degree yaw that setup_rpc's rotation_degrees replaces, so its
++# geometry is measured in the root's own frame: the slots run along local X from -3.00, 1 m apart
++# (index 3, at 0.00, is the active slot), and the console sits at local Z 5.20.
++const MP8_SLOT_FIRST_X: float = - 3.0
++const MP8_SLOT_SPACING: float = 1.0
++const MP8_STATION_RADIAL_Z: float = 5.2
++
++# [MP8] Two rings: on one ring the eight consoles collide, so the odd seats, the added four, move out
++# this far. Each player's camera is in its own instance and moves with it, so their view is unchanged.
++# A 6-slot belt spans [-4.18, +0.78] tangentially; adjacent belts' centre lines clear by 0.86 m at a 2 m push.
++# `mp8burnpush=<m>` on every instance overrides it; 0 is a single ring.
++const MP8_RING_PUSH: float = 2.0
++# [MP8] How far the surrounding walls move back; see _mp8_push_walls().
++const MP8_WALL_PUSH: float = 5.0
++# Vanilla scrolls the belt material's uv1_offset.x by -0.028 per slot (in the player script); a
++# shortened belt needs a larger step or it scrolls slower than the items move.
++const MP8_BELT_UV_STEP: float = 0.028
++
++var mp8_seats: int = MP8_ORIG_SEATS
++var mp8_seat_step: float = 90.0
++var mp8_slot_count: int = MP8_ORIG_SLOTS
++var mp8_belt_uv_step: float = MP8_BELT_UV_STEP
++var mp8_ring_push: float = 0.0
++var mp8_wall_push: float = 0.0
++
++var _mp8_expanded: bool = false
++var _mp8_belt_base: Array[Transform3D] = []
++var _mp8_shot_done: bool = false
++
++# [MP8] Two visibility switches, both visible by default: `mp8burnnopanel` hides each player's console
++# parts (burn_recycle_player.gd's `mp8_set_panel_visible()`), `mp8burnnoframe` the static station frames
++# under `burn recycle visuals final`. The scene has four frames, at the even seats; _mp8_copy_frames gives each
++# odd seat a copy. The layout editor toggles both with V and B, in its own window, and moves no frame.
++const MP8_VISUALS_ROOT_NAME: String = "burn recycle visuals final"
++const MP8_FRAME_PARENT_PREFIX: String = "conveyor control panel main parent"
++
++var _mp8_show_panels: bool = true
++var _mp8_show_frames: bool = true
++
++# [MP8] The per-round parts board, across the top at the end of each round with more than four players unless
++# `mp8burnnoscore`: each player otherwise sees only their own score screen. It shows
++# `valid_burns + valid_recycles`, the count elimination uses, not `player_scores`.
++var _mp8_score_on: bool = true
++var _mp8_score_canvas: CanvasLayer = null
++var _mp8_score_panel: Label = null
++
++# [MP8] Above four players a match aims for MP8_MAX_ROUNDS rounds: each round puts out as many as finishing
++# in time needs (8 players: 2, 2, 2, 1), never more than MP8_MAX_OUT. A tie straddling the cut still puts
++# nobody from it out, the game's rule, so after a tie the match can run a round longer. Host only.
++const MP8_MAX_ROUNDS: int = 4
++const MP8_MAX_OUT: int = 2
++var _mp8_rounds_played: int = 0
++# [MP8] With two or more out, every view stays on a crushed seat this long before turning to the next:
++# the look animations hold their pose until about 3 s after they start, 2 s after the crush.
++const MP8_VICTIM_HOLD: float = 2.0
++
+ func _ready() -> void :
+ 	super._ready()
+ 
++	# [MP8] A mixed room runs the rest of the game's _ready (D120): no seat init, stations, frames or editor.
++	if not NetworkManager.mp8_room_extended():
++		await _mp8_game_ready_tail()
++		return
++
++	# [MP8] Seat count, step and slot count first: the expansion uses the step.
++	_mp8_init()
++
++	# [MP8] Belts, presses and indicators to one per seat, before spawn_players(): set_player_presence()
++	# picks them by seat. Runs on every peer; a client that counted too few players here expands in
++	# _mp8_sync_rpc.
++	if mp8_seats > MP8_ORIG_SEATS and not NetworkManager.mp8_dev_args().has("mp8noburnexpand"):
++		_mp8_expand_stations()
++		_mp8_fit_belts(mp8_slot_count)
++		# [MP8] Only the floor and stations stay visible unless `mp8burnkeepscene`, which keeps the scene
++		# and moves its walls back instead: floor and walls are one mesh, so pushing hidden walls would
++		# only stretch the floor. Local to each peer.
++		if NetworkManager.mp8_dev_args().has("mp8burnkeepscene"):
++			_mp8_push_walls(mp8_wall_push)
++		else:
++			_mp8_hide_scenery()
++		if GameManager.local_game:
++			_mp8_light_each_seat()
++
++	# [MP8] Outside the seat gate above: a display switch that applies at any player count. The
++	# console parts are hidden by each player instance in its setup_rpc.
++	if not _mp8_show_frames:
++		_mp8_set_frames_visible(false)
++
+ 	multiplayer_synchronizer.set_multiplayer_authority(1)
+ 
+ 	if multiplayer.is_server():
+@@ -77,6 +177,11 @@ func _ready() -> void :
+ 		player_item_queues_cleared.connect(_on_player_item_queues_cleared)
+ 		elimination_finished.connect(_on_elimination_finished)
+ 
++	# [MP8] The layout editor (`mp8burnedit`). Station parts are looked up on each key press, so it is
++	# safe before the players spawn.
++	if _mp8_edit_on:
++		_mp8_edit_begin()
++
+ 	if GameManager.local_game:
+ 		await get_tree().create_timer(1.0).timeout
+ 		local_root_node.visible = true
+@@ -87,6 +192,45 @@ func _ready() -> void :
+ 		var particle_mesh: Mesh = spark_particles.get_draw_pass_mesh(0)
+ 		particle_mesh.size = local_spark_particles_size
+ 
++# The game's _ready after its super call, for a mixed room (D120).
++func _mp8_game_ready_tail():
++
++	multiplayer_synchronizer.set_multiplayer_authority(1)
++
++	if multiplayer.is_server():
++
++		countdown_state.countdown_started.connect(_on_countdown_started)
++		countdown_state.tick.connect(_on_countdown_tick)
++		countdown_state.expired.connect(_on_countdown_expired)
++
++		round_timer.timeout.connect(_on_round_timer_timeout)
++		player_item_queues_cleared.connect(_on_player_item_queues_cleared)
++		elimination_finished.connect(_on_elimination_finished)
++
++	if GameManager.local_game:
++		await get_tree().create_timer(1.0).timeout
++		local_root_node.visible = true
++		local_handler.canvas_layer.visible = true
++		local_handler.local_after_post_processing_canvas.visible = true
++		minigame_ready.emit(1)
++
++		var particle_mesh: Mesh = spark_particles.get_draw_pass_mesh(0)
++		particle_mesh.size = local_spark_particles_size
++
++func _process(_delta: float) -> void :
++
++	_mp8_follow_idle_tile_views()
++
++# A player's split-screen tile is its local_camera, which follows its camera only in the player's own _process.
++# Offline Bots switches a bot's _process off, so without this a bot's tile never leaves where the scene put it.
++func _mp8_follow_idle_tile_views() -> void:
++	if not GameManager.local_game:
++		return
++	for player in players.values():
++		if is_instance_valid(player) and not player.is_processing():
++			player.local_camera.global_transform = player.camera.global_transform
++			player.local_camera.fov = player.camera.fov
++
+ func _physics_process(delta: float) -> void :
+ 
+ 	if not multiplayer.is_server():
+@@ -158,6 +302,61 @@ func cleanup():
+ 
+ func spawn_players():
+ 
++	# [MP8] A mixed room runs the game's spawn_players (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_spawn_players()
++		return
++
++	var random_type_byte_array: PackedByteArray
++	for t in random_item_types:
++		random_type_byte_array.append(t)
++
++	player_count = PlayerManager.player_presences.size()
++
++	# [MP8] Seat and slot counts from the server (see the header); a client that expanded nothing in
++	# _ready does it in this RPC.
++	NetworkManager.mp8_rpc(self, &"_mp8_sync_rpc", [mp8_seats, mp8_slot_count, mp8_ring_push])
++
++	# [MP8] The layout table: after _mp8_sync_rpc, which creates the stations, and before setup_rpc,
++	# where each player asks mp8_layout_delta().
++	NetworkManager.mp8_rpc(self, &"_mp8_layout_rpc", [_mp8_layout_flat()])
++
++	var counter: int = 0
++	for key in PlayerManager.player_presences.keys():
++
++		var player_presence: PlayerPresence = PlayerManager.player_presences[key]
++
++		var player_character: BurnRecyclePlayer = player_scene.instantiate()
++		player_parent_node.add_child(player_character, true)
++
++		player_character.set_manager_from_path_rpc.rpc(self.get_path())
++		player_character.set_player_presence.rpc(player_presence.network_id, counter)
++		# [MP8] 90 degrees per seat up to four players, 45 above. Extended's setup adds the slot count and
++		# this seat's radial push (non-zero on odd seats).
++		var seat_rotation := Vector3(0.0, mp8_seat_step * counter, 0.0)
++		NetworkManager.mp8_rpc(player_character, &"mp8_setup_rpc",
++			[seat_rotation, random_type_byte_array, mp8_slot_count, _mp8_push_for(counter)])
++
++		players[player_presence.network_id] = player_character
++		active_players[player_presence.network_id] = player_character
++		# [MP8] Seat -> instance, for the layout editor.
++		_mp8_seat_players[counter] = player_character
++
++		player_character.item_queue_cleared.connect(_on_player_queue_cleared)
++		player_character.item_launched.connect(_on_item_launched)
++
++		counter += 1
++
++	if GameManager.local_game:
++		for c in client_side_wall_mesh.get_children():
++			if c is MeshInstance3D:
++				c.layers = 0
++		local_handler.set_players(players.values())
++		local_handler.show_all_tags()
++
++# The game's spawn_players, for a mixed room (D120).
++func _mp8_game_spawn_players():
++
+ 	var random_type_byte_array: PackedByteArray
+ 	for t in random_item_types:
+ 		random_type_byte_array.append(t)
+@@ -203,6 +402,41 @@ func start_round_timer():
+ 
+ func round_finished():
+ 
++	# [MP8] A mixed room runs the game's round_finished (D120).
++	if not NetworkManager.mp8_room_extended():
++		await _mp8_game_round_finished()
++		return
++
++
++	var highest_score: int = 0
++	var highest_scoring_network_id: int = -1
++	for player in active_players.values():
++		var score: int = (player.valid_burns + player.valid_recycles)
++		if score > highest_score:
++			highest_score = score
++			highest_scoring_network_id = player.player_presence.network_id
++
++	if highest_score > 0:
++		if active_players.has(highest_scoring_network_id):
++			active_players[highest_scoring_network_id].trigger_achievement_rpc.rpc()
++
++	for player in players.values():
++		player.round_finished_rpc.rpc()
++		player.show_end_score_rpc.rpc()
++
++	# [MP8] The parts board for the whole room, as each score screen shows its final count;
++	# start_new_round() clears it.
++	_mp8_score_broadcast()
++	_mp8_log_round("ends")
++
++	await get_tree().create_timer(3.0).timeout
++
++	for player in players.values():
++		player.clear_item_queue_rpc.rpc()
++
++# The game's round_finished, for a mixed room (D120).
++func _mp8_game_round_finished():
++
+ 
+ 	var highest_score: int = 0
+ 	var highest_scoring_network_id: int = -1
+@@ -249,6 +483,10 @@ func check_game_end(from_disconnect: bool = false):
+ 
+ 		break
+ 
++	# [MP8] Logs only. Scoring is vanilla's: the survivor gets player_count, two above the last
++	# eliminated, and a player who disconnects before being picked never enters dead_players.
++	_mp8_log_scores()
++
+ 	player_scores_finalized.emit(player_scores)
+ 
+ 	await get_tree().create_timer(2.0).timeout
+@@ -259,6 +497,60 @@ func check_game_end(from_disconnect: bool = false):
+ 
+ func eliminate_players():
+ 
++	# [MP8] A mixed room runs the game's eliminate_players (D120).
++	if not NetworkManager.mp8_room_extended():
++		await _mp8_game_eliminate_players()
++		return
++
++	# [MP8] Above four players a round may put out two (MP8_MAX_ROUNDS, MP8_MAX_OUT).
++	if player_count > MP8_ORIG_SEATS:
++		await _mp8_eliminate_round()
++		check_game_end()
++		return
++
++	var players_by_score: Dictionary[int, Array]
++	var lowest_score: int = 9999
++	for player in active_players.values():
++		var score: int = (player.valid_burns + player.valid_recycles)
++		if not players_by_score.has(score):
++			players_by_score[score] = []
++		players_by_score[score].append(player)
++
++		if score < lowest_score:
++			lowest_score = score
++
++	var eliminate_network_id: int = -1
++	var seat_to_focus_index: int = -1
++	if lowest_score == 0:
++		var random_player = players_by_score[lowest_score].pick_random()
++		var network_id = random_player.player_presence.network_id
++		eliminate_network_id = network_id
++		seat_to_focus_index = random_player.active_seat_index
++		dead_players.append(network_id)
++	elif lowest_score > 0:
++		if players_by_score[lowest_score].size() == 1:
++			var random_player = players_by_score[lowest_score].pop_front()
++			var network_id = random_player.player_presence.network_id
++			eliminate_network_id = network_id
++			seat_to_focus_index = random_player.active_seat_index
++			dead_players.append(network_id)
++
++	if seat_to_focus_index >= 0:
++		start_camera_movement_rpc.rpc(seat_to_focus_index)
++		await get_tree().create_timer(1.0).timeout
++		if GameManager.local_game:
++			if players.has(eliminate_network_id):
++				local_handler.hide_player_tag(players.get(eliminate_network_id))
++		active_players[eliminate_network_id].set_eliminated_rpc.rpc()
++		remove_active_player_rpc.rpc(eliminate_network_id)
++
++	await get_tree().create_timer(2.0).timeout
++
++	check_game_end()
++
++# The game's eliminate_players, for a mixed room (D120).
++func _mp8_game_eliminate_players():
++
+ 	var players_by_score: Dictionary[int, Array]
+ 	var lowest_score: int = 9999
+ 	for player in active_players.values():
+@@ -315,6 +607,38 @@ func setup_camera_movement():
+ 
+ func start_new_round():
+ 
++	# [MP8] A mixed room runs the game's start_new_round (D120).
++	if not NetworkManager.mp8_room_extended():
++		await _mp8_game_start_new_round()
++		return
++
++	countdown_time = max(countdown_time - 1, min_countdown_time)
++	queues_cleared.clear()
++
++	# [MP8] Cleared with reset_scores_rpc below: once the counts reset, its numbers are stale.
++	if multiplayer.is_server() and _mp8_score_on and mp8_seats > MP8_ORIG_SEATS:
++		NetworkManager.mp8_rpc(self, &"_mp8_score_board_rpc", [PackedInt32Array(), PackedInt32Array()])
++
++	for player in active_players.values():
++		player.reset_scores_rpc.rpc()
++
++	for i in 3:
++
++		for network_id in active_players.keys():
++			var player = active_players[network_id]
++			player.add_item_rpc.rpc()
++
++		await get_tree().create_timer(1.0).timeout
++
++	for player in active_players.values():
++		player.set_active_rpc.rpc(true)
++
++	start_round_timer()
++	_mp8_log_round("starts")
++
++# The game's start_new_round, for a mixed room (D120).
++func _mp8_game_start_new_round():
++
+ 	countdown_time = max(countdown_time - 1, min_countdown_time)
+ 	queues_cleared.clear()
+ 
+@@ -335,6 +659,9 @@ func start_new_round():
+ 	start_round_timer()
+ 
+ func player_disconnected(_network_id: int):
++	# [MP8] The room is read before the await, which can outlast this minigame's latch. A mixed room
++	# keeps the game's own end check (D116).
++	var mp8_ext: bool = NetworkManager.mp8_room_extended()
+ 
+ 	if active_players.has(_network_id):
+ 		active_players.erase(_network_id)
+@@ -345,6 +672,14 @@ func player_disconnected(_network_id: int):
+ 
+ 	await get_tree().create_timer(1.0).timeout
+ 
++	# [MP8] A disconnect before the round starts (someone still loading) must not end it:
++	# check_game_end() returns early only while `active_players.size() > 1`. The is_server() test
++	# matters: this function has no server-only return, and `is_all_player_loaded` is set only on the
++	# server, so without it every client would return here.
++	if mp8_ext and multiplayer.is_server() and not is_all_player_loaded:
++		print("[MP8] The Filter: %d disconnected before the round started; skipping the end check" % _network_id)
++		return
++
+ 	check_game_end(true)
+ 
+ 
+@@ -367,6 +702,12 @@ func remove_active_player_rpc(_network_id: int):
+ func update_timers_rpc(_time_remaining: int):
+ 	timer_label.text = "00:%s" % [str(_time_remaining).pad_zeros(2)]
+ 
++	# [MP8] Screenshots from here because this RPC runs on every peer; _on_countdown_expired is
++	# connected only on the server.
++	if not _mp8_shot_done:
++		_mp8_shot_done = true
++		_mp8_shot("play", 2.0)
++
+ 
+ 
+ func _on_item_launched(_rotation: Vector3, _type: BurnRecycleMinigame.ItemTypes):
+@@ -446,5 +787,1383 @@ func _on_countdown_expired():
+ 		player.set_active_rpc.rpc(true)
+ 
+ 	start_round_timer()
++	_mp8_log_round("starts")
+ 
+ 	state_machine.transition_to_rpc.rpc(&"Play")
++
++
++# ============================================================== [MP8] Added
++
++# [MP8] Seat count, seat step and slot count; runs before _mp8_expand_stations().
++func _mp8_init() -> void :
++
++	var n: int = PlayerManager.player_presences.size()
++
++	# [MP8] The display switches first: they apply at any player count, so before the return below.
++	var mp8_args := NetworkManager.mp8_dev_args()
++	_mp8_show_panels = not mp8_args.has("mp8burnnopanel")
++	_mp8_show_frames = not mp8_args.has("mp8burnnoframe")
++	_mp8_score_on = not mp8_args.has("mp8burnnoscore")
++
++	if n <= MP8_ORIG_SEATS:
++		# Four or fewer: the vanilla path, nothing changed.
++		mp8_seats = MP8_ORIG_SEATS
++		mp8_seat_step = 360.0 / float(MP8_ORIG_SEATS)
++		mp8_slot_count = MP8_ORIG_SLOTS
++		mp8_belt_uv_step = MP8_BELT_UV_STEP
++		print("[MP8] The Filter: %d players <= 4, vanilla path throughout (90° step, %d slots, nothing copied)" % [
++			n, MP8_ORIG_SLOTS])
++		return
++
++	mp8_seats = NetworkManager.MAX_PLAYERS
++	mp8_seat_step = 360.0 / float(mp8_seats)
++	mp8_slot_count = MP8_SLOT_COUNT
++	mp8_ring_push = MP8_RING_PUSH
++	mp8_wall_push = MP8_WALL_PUSH
++
++	var v: String = _mp8_arg("mp8burnslots=")
++	if v.is_valid_int():
++		mp8_slot_count = clampi(int(v), 4, MP8_ORIG_SLOTS)
++	var pv: String = _mp8_arg("mp8burnpush=")
++	if pv.is_valid_float():
++		mp8_ring_push = clampf(float(pv), 0.0, 20.0)
++	# [MP8] Wall push in metres (`mp8burnwall=<m>`, 0 turns it off). Each peer places its own walls,
++	# so every instance needs the argument.
++	var wv: String = _mp8_arg("mp8burnwall=")
++	if wv.is_valid_float():
++		mp8_wall_push = clampf(float(wv), 0.0, 30.0)
++
++	_mp8_calc_uv_step()
++
++	# [MP8] The layout editor, `mp8burnedit` on the host's window; see the section at the end.
++	_mp8_edit_on = NetworkManager.mp8_dev_args().has("mp8burnedit")
++
++	# Only the server reads the layout file (in the host's user://); _mp8_layout_rpc then sends it to
++	# every peer. Clients hold zeros until it arrives.
++	if multiplayer.is_server():
++		_mp8_load_layout()
++	else:
++		_mp8_layout_reset()
++
++	print("[MP8] The Filter: %d players -> %d seats, %.1f° step, %d belt slots (vanilla %d), outer ring push %.2f m" % [
++		n, mp8_seats, mp8_seat_step, mp8_slot_count, MP8_ORIG_SLOTS, mp8_ring_push])
++	print("[MP8] The Filter: %d rounds without ties, at most %d out a round" % [MP8_MAX_ROUNDS, MP8_MAX_OUT])
++
++
++# [MP8] The UV scroll per slot for a shortened belt: vanilla's 0.028 is one 1 m slot of the 18-slot
++# belt, so a belt shrunk by k needs 0.028 / k.
++func _mp8_calc_uv_step() -> void :
++
++	mp8_belt_uv_step = MP8_BELT_UV_STEP
++	var k: float = _mp8_belt_shrink()
++	if k > 0.01:
++		mp8_belt_uv_step = MP8_BELT_UV_STEP / k
++
++
++func _mp8_belt_shrink() -> float :
++	var span_orig: float = float(MP8_ORIG_SLOTS - 1) * MP8_SLOT_SPACING
++	var span_new: float = float(mp8_slot_count - 1) * MP8_SLOT_SPACING
++	if span_orig <= 0.0:
++		return 1.0
++	return span_new / span_orig
++
++
++# [MP8] Seat and slot counts from the server; a client that did not expand in _ready (the player count
++# had not synced) does it here. Idempotent: _mp8_expand_stations() is gated by _mp8_expanded, and
++# _mp8_fit_belts() always starts from _mp8_belt_base.
++func _mp8_sync_rpc(seats: int, slots: int, push: float) -> void :
++
++	mp8_seats = maxi(seats, MP8_ORIG_SEATS)
++	mp8_seat_step = 360.0 / float(mp8_seats)
++	mp8_slot_count = clampi(slots, 4, MP8_ORIG_SLOTS)
++	mp8_ring_push = push
++	_mp8_calc_uv_step()
++
++	if mp8_seats > MP8_ORIG_SEATS:
++		if not _mp8_expanded:
++			print("[MP8] The Filter: this peer did not expand in _ready (too few players counted); expanding to the server's %d seats now" % mp8_seats)
++			_mp8_expand_stations()
++		_mp8_fit_belts(mp8_slot_count)
++
++	print("[MP8] The Filter sync: %d seats / %d slots / outer ring push %.2f m / belt scale %.3f / UV step %.4f" % [
++		mp8_seats, mp8_slot_count, mp8_ring_push, _mp8_belt_shrink(), mp8_belt_uv_step])
++
++
++# [MP8] The scene's belts, presses and indicators, four each, to one per seat. Each sits at a rotation
++# about world Y, so a copy is the original's global_transform turned by the seat step. global_transform,
++# not transform: `indicators parent` has its own -90-degree yaw.
++func _mp8_expand_stations() -> void :
++
++	if _mp8_expanded:
++		return
++	_mp8_expanded = true
++
++	# ---- 1. Presses ----
++	# A press's yaw is 90 * id + C and seat s needs 45 * s + C, so seat = 2 * id whatever C is: the
++	# originals keep their place and take the even ids, and the 45-degree copies the odd ones.
++	var src_presses: Array = presses.duplicate()
++	for src in src_presses:
++		if src == null:
++			continue
++		var old_id: int = src.press_id
++		var dup: BurnRecyclePress = src.duplicate()
++		src.press_id = old_id * 2
++		dup.name = "MP8Press%d" % (old_id * 2 + 1)
++		src.get_parent().add_child(dup)
++		# Copies are always odd seats, the outer ring, so they are pushed out too.
++		dup.global_transform = _mp8_place(src.global_transform, old_id * 2, old_id * 2 + 1)
++		dup.press_id = old_id * 2 + 1
++		# duplicate() does not re-point @export references to the copy's own children.
++		_mp8_reresolve_press(src, dup)
++		presses.append(dup)
++
++	# ---- 2. Indicators: the same numbering ----
++	var src_inds: Array = indicators.duplicate()
++	for src in src_inds:
++		if src == null:
++			continue
++		var old_id: int = src.indicator_id
++		var dup: BurnRecycleIndicator = src.duplicate()
++		src.indicator_id = old_id * 2
++		dup.name = "MP8Indicator%d" % (old_id * 2 + 1)
++		src.get_parent().add_child(dup)
++		dup.global_transform = _mp8_place(src.global_transform, old_id * 2, old_id * 2 + 1)
++		dup.indicator_id = old_id * 2 + 1
++		# The only export is indicator_id and the light is get_child(0), so nothing to re-point.
++		indicators.append(dup)
++
++	# ---- 3. Belts: rebuilt in seat order from geometry, not the scene's child order ----
++	# Seat 0 is at yaw 0 on the inner ring, so its local frame is the world's: its conveyor runs
++	# along x from -3.00 to +14.00 at z 5.20, and its belt is the one nearest that midpoint.
++	var anchor: Vector3 = Vector3(
++		MP8_SLOT_FIRST_X + float(MP8_ORIG_SLOTS - 1) * MP8_SLOT_SPACING * 0.5, 0.0,
++		MP8_STATION_RADIAL_Z)
++	var seat0: MeshInstance3D = null
++	var best: float = INF
++	for b in belts:
++		if b == null:
++			continue
++		var d: float = Vector2(b.global_position.x - anchor.x, b.global_position.z - anchor.z).length()
++		if d < best:
++			best = d
++			seat0 = b
++	if seat0 == null:
++		printerr("[MP8] The Filter: belts is empty; skipping the belt step")
++	else:
++		print("[MP8] The Filter: seat 0's belt is \"%s\" (%.2f m from the expected point; right only if the next nearest is far off)" % [
++			seat0.name, best])
++
++		var originals: Array = belts.duplicate()
++		var rebuilt: Array[MeshInstance3D] = []
++		_mp8_belt_base.clear()
++
++		for s in mp8_seats:
++			var want: Transform3D = _mp8_place(seat0.global_transform, 0, s)
++			var reuse: MeshInstance3D = null
++			for b in originals:
++				if b != null and b.global_position.distance_to(want.origin) < 0.5:
++					reuse = b
++					break
++			if reuse != null:
++				rebuilt.append(reuse)
++			else:
++				var dup: MeshInstance3D = seat0.duplicate()
++				dup.name = "MP8Belt%d" % s
++				seat0.get_parent().add_child(dup)
++				dup.global_transform = want
++				# Each shipped belt has its own material. A copy would share its source's, and two seats
++				# would scroll the same UV, so it gets its own.
++				var mat: Material = seat0.get_active_material(0)
++				if mat != null:
++					dup.set_surface_override_material(0, mat.duplicate())
++				rebuilt.append(dup)
++			_mp8_belt_base.append(rebuilt[s].global_transform)
++
++		belts = rebuilt
++
++	_mp8_copy_frames()
++
++	_mp8_report_stations()
++
++
++# [MP8] The frame is the station's housing: the lever block, the hatch the items come out of and the box
++# around the counter. Each of the scene's four is copied to the seat after it, as the presses are, so every
++# station looks the same (D132). A frame sits at the arena centre, turned, so its seat is read from its meshes.
++func _mp8_copy_frames() -> void :
++
++	var root: Node = find_child(MP8_VISUALS_ROOT_NAME, true, false)
++	if root == null:
++		push_warning("[MP8] The Filter: no '%s'; the odd seats get no frames" % MP8_VISUALS_ROOT_NAME)
++		return
++	for c in root.get_children():
++		var src: Node3D = c as Node3D
++		if src == null or not String(c.name).begins_with(MP8_FRAME_PARENT_PREFIX):
++			continue
++		var box: AABB = AABB()
++		for m in src.find_children("*", "MeshInstance3D", true, false):
++			var mb: AABB = m.global_transform * m.get_aabb()
++			box = mb if box.size == Vector3.ZERO else box.merge(mb)
++		# The meshes' centre is about 39 degrees past the frame's seat, so it is rounded on the scene's own
++		# 90-degree seats.
++		var at: Vector3 = box.get_center()
++		var seat: int = posmod(roundi(rad_to_deg(atan2(at.x, at.z)) / 90.0), MP8_ORIG_SEATS) * 2
++		_mp8_cut_housing(src, seat)
++		var dup: Node3D = src.duplicate()
++		# The prefix keeps the copy under `mp8burnnoframe`'s switch; a late client's copies come after it ran.
++		dup.name = "%s MP8 seat %d" % [MP8_FRAME_PARENT_PREFIX, seat + 1]
++		dup.visible = _mp8_show_frames
++		root.add_child(dup)
++		dup.global_transform = _mp8_place(src.global_transform, seat, seat + 1)
++	print("[MP8] The Filter: station frames cut at %.1f m along the conveyor and copied to the odd seats" % MP8_HOUSING_END)
++
++
++# [MP8] A frame's housing mesh runs from the hatch past the console to the outer wall, through the 4-seat room's
++# empty corner, where the next added seat now stands, so its belt and pusher would cross these rails. Above four seats it
++# ends past the console, before its first support leg, MP8_HOUSING_END along the conveyor from the even seat's origin
++# (the arena centre); triangles wholly past it go and the rest are clamped to it. The copies share the cut mesh.
++const MP8_HOUSING_PREFIX: String = "conveyor frame"
++const MP8_HOUSING_END: float = 2.0
++func _mp8_cut_housing(frame: Node3D, seat: int) -> void :
++
++	var g: Vector3 = _mp8_goods_dir(seat)
++	var hit: int = 0
++	for m in frame.find_children(MP8_HOUSING_PREFIX + "*", "MeshInstance3D", true, false):
++		var mi: MeshInstance3D = m
++		if mi.mesh == null:
++			continue
++		var to_world: Transform3D = mi.global_transform
++		var to_mesh: Transform3D = to_world.affine_inverse()
++		var cut := ArrayMesh.new()
++		for s in mi.mesh.get_surface_count():
++			var arrays: Array = mi.mesh.surface_get_arrays(s)
++			var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
++			var past := PackedByteArray()
++			past.resize(verts.size())
++			for i in verts.size():
++				var w: Vector3 = to_world * verts[i]
++				var over: float = w.dot(g) - MP8_HOUSING_END
++				past[i] = 1 if over > 0.0 else 0
++				if over > 0.0:
++					verts[i] = to_mesh * (w - g * over)
++			var idx: PackedInt32Array = arrays[Mesh.ARRAY_INDEX] if arrays[Mesh.ARRAY_INDEX] != null else PackedInt32Array(range(verts.size()))
++			var kept := PackedInt32Array()
++			for t in range(0, idx.size() - 2, 3):
++				if past[idx[t]] and past[idx[t + 1]] and past[idx[t + 2]]:
++					continue
++				kept.append_array([idx[t], idx[t + 1], idx[t + 2]])
++			# A surface wholly past the end keeps one empty triangle, so surface material overrides keep their index.
++			if kept.is_empty():
++				kept = PackedInt32Array([0, 0, 0])
++			arrays[Mesh.ARRAY_VERTEX] = verts
++			arrays[Mesh.ARRAY_INDEX] = kept
++			cut.add_surface_from_arrays(mi.mesh.surface_get_primitive_type(s), arrays)
++			cut.surface_set_material(s, mi.mesh.surface_get_material(s))
++		mi.mesh = cut
++		hit += 1
++	if hit == 0:
++		push_warning("[MP8] The Filter: seat %d's frame has no '%s' mesh; its housing is not cut" % [seat, MP8_HOUSING_PREFIX])
++
++
++# [MP8] The clientside lights (two over the centre, one over a station) are turned to each peer's own seat online
++# (the player's setup_clientside_visuals), never in a couch game, where they light seat 4 and spill onto seat 5.
++# On the couch every seat gets its own copy of the station's light, dimmed to MP8_SEAT_LIGHT_ENERGY (D132), with no
++# shadow: each split-screen tile draws every shadowed light again, and eight more of them halve the frame rate at 8.
++const MP8_SEAT_LIGHT_ENERGY: float = 0.35
++
++func _mp8_light_each_seat() -> void :
++
++	var lights: Array = clientside_visuals_parent.get_children().filter(
++		func(c): return c is OmniLight3D and c.visible and not String(c.name).begins_with("light_incinerator"))
++	if lights.is_empty():
++		push_warning("[MP8] The Filter: no clientside lights; the seats get none of their own")
++		return
++	# The station's light is the one furthest from the centre.
++	lights.sort_custom(func(a, b): return Vector2(a.position.x, a.position.z).length() > Vector2(b.position.x, b.position.z).length())
++	var key: OmniLight3D = lights[0]
++	var yaw: float = clientside_visuals_parent.rotation_degrees.y
++	var lit: int = posmod(roundi((yaw - 180.0) / mp8_seat_step), mp8_seats)
++	for s in mp8_seats:
++		var d: OmniLight3D = key.duplicate()
++		d.name = "MP8SeatLight%d" % s
++		d.light_energy = key.light_energy * MP8_SEAT_LIGHT_ENERGY
++		d.shadow_enabled = false
++		add_child(d)
++		d.global_transform = _mp8_place(key.global_transform, lit, s)
++	key.visible = false
++	print("[MP8] The Filter: the station light (lit seat %d) copied to %d seats at %.2f" % [lit, mp8_seats, MP8_SEAT_LIGHT_ENERGY])
++
++
++# [MP8] Shortens each belt to the slot count and slides it along its length to the new conveyor midpoint.
++# The scale is about the belt's centre, so sliding by the midpoint difference keeps its offset from the
++# conveyor. Idempotent: always from _mp8_belt_base, the unshortened placement.
++func _mp8_fit_belts(slots: int) -> void :
++
++	if _mp8_belt_base.is_empty():
++		return
++
++	var span_orig: float = float(MP8_ORIG_SLOTS - 1) * MP8_SLOT_SPACING
++	var span_new: float = float(slots - 1) * MP8_SLOT_SPACING
++	var k: float = span_new / span_orig
++	# Along _mp8_goods_dir(i), not the belt's own basis.x: the shipped belts' +X axes point both
++	# ways, so half the belts would slide backwards.
++	var slide: float = (span_new - span_orig) * 0.5
++
++	for i in _mp8_belt_base.size():
++		if i >= belts.size() or belts[i] == null:
++			continue
++		var base: Transform3D = _mp8_belt_base[i]
++		var t: Transform3D = base
++		t.basis = base.basis * Basis.from_scale(Vector3(k, 1.0, 1.0))
++		t.origin = base.origin + _mp8_goods_dir(i) * slide
++		belts[i].global_transform = t
++
++	print("[MP8] The Filter: belts scaled to %d slots, x%.3f (%.2f -> %.2f m), slid %+.2f m along their length" % [
++		slots, k, span_orig, span_new, slide])
++
++	_mp8_check_belt_overlap()
++
++
++# [MP8] Whether belts still overlap, from the real geometry: each belt is a segment in XZ (its centre,
++# its own +X, the mesh AABB's x times its scale), and a pair at distance 0 crosses. This log is how a
++# `mp8burnpush=` value is judged.
++func _mp8_check_belt_overlap() -> void :
++
++	var segs: Array = []
++	for b in belts:
++		if b == null or b.mesh == null:
++			continue
++		var t: Transform3D = b.global_transform
++		var half: float = b.mesh.get_aabb().size.x * t.basis.get_scale().x * 0.5
++		var dir: Vector3 = t.basis.x.normalized()
++		var a: Vector3 = t.origin - dir * half
++		var c: Vector3 = t.origin + dir * half
++		segs.append([Vector2(a.x, a.z), Vector2(c.x, c.z)])
++
++	if segs.size() < 2:
++		return
++
++	var worst: float = INF
++	var crossings: int = 0
++	for i in segs.size():
++		for j in range(i + 1, segs.size()):
++			var pts: PackedVector2Array = Geometry2D.get_closest_points_between_segments(
++				segs[i][0], segs[i][1], segs[j][0], segs[j][1])
++			var d: float = pts[0].distance_to(pts[1])
++			if d < 0.01:
++				crossings += 1
++			worst = minf(worst, d)
++
++	if crossings > 0:
++		print("[MP8] The Filter: ⚠️ %d belt pairs still cross (push %.2f m is not enough; raise mp8burnpush=)" % [
++			crossings, mp8_ring_push])
++	else:
++		print("[MP8] The Filter: no belts cross ✅ min clearance %.2f m (push %.2f m)" % [
++			worst, mp8_ring_push])
++
++
++# [MP8] Rotates about world Y, position included: an orbit about the arena centre.
++func _mp8_spin(t: Transform3D, degrees: float) -> Transform3D:
++	var b: Basis = Basis(Vector3.UP, deg_to_rad(degrees))
++	return Transform3D(b * t.basis, b * t.origin)
++
++
++# [MP8] A seat's radial unit vector (centre -> seat): the player's local +Z turned by the seat's yaw.
++func _mp8_radial(seat: int) -> Vector3:
++	var th: float = deg_to_rad(mp8_seat_step * float(seat))
++	return Vector3(sin(th), 0.0, cos(th))
++
++
++# [MP8] A seat's conveyor direction (slot 0 -> last): the player's local +X, perpendicular to the
++# radial. A belt's length runs along it.
++func _mp8_goods_dir(seat: int) -> Vector3:
++	var th: float = deg_to_rad(mp8_seat_step * float(seat))
++	return Vector3(cos(th), 0.0, - sin(th))
++
++
++# [MP8] Odd seats are the outer ring, pushed out mp8_ring_push metres; even seats are vanilla's four
++# and never move.
++func _mp8_push_for(seat: int) -> float:
++	if mp8_ring_push <= 0.0:
++		return 0.0
++	return mp8_ring_push if (seat % 2) == 1 else 0.0
++
++
++# [MP8] Moves a piece from from_seat to to_seat: turn about the centre, then push along the radial by the
++# difference between the two rings.
++func _mp8_place(t: Transform3D, from_seat: int, to_seat: int) -> Transform3D:
++	var out: Transform3D = _mp8_spin(t, mp8_seat_step * float(to_seat - from_seat))
++	out.origin += _mp8_radial(to_seat) * _mp8_push_for(to_seat) \
++		- _mp8_radial(from_seat) * _mp8_push_for(from_seat)
++	return out
++
++
++# [MP8] duplicate() does not re-point @export references to the copy's own children. A press has two,
++# anim_press and decals; left alone, an added seat's death animation would play on the original press.
++func _mp8_reresolve_press(src: BurnRecyclePress, dup: BurnRecyclePress) -> void :
++
++	if src.anim_press != null:
++		var rel: NodePath = src.get_path_to(src.anim_press)
++		var node: Node = dup.get_node_or_null(rel)
++		if node is AnimationPlayer:
++			dup.anim_press = node
++		else:
++			printerr("[MP8] The Filter: press copy has no anim_press (relative path %s)" % str(rel))
++
++	var new_decals: Array[Decal] = []
++	for d in src.decals:
++		if d == null:
++			continue
++		var nd: Node = dup.get_node_or_null(src.get_path_to(d))
++		if nd is Decal:
++			new_decals.append(nd)
++	dup.decals = new_decals
++
++
++# [MP8] Checks the ids after the expansion: a press id gap breaks elimination at that seat, which is
++# harder to notice than a crash.
++func _mp8_report_stations() -> void :
++
++	var press_ids: Array = []
++	for p in presses:
++		if p != null:
++			press_ids.append(p.press_id)
++	var ind_ids: Array = []
++	for i in indicators:
++		if i != null:
++			ind_ids.append(i.indicator_id)
++	press_ids.sort()
++	ind_ids.sort()
++
++	var want: Array = []
++	for s in mp8_seats:
++		want.append(s)
++
++	print("[MP8] The Filter seats: %d belts / %d presses %s / %d indicators %s" % [
++		belts.size(), presses.size(), str(press_ids), indicators.size(), str(ind_ids)])
++	if press_ids != want:
++		printerr("[MP8] ❌ press ids are not %s - elimination at the added seats will break; investigate" % str(want))
++	if ind_ids != want:
++		printerr("[MP8] ❌ indicator ids are not %s" % str(want))
++	if belts.size() < mp8_seats:
++		printerr("[MP8] ❌ only %d belts for %d seats" % [belts.size(), mp8_seats])
++
++	# Each seat's ring and radius.
++	var rows: Array = []
++	for s in mini(belts.size(), mp8_seats):
++		if belts[s] == null:
++			continue
++		var r: float = belts[s].global_position.dot(_mp8_radial(s))
++		rows.append("seat %d %s %.2fm" % [s, "outer" if _mp8_push_for(s) > 0.0 else "inner", r])
++	print("[MP8] The Filter rings: %s" % " / ".join(rows))
++
++
++# [MP8] Logs ranks, names and scores at the end; changes no score. Server only.
++func _mp8_log_scores() -> void :
++
++	if not multiplayer.is_server():
++		return
++
++	var lines: Array = []
++	var ranked: Array = player_scores.keys()
++	ranked.sort_custom(func(a, b): return player_scores[a] > player_scores[b])
++	var rank: int = 1
++	for network_id in ranked:
++		var who: String = str(network_id)
++		if PlayerManager.player_presences.has(network_id):
++			who = PlayerManager.player_presences[network_id].network_name
++		lines.append("#%d %s %d pts" % [rank, who, player_scores[network_id]])
++		rank += 1
++
++	print("[MP8] The Filter result (%d players / %d eliminated / %d seats): %s" % [
++		player_count, dead_players.size(), mp8_seats, " / ".join(lines)])
++
++
++# [MP8] How many go out this round so the match ends within MP8_MAX_ROUNDS, capped at MP8_MAX_OUT;
++# `rounds_played` counts rounds that put nobody out too, so after a tie the later rounds take two.
++static func mp8_elim_slots(active: int, rounds_played: int) -> int:
++	var left: int = maxi(1, MP8_MAX_ROUNDS - rounds_played)
++	return mini(MP8_MAX_OUT, ceili(float(maxi(active - 1, 0)) / float(left)))
++
++
++# [MP8] The ids out this round, lowest score first, from {id: score}. Zero scorers fill the slots at
++# random, the game's zero rule; a higher group goes out whole if it fits, and one that straddles the cut
++# puts nobody out and ends the pick, the game's tie rule. At one slot this is exactly the game's choice.
++static func mp8_pick_victims(scores: Dictionary, slots: int) -> Array:
++	var by_score: Dictionary = {}
++	for id in scores:
++		if not by_score.has(scores[id]):
++			by_score[scores[id]] = []
++		by_score[scores[id]].append(id)
++	var levels: Array = by_score.keys()
++	levels.sort()
++
++	var out: Array = []
++	for score in levels:
++		var left: int = slots - out.size()
++		if left <= 0:
++			break
++		var group: Array = by_score[score].duplicate()
++		group.shuffle()
++		if score == 0:
++			out.append_array(group.slice(0, left))
++		elif group.size() <= left:
++			out.append_array(group)
++		else:
++			break
++	return out
++
++
++# [MP8] One elimination round above four players, in place of the game's one victim, with the game's
++# waits for each. Placement is the order of dead_players, so the lower score of a pair places lower.
++func _mp8_eliminate_round() -> void :
++
++	var scores: Dictionary = {}
++	for network_id in active_players.keys():
++		var p: BurnRecyclePlayer = active_players[network_id]
++		scores[network_id] = p.valid_burns + p.valid_recycles
++	var slots: int = mp8_elim_slots(active_players.size(), _mp8_rounds_played)
++	_mp8_rounds_played += 1
++	var out: Array = mp8_pick_victims(scores, slots)
++	dead_players.append_array(out)
++	print("[MP8] The Filter: round %d, %d in, %d slots, out %s, scores %s, t=%d ms, frame %d" % [
++		_mp8_rounds_played, scores.size(), slots, out, scores, Time.get_ticks_msec(), Engine.get_process_frames()])
++
++	# A disconnect can end the match during the waits (player_disconnected's check_game_end); no crush after it.
++	for i in out.size():
++		if i > 0:
++			await get_tree().create_timer(MP8_VICTIM_HOLD).timeout
++		if finished or not active_players.has(out[i]):
++			continue
++		start_camera_movement_rpc.rpc(active_players[out[i]].active_seat_index)
++		await get_tree().create_timer(1.0).timeout
++		if not finished:
++			_mp8_eliminate_one(out[i])
++
++	await get_tree().create_timer(2.0).timeout
++
++
++# [MP8] The game's elimination steps for one victim; a player who left during the camera wait is skipped.
++func _mp8_eliminate_one(network_id: int) -> void :
++	if not active_players.has(network_id):
++		return
++	if GameManager.local_game and players.has(network_id):
++		local_handler.hide_player_tag(players.get(network_id))
++	active_players[network_id].set_eliminated_rpc.rpc()
++	remove_active_player_rpc.rpc(network_id)
++
++
++# [MP8] A timestamp at each round's start and end above four players, for the pause timings. Under Movie
++# Maker the clock is the frame count, not the milliseconds.
++func _mp8_log_round(what: String) -> void :
++	if player_count > MP8_ORIG_SEATS and multiplayer.is_server():
++		print("[MP8] The Filter: round %d %s, %d in, t=%d ms, frame %d" % [
++			_mp8_rounds_played + 1, what, active_players.size(), Time.get_ticks_msec(), Engine.get_process_frames()])
++
++
++# [MP8] The per-round parts board. Sent by RPC: only the server knows who is still in, and every window
++# must show the same numbers. Names are looked up locally in `PlayerManager.player_presences`, falling
++# back to the id. Empty `ids` clears the board; a count below 0 is an eliminated player, shown as OUT.
++func _mp8_score_board_rpc(ids: PackedInt32Array, counts: PackedInt32Array) -> void :
++
++	if ids.size() != counts.size():
++		return
++
++	if ids.is_empty():
++		if _mp8_score_panel != null:
++			_mp8_score_panel.text = ""
++		return
++
++	# [count, name, id]: players still in by count, descending, then the eliminated; ties by name, so
++	# every window lists the same order.
++	var rows: Array = []
++	for i in ids.size():
++		var network_id: int = ids[i]
++		var who: String = str(network_id)
++		if PlayerManager.player_presences.has(network_id):
++			who = String(PlayerManager.player_presences[network_id].network_name)
++		rows.append([counts[i], who, network_id])
++	rows.sort_custom(func(a, b):
++		var da: bool = int(a[0]) < 0
++		var db: bool = int(b[0]) < 0
++		if da != db:
++			return db                      # eliminated last
++		if not da and a[0] != b[0]:
++			return a[0] > b[0]
++		return String(a[1]) < String(b[1]))
++
++	# With `mp8burndebug` the network id is listed too, to match the log.
++	var with_id: bool = NetworkManager.mp8_dev_args().has("mp8burndebug")
++
++	# A no-break space keeps each name with its count when the line wraps.
++	var nbsp: String = String.chr(0xA0)
++	var parts := PackedStringArray()
++	for r in rows:
++		var n: int = int(r[0])
++		var tail: String = " (%d)" % int(r[2]) if with_id else ""
++		parts.append("%s%s%s%s" % [String(r[1]), tail, nbsp, "OUT" if n < 0 else str(n)])
++
++	_mp8_score_build()
++	if _mp8_score_panel != null:
++		_mp8_score_panel.text = "SCORE   " + "  ·  ".join(parts)
++
++
++# [MP8] Server side: sends this round's counts, -1 for an eliminated player. Walks `players`, not
++# `active_players`, so eliminated players stay on the board.
++func _mp8_score_broadcast() -> void :
++
++	if not multiplayer.is_server() or not _mp8_score_on or mp8_seats <= MP8_ORIG_SEATS:
++		return
++
++	var ids := PackedInt32Array()
++	var counts := PackedInt32Array()
++	for network_id in players.keys():
++		var p = players[network_id]
++		if p == null:
++			continue
++		ids.append(network_id)
++		counts.append( - 1 if not active_players.has(network_id) \
++			else int(p.valid_burns) + int(p.valid_recycles))
++
++	if ids.is_empty():
++		return
++	NetworkManager.mp8_rpc(self, &"_mp8_score_board_rpc", [ids, counts])
++
++
++# [MP8] The board's container. With `mp8burndebug` it moves down to clear the binding panel, which
++# also sits at the top.
++func _mp8_score_build() -> void :
++
++	if _mp8_score_panel != null:
++		return
++
++	# One line across the top of the screen, in Duck Hunt's tile-label style; it wraps when names are long.
++	var lbl := Label.new()
++	lbl.name = "MP8BurnScoreBoard"
++	lbl.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
++	lbl.offset_left = 10.0
++	lbl.offset_right = -10.0
++	lbl.offset_top = 190.0 if NetworkManager.mp8_dev_args().has("mp8burndebug") else 6.0
++	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
++	lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
++	lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	var font = load("res://fonts/Terminal F4.ttf")
++	if font != null:
++		lbl.add_theme_font_override("font", font)
++	lbl.add_theme_font_size_override("font_size", 16)
++	lbl.add_theme_color_override("font_color", Color.WHITE)
++	lbl.add_theme_color_override("font_shadow_color", Color.BLACK)
++	lbl.add_theme_constant_override("shadow_offset_x", 1)
++	lbl.add_theme_constant_override("shadow_offset_y", 1)
++
++	_mp8_score_canvas = CanvasLayer.new()
++	_mp8_score_canvas.layer = 127
++	_mp8_score_canvas.add_child(lbl)
++	# Under the minigame root, so it goes when the minigame does.
++	add_child(_mp8_score_canvas)
++	_mp8_score_panel = lbl
++
++
++# [MP8] Screenshots for the `mp8shot` switch: the game saves the PNGs itself, one per peer, each from
++# that peer's view.
++func _mp8_shot(tag: String, delay: float = 0.0) -> void :
++
++	if not NetworkManager.mp8_dev_args().has("mp8shot"):
++		return
++
++	if delay > 0.0:
++		await get_tree().create_timer(delay, false).timeout
++	if not is_inside_tree():
++		return
++	await RenderingServer.frame_post_draw
++
++	var peer: int = multiplayer.get_unique_id() if multiplayer.has_multiplayer_peer() else 0
++	var img: Image = get_viewport().get_texture().get_image()
++	if img != null:
++		img.save_png("user://mp8_burn_%s_%d.png" % [tag, peer])
++		print("[MP8] mp8shot: saved user://mp8_burn_%s_%d.png" % [tag, peer])
++
++
++# [MP8] The value of a `name=<value>` command-line argument, given its prefix.
++func _mp8_arg(prefix: String) -> String:
++	for a in NetworkManager.mp8_dev_args():
++		var s: String = str(a)
++		if s.begins_with(prefix):
++			return s.substr(prefix.length())
++	return ""
++
++
++# ============================================================== [MP8] Layout editor (`mp8burnedit`)
++#
++# Moves whole stations (player instance, belt, press, indicator) as dx, dz, dyaw offsets per seat from the
++# two-ring default, saved to MP8_BURN_LAYOUT_FILE (delete it to restore the default). A station turns about
++# local (0, 0, MP8_STATION_RADIAL_Z), its anchor; hardware is grouped by world angle, since the ids carry the
++# even/odd renumbering. Edits move this window's nodes only; _mp8_layout_rpc sends the saved file next round.
++
++const MP8_BURN_LAYOUT_FILE: String = "user://mp8_burn_layout.txt"
++const MP8_EDIT_STEPS: Array = [0.25, 1.0, 4.0]
++const MP8_EDIT_YAW_STEP: float = 15.0
++
++var _mp8_edit_on: bool = false
++var _mp8_edit_sel: int = 0
++var _mp8_edit_step_i: int = 0
++var _mp8_edit_canvas: CanvasLayer = null
++var _mp8_edit_panel: Label = null
++var _mp8_edit_cam: Camera3D = null
++var _mp8_edit_overview: bool = true
++# Linked: the four seats of the same parity move together. On by default; G toggles it.
++var _mp8_edit_link: bool = true
++# The whole match is paused: the host presses P and _mp8_pause_rpc freezes every peer's tree.
++var _mp8_paused: bool = false
++var _mp8_pause_modes: Array = []
++
++# seat -> player instance (server only, filled in spawn_players)
++var _mp8_seat_players: Dictionary = {}
++# seat -> [Vector3 offset, float yaw offset], one per seat, the same on every peer (by RPC)
++var _mp8_layout: Array = []
++var _mp8_layout_src: String = "built-in default (two rings)"
++
++
++# [MP8] The player script asks for its seat's offset in setup_rpc; zero when nothing was edited.
++func mp8_layout_delta(seat: int) -> Array :
++	if seat >= 0 and seat < _mp8_layout.size():
++		return _mp8_layout[seat]
++	return [Vector3.ZERO, 0.0]
++
++
++# [MP8] The station radius, for the player script's anchor.
++func mp8_station_radial() -> float :
++	return MP8_STATION_RADIAL_Z
++
++
++# -- [MP8] Walls pushed back (only with `mp8burnkeepscene`) -----------------------------------------
++#
++# The walls are one mesh, `main walls`, not one node per wall, so it is scaled in X and Z (not Y) by
++# factors from its AABB and re-centred, which moves each wall out by `push` along its normal. The subtree
++# has no collision, and its siblings (the central incinerator, the lights) are not touched. The wall
++# texture stretches and the far walls get darker; `mp8burnwall=0` turns it off.
++func _mp8_push_walls(push: float) -> void :
++
++	if push <= 0.0:
++		return
++
++	var wall: MeshInstance3D = find_child("main walls", true, false) as MeshInstance3D
++	if wall == null:
++		push_warning("[MP8] The Filter: no 'main walls' node; walls not pushed back")
++		return
++	if wall.mesh == null:
++		push_warning("[MP8] The Filter: 'main walls' has no mesh; walls not pushed back")
++		return
++
++	var ab: AABB = wall.mesh.get_aabb()
++	if ab.size.x < 0.01 or ab.size.z < 0.01:
++		push_warning("[MP8] The Filter: 'main walls' AABB is flat; not scaling it")
++		return
++
++	var sx: float = (ab.size.x + push * 2.0) / ab.size.x
++	var sz: float = (ab.size.z + push * 2.0) / ab.size.z
++
++	# Scaling moves the AABB centre away from the node origin; this moves it back, so the room stays
++	# centred.
++	var c: Vector3 = ab.get_center()
++	wall.scale = Vector3(sx, 1.0, sz)
++	wall.position += Vector3(c.x - c.x * sx, 0.0, c.z - c.z * sz)
++
++	print("[MP8] The Filter: walls pushed back %.2f m (%.2f x %.2f -> %.2f x %.2f, scale %.4f/%.4f, y unchanged)" % [
++		push, ab.size.x, ab.size.z, ab.size.x + push * 2.0, ab.size.z + push * 2.0, sx, sz])
++
++
++# -- [MP8] Only the floor and the stations stay visible ---------------------------------------------
++#
++# `main walls` is one ArrayMesh whose surfaces are the floor (material `floor tiles`) and the walls.
++# Godot cannot hide one surface, so the wall surfaces get a transparent override material. Surfaces are
++# found by material name, not index: without `floor tiles` nothing is hidden, so the floor can never
++# vanish. The central `incinerator` is hidden too; the lights beside it are its siblings and stay on.
++const MP8_FLOOR_MATERIAL_NAME: String = "floor tiles"
++
++
++func _mp8_invisible_material() -> StandardMaterial3D :
++
++	var m := StandardMaterial3D.new()
++	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
++	m.albedo_color = Color(0.0, 0.0, 0.0, 0.0)
++	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
++	m.disable_receive_shadows = true
++	return m
++
++
++func _mp8_hide_scenery() -> void :
++
++	# Walls: every surface but the floor.
++	var mw: MeshInstance3D = find_child("main walls", true, false) as MeshInstance3D
++	if mw == null or mw.mesh == null:
++		push_warning("[MP8] The Filter: no 'main walls'; walls not hidden")
++	else:
++		# Nothing is hidden unless the floor surface is found.
++		var floor_i: int = - 1
++		for i in mw.mesh.get_surface_count():
++			var mat: Material = mw.mesh.surface_get_material(i)
++			if mat != null and String(mat.resource_name) == MP8_FLOOR_MATERIAL_NAME:
++				floor_i = i
++				break
++
++		if floor_i < 0:
++			push_warning("[MP8] The Filter: no surface with material '%s' in 'main walls' - hiding none (guessing by index could hide the floor)" % MP8_FLOOR_MATERIAL_NAME)
++		else:
++			var names := PackedStringArray()
++			for i in mw.mesh.get_surface_count():
++				if i == floor_i:
++					continue
++				var mat2: Material = mw.mesh.surface_get_material(i)
++				names.append("%d:%s" % [
++					i, "(unnamed)" if mat2 == null else String(mat2.resource_name)])
++				mw.set_surface_override_material(i, _mp8_invisible_material())
++
++			# Hidden walls cast no shadow: cast_shadow is per instance, not per surface.
++			mw.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++
++			print("[MP8] The Filter: walls hidden - kept surface %d '%s' (floor), hid %s" % [
++				floor_i, MP8_FLOOR_MATERIAL_NAME, ", ".join(names)])
++
++	# The central incinerator.
++	var inc: Node3D = find_child("incinerator", true, false) as Node3D
++	if inc != null:
++		inc.visible = false
++		print("[MP8] The Filter: central incinerator hidden (its 6 lights are siblings, not children, and stay on)")
++	else:
++		push_warning("[MP8] The Filter: no 'incinerator'")
++
++
++# [MP8] The scene's static station frames: the `conveyor control panel main parent` nodes under
++# `burn recycle visuals final`, four, plus a copy at each added seat above four players (_mp8_copy_frames),
++# found by name prefix, not index. Each also holds a static piston, levers and console screen; the player
++# instance's own set is a separate tree (mp8_set_panel_visible). Local to each peer; `visible` leaves collision alone.
++func _mp8_set_frames_visible(on: bool) -> void :
++
++	var root: Node = find_child(MP8_VISUALS_ROOT_NAME, true, false)
++	if root == null:
++		push_warning("[MP8] The Filter: no '%s'; the frame switch did nothing" % MP8_VISUALS_ROOT_NAME)
++		return
++
++	var hit: int = 0
++	for c in root.get_children():
++		if not String(c.name).begins_with(MP8_FRAME_PARENT_PREFIX):
++			continue
++		var c3: Node3D = c as Node3D
++		if c3 == null:
++			continue
++		c3.visible = on
++		hit += 1
++
++	# Warn when nothing matched: on screen a switch that did nothing looks like one that worked.
++	if hit == 0:
++		push_warning("[MP8] The Filter: nothing under '%s' starts with '%s'; the frame switch did nothing" % [
++			MP8_VISUALS_ROOT_NAME, MP8_FRAME_PARENT_PREFIX])
++		return
++
++	print("[MP8] The Filter: %d static station frames -> %s%s" % [
++		hit, "shown" if on else "hidden",
++		"(the scene has only 4, not copied: even seats have one, odd seats none)" if hit < mp8_seats else ""])
++
++
++# [MP8] Every player instance's console parts: they are scene objects every player sees, not local UI.
++func _mp8_set_panels_visible(on: bool) -> void :
++
++	var hit: int = 0
++	for c in player_parent_node.get_children():
++		var p: BurnRecyclePlayer = c as BurnRecyclePlayer
++		if p == null:
++			continue
++		p.mp8_set_panel_visible(on)
++		hit += 1
++
++	print("[MP8] The Filter: %d player consoles -> %s" % [hit, "shown" if on else "hidden"])
++
++
++func _mp8_layout_reset() -> void :
++	_mp8_layout = []
++	for i in mp8_seats:
++		_mp8_layout.append([Vector3.ZERO, 0.0])
++
++
++# [MP8] World position -> its seat, by the nearest azimuth about Y (seat s at mp8_seat_step * s).
++func _mp8_seat_of_pos(pos: Vector3) -> int :
++
++	if absf(pos.x) < 0.001 and absf(pos.z) < 0.001:
++		return - 1                     # at the centre: no angle
++
++	var ang: float = rad_to_deg(atan2(pos.x, pos.z))
++	var best: int = 0
++	var best_d: float = 1e9
++	for s in mp8_seats:
++		var d: float = absf(wrapf(ang - mp8_seat_step * float(s), - 180.0, 180.0))
++		if d < best_d:
++			best_d = d
++			best = s
++	return best
++
++
++# [MP8] A station's anchor: the player instance's local (0, 0, radius) in world space, near the console.
++# Stations turn about it. Before the player spawns, the default geometry.
++func _mp8_station_anchor(seat: int) -> Vector3 :
++
++	var p = _mp8_seat_players.get(seat)
++	if p != null and is_instance_valid(p):
++		return (p as Node3D).global_transform * Vector3(0.0, 0.0, MP8_STATION_RADIAL_Z)
++
++	return _mp8_radial(seat) * (MP8_STATION_RADIAL_Z + _mp8_push_for(seat))
++
++
++# [MP8] The scene hardware at a seat (belt, press, indicator), grouped by geometry.
++func _mp8_station_hardware(seat: int) -> Array :
++
++	var out: Array = []
++	for arr in [belts, presses, indicators]:
++		for n in arr:
++			if n == null or not is_instance_valid(n):
++				continue
++			if _mp8_seat_of_pos((n as Node3D).global_position) == seat:
++				out.append(n)
++	return out
++
++
++# [MP8] Each station's default transforms: seat -> [[node, default global_transform], ...]. Every edit
++# rebuilds from them, turning dyaw about the default anchor and then moving dpos, which is how the next
++# round replays the table. Stacking edits on the current pose would not match it: translation and
++# rotation about an anchor do not commute.
++var _mp8_station_base: Dictionary = {}
++
++
++# [MP8] A station's default anchor, without offsets.
++func _mp8_default_anchor(seat: int) -> Vector3 :
++	return _mp8_radial(seat) * (MP8_STATION_RADIAL_Z + _mp8_push_for(seat))
++
++
++# [MP8] Snapshots a station's parts once; every rebuild starts from it.
++func _mp8_snapshot_station(seat: int) -> Array :
++
++	if _mp8_station_base.has(seat):
++		return _mp8_station_base[seat]
++
++	var rows: Array = []
++	var nodes: Array = _mp8_station_hardware(seat)
++	var p = _mp8_seat_players.get(seat)
++	if p != null and is_instance_valid(p):
++		nodes.append(p)
++
++	for n in nodes:
++		rows.append([n, (n as Node3D).global_transform])
++
++	_mp8_station_base[seat] = rows
++	return rows
++
++
++# [MP8] Rebuilds a station from its snapshot per the layout table. This window's nodes only.
++func _mp8_apply_station(seat: int) -> void :
++
++	if seat < 0 or seat >= _mp8_layout.size():
++		return
++
++	var row: Array = _mp8_layout[seat]
++	var dpos: Vector3 = row[0]
++	var dyaw: float = float(row[1])
++
++	var anchor: Vector3 = _mp8_default_anchor(seat)
++	var b: Basis = Basis(Vector3.UP, deg_to_rad(dyaw))
++
++	for e in _mp8_snapshot_station(seat):
++		var n3: Node3D = e[0]
++		if n3 == null or not is_instance_valid(n3):
++			continue
++		var t: Transform3D = e[1]          # the default pose, not the current one
++		t.origin = anchor + b * (t.origin - anchor) + dpos
++		t.basis = b * t.basis
++		n3.global_transform = t
++
++
++# [MP8] Applies the layout to the scene hardware on each peer. The player instances apply theirs in
++# setup_rpc: they do not exist yet when this RPC arrives.
++func _mp8_apply_hardware_layout() -> void :
++
++	for s in mini(_mp8_layout.size(), mp8_seats):
++		var row: Array = _mp8_layout[s]
++		if (row[0] as Vector3).is_zero_approx() and absf(float(row[1])) < 0.001:
++			continue
++		_mp8_apply_station(s)
++
++
++# [MP8] The layout table, sent by the server in spawn_players before setup_rpc, where each player asks
++# mp8_layout_delta().
++func _mp8_layout_rpc(flat: PackedFloat32Array) -> void :
++
++	_mp8_layout_reset()
++	var n: int = mini(int(flat.size() / 3), _mp8_layout.size())
++	for i in n:
++		_mp8_layout[i] = [
++			Vector3(flat[i * 3], 0.0, flat[i * 3 + 1]),
++			flat[i * 3 + 2],
++		]
++
++	_mp8_apply_hardware_layout()
++
++
++func _mp8_layout_flat() -> PackedFloat32Array :
++
++	var flat := PackedFloat32Array()
++	for row in _mp8_layout:
++		flat.append((row[0] as Vector3).x)
++		flat.append((row[0] as Vector3).z)
++		flat.append(float(row[1]))
++	return flat
++
++
++func _mp8_load_layout() -> void :
++
++	_mp8_layout_reset()
++
++	# [MP8] The editor's file, read only in a test build: a shipped build plays the built-in layout (D116).
++	if not NetworkManager.mp8_development_tools_allowed() or not FileAccess.file_exists(MP8_BURN_LAYOUT_FILE):
++		return
++
++	var f := FileAccess.open(MP8_BURN_LAYOUT_FILE, FileAccess.READ)
++	if f == null:
++		push_warning("[MP8] The Filter: cannot read %s (error %d)" % [
++			MP8_BURN_LAYOUT_FILE, FileAccess.get_open_error()])
++		return
++
++	var i: int = 0
++	while not f.eof_reached():
++		var line: String = f.get_line().strip_edges()
++		if line.is_empty() or line.begins_with("#"):
++			continue
++		var parts: PackedStringArray = line.split(",", false)
++		if parts.size() < 3:
++			push_warning("[MP8] The Filter: unreadable layout file line; skipped")
++			continue
++		if i < _mp8_layout.size():
++			_mp8_layout[i] = [
++				Vector3(float(parts[0].strip_edges()), 0.0, float(parts[1].strip_edges())),
++				float(parts[2].strip_edges()),
++			]
++		i += 1
++	f.close()
++
++	_mp8_layout_src = "saved file (%d lines)" % i
++	print("[MP8] The Filter: read %d hand-edited layout lines <- %s" % [
++		i, ProjectSettings.globalize_path(MP8_BURN_LAYOUT_FILE)])
++
++
++func _mp8_save_layout() -> bool :
++
++	var f := FileAccess.open(MP8_BURN_LAYOUT_FILE, FileAccess.WRITE)
++	if f == null:
++		push_warning("[MP8] The Filter: cannot write %s (error %d)" % [
++			MP8_BURN_LAYOUT_FILE, FileAccess.get_open_error()])
++		return false
++
++	f.store_line("# The Filter (mp8game=17) hand-tuned station layout - one line per station, %d lines" % mp8_seats)
++	f.store_line("# Each line: dx, dz, dyaw - offsets from the default two-ring layout, not absolute positions")
++	f.store_line("# A station (player instance with console, chute, score screen and camera; belt; press; light) moves as one")
++	f.store_line("# Delete this file to go back to the default (4 inner + 4 outer, pushed out %.2f m)" % mp8_ring_push)
++	f.store_line("# Safe to edit by hand. Saved %s" % Time.get_datetime_string_from_system())
++	f.store_line("")
++	for s in _mp8_layout.size():
++		var row: Array = _mp8_layout[s]
++		var d: Vector3 = row[0]
++		f.store_line("%.3f, %.3f, %.1f    # station %d (%s)" % [
++			d.x, d.z, float(row[1]), s, "outer" if _mp8_push_for(s) > 0.0 else "inner"])
++	f.close()
++
++	print("[MP8] The Filter: layout saved (%d seats) -> %s" % [
++		_mp8_layout.size(), ProjectSettings.globalize_path(MP8_BURN_LAYOUT_FILE)])
++	return true
++
++
++# -- Layout editor UI -------------------------------------------------------------------------------
++
++func _mp8_edit_begin() -> void :
++
++	var lbl := Label.new()
++	lbl.name = "MP8BurnEditPanel"
++	lbl.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
++	lbl.position = Vector2(16, - 220)
++	lbl.add_theme_color_override("font_color", Color(1, 1, 0.4))
++	lbl.add_theme_color_override("font_outline_color", Color.BLACK)
++	lbl.add_theme_constant_override("outline_size", 6)
++	lbl.add_theme_font_size_override("font_size", 16)
++
++	_mp8_edit_canvas = CanvasLayer.new()
++	_mp8_edit_canvas.layer = 128
++	_mp8_edit_canvas.add_child(lbl)
++	add_child(_mp8_edit_canvas)
++	_mp8_edit_panel = lbl
++
++	# The overview camera: each first-person view shows only its own station.
++	var cam := Camera3D.new()
++	cam.name = "MP8BurnEditCamera"
++	cam.position = Vector3(0.0, 26.0, 0.0)
++	cam.rotation_degrees = Vector3(- 89.0, 0.0, 0.0)
++	cam.fov = 60.0
++	add_child(cam)
++	_mp8_edit_cam = cam
++	cam.current = true
++	_mp8_edit_overview = true
++
++	print("[MP8] The Filter: layout editor on (QE seat / IJKL move / UO turn / T view / G link / P pause / V console / B frames / 5 step / 0 save / 9 reset / 8 report)")
++	print("[MP8] The Filter: linking is on by default - moving one of the added four moves the other three the same way in their own frames")
++	_mp8_edit_refresh()
++
++
++# [MP8] P pauses the whole match on every peer, sent by the host: otherwise items and the countdown keep
++# moving, and pausing only the host would jump ahead on resume. This node turns PROCESS_MODE_ALWAYS so
++# its key input still works, and each direct child is set PAUSABLE explicitly, since INHERIT follows
++# the parent's effective mode. RPCs still arrive while paused, which is what lets the host resume.
++func _mp8_pause_rpc(on: bool) -> void :
++
++	if on == _mp8_paused:
++		return
++
++	if on:
++		_mp8_pause_modes = []
++		for c in get_children():
++			_mp8_pause_modes.append([c, c.process_mode])
++			if c.process_mode == Node.PROCESS_MODE_INHERIT:
++				c.process_mode = Node.PROCESS_MODE_PAUSABLE
++		process_mode = Node.PROCESS_MODE_ALWAYS
++		if _mp8_edit_canvas != null:
++			_mp8_edit_canvas.process_mode = Node.PROCESS_MODE_ALWAYS
++		get_tree().paused = true
++		_mp8_paused = true
++		print("[MP8] The Filter: ⏸ match paused")
++	else:
++		get_tree().paused = false
++		process_mode = Node.PROCESS_MODE_INHERIT
++		for e in _mp8_pause_modes:
++			var n: Node = e[0]
++			if n != null and is_instance_valid(n):
++				n.process_mode = e[1]
++		_mp8_pause_modes = []
++		_mp8_paused = false
++		print("[MP8] The Filter: ▶ match resumed")
++
++	if _mp8_edit_panel != null:
++		_mp8_edit_refresh()
++
++
++func _mp8_edit_toggle_pause() -> void :
++
++	# An authority call reaches the other peers only from the server, the window running the editor. On a
++	# client it pauses that peer only, with a warning.
++	if multiplayer.is_server():
++		NetworkManager.mp8_rpc(self, &"_mp8_pause_rpc", [not _mp8_paused])
++	else:
++		push_warning("[MP8] The Filter: not the host; P pauses this peer only (pause the match from the host's window)")
++		_mp8_pause_rpc(not _mp8_paused)
++
++
++func _mp8_edit_seat_camera(seat: int) -> void :
++
++	# A seat's own first-person view. Only the owner's camera is normally current; making it current
++	# here affects only this window.
++	var p = _mp8_seat_players.get(seat)
++	if p == null or not is_instance_valid(p):
++		print("[MP8] The Filter: seat %d has no player instance yet; cannot switch to its view" % seat)
++		return
++
++	var cam: Camera3D = null
++	for n in (p as Node).find_children("*", "Camera3D", true, false):
++		cam = n
++		break
++
++	if cam == null:
++		print("[MP8] The Filter: no Camera3D in seat %d's player instance" % seat)
++		return
++
++	cam.current = true
++	_mp8_edit_overview = false
++
++
++func _unhandled_key_input(event: InputEvent) -> void :
++
++	if not _mp8_edit_on:
++		return
++	var key := event as InputEventKey
++	if key == null or not key.pressed or key.echo:
++		return
++
++	var step: float = float(MP8_EDIT_STEPS[_mp8_edit_step_i])
++	var moved: bool = true
++
++	match key.keycode:
++		KEY_Q:
++			_mp8_edit_sel = (_mp8_edit_sel - 1 + mp8_seats) % mp8_seats
++		KEY_E:
++			_mp8_edit_sel = (_mp8_edit_sel + 1) % mp8_seats
++		KEY_I:
++			_mp8_edit_nudge(_mp8_screen_to_world(Vector2(0, - 1)) * step)
++		KEY_K:
++			_mp8_edit_nudge(_mp8_screen_to_world(Vector2(0, 1)) * step)
++		KEY_J:
++			_mp8_edit_nudge(_mp8_screen_to_world(Vector2(- 1, 0)) * step)
++		KEY_L:
++			_mp8_edit_nudge(_mp8_screen_to_world(Vector2(1, 0)) * step)
++		KEY_U:
++			_mp8_edit_turn(- MP8_EDIT_YAW_STEP)
++		KEY_O:
++			_mp8_edit_turn(MP8_EDIT_YAW_STEP)
++		KEY_5:
++			_mp8_edit_step_i = (_mp8_edit_step_i + 1) % MP8_EDIT_STEPS.size()
++		KEY_T:
++			if _mp8_edit_overview:
++				_mp8_edit_seat_camera(_mp8_edit_sel)
++			elif _mp8_edit_cam != null:
++				_mp8_edit_cam.current = true
++				_mp8_edit_overview = true
++		KEY_G:
++			_mp8_edit_link = not _mp8_edit_link
++		KEY_P:
++			_mp8_edit_toggle_pause()
++		KEY_V:
++			# [MP8] Console parts on or off, in this window only (unlike P): it is for seeing the layout.
++			# `mp8burnnopanel` hides them in every window.
++			_mp8_show_panels = not _mp8_show_panels
++			_mp8_set_panels_visible(_mp8_show_panels)
++		KEY_B:
++			# [MP8] Static station frames on or off, in this window only.
++			_mp8_show_frames = not _mp8_show_frames
++			_mp8_set_frames_visible(_mp8_show_frames)
++		KEY_0:
++			_mp8_save_layout()
++		KEY_9:
++			_mp8_edit_reset_all()
++		KEY_8:
++			_mp8_edit_report()
++			moved = false
++		_:
++			moved = false
++
++	if moved:
++		_mp8_edit_refresh()
++
++
++# [MP8] A screen direction as a horizontal world direction, from the current camera with y flattened.
++func _mp8_screen_to_world(dir: Vector2) -> Vector3 :
++
++	var cam: Camera3D = get_viewport().get_camera_3d()
++	if cam == null:
++		return Vector3(dir.x, 0.0, dir.y)
++
++	var fwd: Vector3 = - cam.global_transform.basis.z
++	var right: Vector3 = cam.global_transform.basis.x
++	fwd.y = 0.0
++	right.y = 0.0
++	if fwd.length() < 0.001:
++		fwd = Vector3(0, 0, - 1)
++	if right.length() < 0.001:
++		right = Vector3(1, 0, 0)
++
++	return (right.normalized() * dir.x - fwd.normalized() * dir.y).normalized()
++
++
++# [MP8] The linked group: the four seats of the same parity (odd are the added four, even vanilla's).
++# They move the same way in their own frames, not by one world offset, which would slide all four the
++# same way: _mp8_edit_nudge() splits the move into radial and conveyor parts and rebuilds it per seat.
++func _mp8_edit_group(seat: int) -> Array :
++
++	if not _mp8_edit_link:
++		return [seat]
++
++	var g: Array = []
++	for s in mp8_seats:
++		if (s % 2) == (seat % 2):
++			g.append(s)
++	return g
++
++
++func _mp8_edit_nudge(delta: Vector3) -> void :
++
++	var s0: int = _mp8_edit_sel
++
++	# The move in the selected seat's frame.
++	var r0: Vector3 = _mp8_radial(s0)          # radial (centre -> seat)
++	var t0: Vector3 = _mp8_goods_dir(s0)       # conveyor direction
++	var d_radial: float = delta.dot(r0)
++	var d_tangent: float = delta.dot(t0)
++
++	for s in _mp8_edit_group(s0):
++		# Rebuilt from each seat's own radial and conveyor directions.
++		var d: Vector3 = _mp8_radial(s) * d_radial + _mp8_goods_dir(s) * d_tangent
++		var row: Array = _mp8_layout[s]
++		_mp8_layout[s] = [(row[0] as Vector3) + d, row[1]]
++		_mp8_apply_station(s)                  # from the snapshot, not the current pose
++
++
++func _mp8_edit_turn(dyaw: float) -> void :
++
++	# A turn is about each station's own anchor, so the same angle applies to every seat.
++	for s in _mp8_edit_group(_mp8_edit_sel):
++		var row: Array = _mp8_layout[s]
++		_mp8_layout[s] = [row[0], float(row[1]) + dyaw]
++		_mp8_apply_station(s)
++
++
++func _mp8_edit_reset_all() -> void :
++
++	for s in mp8_seats:
++		_mp8_layout[s] = [Vector3.ZERO, 0.0]
++		_mp8_apply_station(s)              # zero offsets give the snapshot pose
++	print("[MP8] The Filter: reset to the default two-ring layout (the saved file stays until 0 overwrites it)")
++
++
++func _mp8_edit_refresh() -> void :
++
++	if _mp8_edit_panel == null:
++		return
++
++	var s: int = _mp8_edit_sel
++	var row: Array = _mp8_layout[s]
++	var d: Vector3 = row[0]
++	var anchor: Vector3 = _mp8_station_anchor(s)
++	var hw: int = _mp8_station_hardware(s).size()
++	var has_p: bool = _mp8_seat_players.get(s) != null
++
++	var grp: Array = _mp8_edit_group(s)
++	var grp_txt: String = "this seat only"
++	if _mp8_edit_link:
++		grp_txt = "linked: the four %s %s" % [
++			"added (odd)" if (s % 2) == 1 else "vanilla (even)", str(grp)]
++
++	var lines := PackedStringArray()
++	lines.append("[MP8] The Filter - layout editor    source=%s%s" % [
++		_mp8_layout_src, "    ⏸ match paused" if _mp8_paused else ""])
++	lines.append("Seat %d (%s)  parts: player %s + %d hardware" % [
++		s, "outer ring" if _mp8_push_for(s) > 0.0 else "inner ring", "yes" if has_p else "no", hw])
++	lines.append("Link: %s" % grp_txt)
++	lines.append("Offset dx=%.2f dz=%.2f dyaw=%.0f°    anchor (%.2f, %.2f) radius %.2f m" % [
++		d.x, d.z, float(row[1]), anchor.x, anchor.z, Vector2(anchor.x, anchor.z).length()])
++	lines.append("Step %.2f m    view: %s" % [
++		float(MP8_EDIT_STEPS[_mp8_edit_step_i]), "overview" if _mp8_edit_overview else "seat %d view" % s])
++	lines.append("Visible (this window only): console %s    frames %s" % [
++		"on" if _mp8_show_panels else "off", "on" if _mp8_show_frames else "off"])
++	lines.append("QE seat | IJKL move (screen directions) | UO turn %.0f° | T view" % MP8_EDIT_YAW_STEP)
++	lines.append("G link | P pause/resume | V console | B frames | 5 step | 0 save | 9 reset | 8 report")
++
++	_mp8_edit_panel.text = "\n".join(lines)
++
++
++func _mp8_edit_report() -> void :
++
++	print("[MP8] The Filter: ==== layout report (source=%s) ====" % _mp8_layout_src)
++	print("   visible (this window): player consoles=%s  static frames=%s" % [
++		"on" if _mp8_show_panels else "off", "on" if _mp8_show_frames else "off"])
++	for s in mp8_seats:
++		var row: Array = _mp8_layout[s]
++		var d: Vector3 = row[0]
++		var a: Vector3 = _mp8_station_anchor(s)
++		print("   seat %d %s  offset(%.2f, %.2f) yaw%+.0f°  anchor(%.2f, %.2f) radius %.2f  hardware %d  player %s" % [
++			s, "outer" if _mp8_push_for(s) > 0.0 else "inner", d.x, d.z, float(row[1]),
++			a.x, a.z, Vector2(a.x, a.z).length(),
++			_mp8_station_hardware(s).size(),
++			"yes" if _mp8_seat_players.get(s) != null else "no"])
++
++	# The belt crossing check, from the belts' current positions.
++	_mp8_check_belt_overlap()

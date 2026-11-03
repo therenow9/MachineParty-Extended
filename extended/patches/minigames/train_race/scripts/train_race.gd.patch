@@ -1,0 +1,321 @@
+diff --git a/minigames/train_race/scripts/train_race.gd b/minigames/train_race/scripts/train_race.gd
+--- a/minigames/train_race/scripts/train_race.gd
++++ b/minigames/train_race/scripts/train_race.gd
+@@ -41,9 +41,26 @@ var dead_players: Array[int]
+ 
+ var trains_in_proximity: Array
+ 
++# [MP8] Tunnel Hazard with 8 players. Play already scales with the count (nook_handler's nooks_to_open);
++# only spawn_players() indexes by seat. The shipped markers are stored diagonally, so network_manager's
++# _mp8_topup would put two new ones together on the train's centre line (x ~ 0). PlayerSpawnPositions is
++# shared with Stable Footing and stays on MP8_SPAWN_CONTAINERS, so this game opts out here instead.
++var mp8_owns_spawns: bool = true
++
++# The smallest gap allowed between two spawn points; below it is warned about, not blocked.
++const MP8_MIN_SPAWN_GAP: float = 1.5
++const MP8_MAX_PLAYERS: int = 8
++
++var mp8_player_count: int = 0
++
++
+ func _ready() -> void :
+ 	super._ready()
+ 
++	# Before spawn_players() reads the markers. Runs on every peer, but only the server reads
++	# them (positions go out in teleport_rpc).
++	_mp8_expand_spawns()
++
+ 	multiplayer_synchronizer.set_multiplayer_authority(1)
+ 
+ 	shake_proximity.area_entered.connect(_on_shake_proximity_entered)
+@@ -90,6 +107,46 @@ func initialize(_round_number: int, _total_rounds: int, _scores: Dictionary = {}
+ 
+ func spawn_players():
+ 
++	# [MP8] A mixed room spawns as the game does (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_spawn_players()
++		return
++
++	var player_spawn_positions = player_spawn_positions_node.get_children()
++	player_spawn_positions.shuffle()
++
++	player_count = PlayerManager.player_presences.size()
++
++
++	var counter: int = 0
++	for key in PlayerManager.player_presences.keys():
++
++		var player_presence: PlayerPresence = PlayerManager.player_presences[key]
++
++		var player_character = player_scene.instantiate()
++		players_node.add_child(player_character, true)
++
++		player_character.set_player_presence.rpc(player_presence.network_id)
++		player_character.set_marker_camera_from_path_rpc.rpc(camera.get_path())
++		# [MP8] If _mp8_expand_spawns() fell short (the scene changed), wrap around so players overlap
++		# instead of indexing past the end, and warn.
++		if counter >= player_spawn_positions.size():
++			push_warning("[MP8] Tunnel Hazard: only %d spawn points, player %d wraps around (top-up failed?)" % [
++				player_spawn_positions.size(), counter + 1])
++		player_character.teleport_rpc.rpc(
++			player_spawn_positions[counter % player_spawn_positions.size()].global_position
++		)
++		players[player_presence.network_id] = player_character
++		add_active_player_rpc.rpc(player_presence.network_id)
++		player_character.event_died.connect(_on_player_died)
++
++		player_scores[player_presence.network_id] = 0
++
++		counter += 1
++
++# The game's spawn_players, for a mixed room (D120).
++func _mp8_game_spawn_players():
++
+ 	var player_spawn_positions = player_spawn_positions_node.get_children()
+ 	player_spawn_positions.shuffle()
+ 
+@@ -117,6 +174,115 @@ func spawn_players():
+ 
+ 		counter += 1
+ 
++# [MP8] Spawns 4 -> 8. The shipped markers are 2 columns (x < 0, x > 0) of 2; the new ones are spaced
++# evenly between each column's ends, so they stay inside the shipped layout and off the centre line.
++# The shipped 4 are untouched.
++func _mp8_expand_spawns() -> void :
++
++	# A mixed room keeps the game's 4 spawns (D120); they change above 4 players only.
++	if not NetworkManager.mp8_room_extended():
++		return
++
++	var mp8_args := NetworkManager.mp8_dev_args()
++	mp8_player_count = PlayerManager.player_presences.size()
++
++	if player_spawn_positions_node == null:
++		push_warning("[MP8] Tunnel Hazard: no spawn container, not expanding to 8")
++		return
++
++	var originals: Array = []
++	for child in player_spawn_positions_node.get_children():
++		if child is Node3D:
++			originals.append(child)
++
++	var n: int = originals.size()
++	if n == 0:
++		push_warning("[MP8] Tunnel Hazard: the spawn container is empty, not expanding to 8")
++		return
++
++	if mp8_args.has("mp8noexpand"):
++		print("[MP8] Tunnel Hazard: mp8noexpand, spawns left as shipped (vanilla control run, use 4 players)")
++		return
++
++	# Nothing is added for 4 or fewer: spawn_players() shuffles the markers, so an added one could be
++	# drawn and the game would no longer match vanilla.
++	if mp8_player_count <= 4:
++		print("[MP8] Tunnel Hazard: %d players, using the shipped %d spawn points unchanged" % [mp8_player_count, n])
++		return
++
++	var want: int = mini(maxi(mp8_player_count, 5), MP8_MAX_PLAYERS)
++	if n >= want:
++		print("[MP8] Tunnel Hazard: already %d spawn points (need %d), nothing to add" % [n, want])
++		return
++
++	# Two columns by the sign of x (the shipped markers are two on each side).
++	var columns: Dictionary = {"left": [], "right": []}
++	for m in originals:
++		if m.position.x < 0.0:
++			columns["left"].append(m)
++		else:
++			columns["right"].append(m)
++
++	# Each column sorted by z, so its ends come first and last.
++	for key in columns.keys():
++		columns[key].sort_custom(func(a, b): return a.position.z < b.position.z)
++
++	var need: int = want - n
++	var added: Array = []
++
++	# The new points alternate between the columns, to keep the sides even.
++	var order: Array = ["left", "right"]
++	var per_column: Dictionary = {"left": 0, "right": 0}
++	for j in need:
++		per_column[order[j % order.size()]] += 1
++
++	for key in order:
++
++		var col: Array = columns[key]
++		var add: int = per_column[key]
++		if add <= 0:
++			continue
++
++		# Interpolating needs both ends; the shipped columns have two each, so this fires only if the scene changes.
++		if col.size() < 2:
++			push_warning("[MP8] Tunnel Hazard: column %s has only %d shipped points, cannot interpolate, skipping it" % [key, col.size()])
++			continue
++
++		var a: Node3D = col[0]
++		var b: Node3D = col[col.size() - 1]
++
++		for i in add:
++			# t runs 1/(add+1) .. add/(add+1): evenly between the ends, x included.
++			var t: float = float(i + 1) / float(add + 1)
++			var extra: Node3D = a.duplicate()
++			extra.name = "MP8Spawn_%s_%d" % [key, i]
++			player_spawn_positions_node.add_child(extra)
++			extra.position = a.position.lerp(b.position, t)
++			added.append(extra)
++
++	# Logs the smallest gap, so a layout change can be checked against a number.
++	var all_points: Array = originals + added
++	var min_gap: float = INF
++	var min_pair: String = ""
++	for i in all_points.size():
++		for j in range(i + 1, all_points.size()):
++			var d: float = all_points[i].position.distance_to(all_points[j].position)
++			if d < min_gap:
++				min_gap = d
++				min_pair = "%s↔%s" % [all_points[i].name, all_points[j].name]
++
++	var parts: Array = []
++	for m in added:
++		parts.append("%s(%.2f,%.2f)" % [m.name, m.position.x, m.position.z])
++
++	print("[MP8] Tunnel Hazard: %d players - spawns %d -> %d, smallest gap %.2f m (%s); added %s" % [
++		mp8_player_count, n, all_points.size(), min_gap, min_pair, ", ".join(parts)])
++
++	if min_gap < MP8_MIN_SPAWN_GAP:
++		push_warning("[MP8] Tunnel Hazard: smallest gap %.2f m < %.2f, players may spawn overlapping" % [
++			min_gap, MP8_MIN_SPAWN_GAP])
++
++
+ func all_players_loaded():
+ 	super.all_players_loaded()
+ 
+@@ -161,6 +327,49 @@ func process_camera_shake(_delta: float) -> void :
+ 
+ func check_game_end():
+ 
++	# [MP8] A mixed room ends and scores as the game does (D116, D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_check_game_end()
++		return
++
++	if game_end:
++		return
++
++	if active_players.size() > 1:
++		return
++
++	game_end = true
++
++	for i in dead_players.size():
++		var network_id = dead_players[i]
++		player_scores[network_id] = i
++
++	for network_id in players.keys():
++		if dead_players.has(network_id):
++			continue
++		player_scores[network_id] = _mp8_survivor_score()
++
++
++
++	if active_players.size() == 1:
++		if nook_handler.nooks_occupied_count == 1 and nook_handler.nooks_opened == 1:
++			for active_player in active_players.values():
++				active_player.trigger_achievement_rpc.rpc()
++				break
++
++	_mp8_log_scores()
++
++	player_scores_finalized.emit(player_scores)
++
++	await get_tree().create_timer(2.0).timeout
++	set_minigame_sfx_linear_volume_rpc.rpc(0.0)
++
++	state_machine.transition_to_rpc.rpc(&"Finished")
++	set_effects_visibility_rpc.rpc(false)
++
++# The game's check_game_end, for a mixed room (D120).
++func _mp8_game_check_game_end():
++
+ 	if game_end:
+ 		return
+ 
+@@ -194,12 +403,53 @@ func check_game_end():
+ 	state_machine.transition_to_rpc.rpc(&"Finished")
+ 	set_effects_visibility_rpc.rpc(false)
+ 
++# [MP8] Server-side log of the final scores; changes none. The n-th to die scores n - 1 (deaths on
++# one train still count in order), the survivor _mp8_survivor_score(). The disconnect count is
++# derived (starting count - dead - survivors), to check the winner's score against.
++func _mp8_log_scores() -> void :
++
++	var rows := PackedStringArray()
++
++	for i in dead_players.size():
++		var id: int = dead_players[i]
++		rows.append("death #%d %s %d pts" % [i + 1, _mp8_name(id), i])
++
++	var survivors: int = 0
++	for network_id in active_players.keys():
++		rows.append("survivor %s %d pts" % [_mp8_name(network_id), _mp8_survivor_score()])
++		survivors += 1
++		break
++
++	print("[MP8] Tunnel Hazard scores (%d at start / %d dead / %d disconnected, derived): %s" % [
++		player_count, dead_players.size(),
++		maxi(player_count - dead_players.size() - survivors, 0),
++		" | ".join(rows)
++	])
++
++
++# [MP8] dead_players.size() + 1, not vanilla's player_count (the starting count): a player who
++# disconnects never enters dead_players, so player_count would overpay the winner. The + 1 keeps
++# vanilla's 2-point gap over the last to die. A mixed room runs the game's check_game_end (D120).
++func _mp8_survivor_score() -> int :
++	return dead_players.size() + 1
++
++
++func _mp8_name(network_id: int) -> String :
++
++	if players.has(network_id) and is_instance_valid(players[network_id]):
++		return String(players[network_id].player_presence.network_name)
++	return "id%d" % network_id
++
++
+ @rpc("any_peer", "call_local", "reliable")
+ func remove_player_rpc(_network_id: int):
+ 
+ 	var player_instance = players.get(_network_id, null)
+ 	if player_instance:
+-		player_instance.cleanup_rpc.rpc()
++		# [MP8] Only the server sends cleanup_rpc, as in Inside Job's remove_player_rpc: this runs on
++		# every peer, and the first cleanup already frees the node. A mixed room sends from every peer.
++		if NetworkManager.mp8_sends_broadcast(multiplayer.is_server()):
++			player_instance.cleanup_rpc.rpc()
+ 		player_instance.queue_free()
+ 		players.erase(_network_id)
+ 		active_players.erase(_network_id)
+@@ -207,6 +457,9 @@ func remove_player_rpc(_network_id: int):
+ 
+ 
+ func player_disconnected(_network_id: int):
++	# [MP8] The room is read before the await, which can outlast this minigame's latch. A mixed room
++	# keeps the game's own end check (D116).
++	var mp8_ext: bool = NetworkManager.mp8_room_extended()
+ 	super.player_disconnected(_network_id)
+ 
+ 	if not multiplayer.is_server():
+@@ -215,6 +468,12 @@ func player_disconnected(_network_id: int):
+ 	remove_player_rpc.rpc(_network_id)
+ 	await get_tree().create_timer(1.0).timeout
+ 
++	# [MP8] Before everyone has loaded, spawn_players() has not run and active_players is empty, so
++	# check_game_end() would end a game that never started. The cleanup above still runs.
++	if mp8_ext and not is_all_player_loaded:
++		print("[MP8] Tunnel Hazard: %d disconnected before the game started, skipping the end check" % _network_id)
++		return
++
+ 	check_game_end()
+ 
+ func _on_countdown_tick(time_left: int):

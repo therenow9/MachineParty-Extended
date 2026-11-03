@@ -1,0 +1,76 @@
+diff --git a/minigames/spine_breaker/components/device/states/attached_state.gd b/minigames/spine_breaker/components/device/states/attached_state.gd
+--- a/minigames/spine_breaker/components/device/states/attached_state.gd
++++ b/minigames/spine_breaker/components/device/states/attached_state.gd
+@@ -26,6 +26,72 @@ func can_enter() -> bool:
+ 	return true
+ 
+ func enter(_msg: Dictionary = {}) -> void :
++
++	# [MP8] A mixed room runs the game's enter (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_enter(_msg)
++		return
++	state_time = 0.0
++	owner.can_kick = false
++
++	var target = _msg.get("target", null)
++	var timed_out = owner.activation_timer.is_stopped()
++	var saved_pos = owner.global_position
++
++	owner.velocity = Vector3.ZERO
++	owner.global_position = Vector3.DOWN * 100.0
++	owner.attach_entered_rpc.rpc()
++
++	if target:
++
++		owner.attached_to = target
++
++		# [MP8] Bind the target to this device. The player's `spine_breaker_device` is the first
++		# device, fixed at setup_rpc; with two devices, throwing would otherwise throw the wrong one.
++		NetworkManager.mp8_rpc(owner, &"mp8_bind_rpc", [target.get_path()])
++		if multiplayer.is_server():
++			print("[MP8] Spine Breaker: device %d attached to %s (fuse %s)" % [
++				owner.mp8_index, String(target.name),
++				("stopped, executing now" if timed_out else "%.1f s" % owner.activation_timer.time_left)
++			])
++
++		owner.set_is_attached_rpc.rpc(true)
++		var attach_direction = directions.FORWARD
++		if multiplayer.is_server():
++			var vis: Node3D = target.visuals
++
++			var attach_global_position = saved_pos
++
++			var visual_direction: Vector3 = (attach_global_position - vis.global_position)
++			var attach_dot = - vis.global_basis.z.dot(visual_direction.normalized())
++
++			var attached_from_normalized: float = ((1.0 + attach_dot) * 0.5) * 4.0
++			var attached_from_direction_key: int = floor(attached_from_normalized)
++
++			if attachedFromDirection.find_key(attached_from_direction_key) == null: attach_direction = directions.FORWARD
++
++		target.set_spine_breaker_rpc.rpc(true, false, attach_direction)
++
++		if not timed_out:
++
++			attached_to = target
++			attached_to.spine_breaker_attached_rpc.rpc(
++				owner.activation_timer.is_stopped()
++			)
++
++		else:
++
++			attached_to = target
++			state_machine.transition_to(&"BreakSpine", {
++				"target": attached_to
++			})
++
++	else:
++
++		state_machine.transition_to(&"Idle")
++
++# The game's enter, for a mixed room (D120).
++func _mp8_game_enter(_msg: Dictionary = {}) -> void :
+ 	state_time = 0.0
+ 	owner.can_kick = false
+ 

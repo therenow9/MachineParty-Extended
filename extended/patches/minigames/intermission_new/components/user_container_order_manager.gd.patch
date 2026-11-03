@@ -1,0 +1,57 @@
+diff --git a/minigames/intermission_new/components/user_container_order_manager.gd b/minigames/intermission_new/components/user_container_order_manager.gd
+--- a/minigames/intermission_new/components/user_container_order_manager.gd
++++ b/minigames/intermission_new/components/user_container_order_manager.gd
+@@ -3,7 +3,53 @@ class_name Intermission_UserContainerOrder_Manager extends Node
+ @export var intermission_score: Intermission_ScoreScreen
+ @export var user_container_order_worker_instance: PackedScene
+ 
++# [MP8] Both target slots come from the rank tables, x as well as y: the game reads the other row's live x,
++# and a swap can fire again mid-tween, so with two columns a row lands in the wrong one.
++# Intermission_ScoreScreen keeps `rank_y_positions` and `mp8_rank_x_positions`; in one column every x is equal.
+ func switch_places(container1: Intermission_UserContainer, container2: Intermission_UserContainer):
++
++	# The game's 4-row board in a mixed room (D116, Intermission_ScoreScreen.mp8_apply_layout).
++	if intermission_score != null and intermission_score.get("mp8_extended_layout") == false:
++		_mp8_switch_places_vanilla(container1, container2)
++		return
++
++	var rank_container1 = container1.user_rank_value
++	var rank_container2 = container2.user_rank_value
++
++	var pos_to_move_container1_to = _mp8_slot_position(container1, rank_container2)
++	var pos_to_move_container2_to = _mp8_slot_position(container2, rank_container1)
++
++	var worker: Intermission_UserContainerOrder_Worker = user_container_order_worker_instance.instantiate()
++	add_child(worker)
++	worker.move_containers(container1, pos_to_move_container1_to, container2, pos_to_move_container2_to)
++	container1.set_user_rank_label(rank_container2)
++	container2.set_user_rank_label(rank_container1)
++
++
++# [MP8] Slot position for a 1-based rank; a rank missing from the tables leaves the row where it is.
++# The x table is read with Object.get() so an unpatched score screen falls back to the game's behaviour.
++func _mp8_slot_position(container: Intermission_UserContainer, rank: int) -> Vector3:
++
++	var pos: Vector3 = container.transform.origin
++	var index: int = rank - 1
++	if index < 0 or intermission_score == null:
++		return pos
++
++	var ys: Array = intermission_score.rank_y_positions
++	if index < ys.size():
++		pos.y = ys[index]
++
++	var xs_value = intermission_score.get("mp8_rank_x_positions")
++	if xs_value is Array:
++		var xs: Array = xs_value
++		if index < xs.size():
++			pos.x = xs[index]
++
++	return pos
++
++
++# [MP8] The game's switch_places, verbatim: the target x is the other row's live x.
++func _mp8_switch_places_vanilla(container1: Intermission_UserContainer, container2: Intermission_UserContainer):
+ 	var pos_to_move_container1_to = Vector3(
+ 		container2.transform.origin.x, 
+ 		intermission_score.rank_y_positions[container2.user_rank_value - 1], 

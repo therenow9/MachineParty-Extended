@@ -1,0 +1,201 @@
+<title>More Cosmetics Online Screen</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: the same review bench as the art pages, one column of decision blocks;
+   every shot is the game's own dark screen, so the page commits to one dark look. */
+:root {
+  color-scheme: dark;
+  --bench: #141210;
+  --plate: #1d1a17;
+  --rule: #3a342d;
+  --ink: #ece6dc;
+  --dim: #a59c8f;
+  --brass: #d1a253;
+  --sink: #e2795a;
+  --display: "Chakra Petch", "Bahnschrift", "Segoe UI", sans-serif;
+  --body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+body { background: var(--bench); color: var(--ink); font: 15px/1.55 var(--body); }
+main { max-width: 1180px; margin: 0 auto; padding-inline: clamp(16px, 4vw, 40px); padding-block: 32px 64px; display: grid; gap: 44px; }
+h1, h2, h3 { font-family: var(--display); font-weight: 600; text-wrap: balance; margin: 0; letter-spacing: 0.01em; }
+h1 { font-size: clamp(26px, 4vw, 38px); }
+h2 { font-size: 22px; }
+h3 { font-size: 16px; }
+p, ul { margin: 0; max-width: 72ch; }
+ul { padding-left: 20px; display: grid; gap: 4px; }
+.lede { color: var(--dim); }
+.eyebrow { font: 500 12px/1 var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--brass); }
+header, section { display: grid; gap: 16px; }
+.block { display: grid; gap: 14px; padding: 18px; background: var(--plate); border: 1px solid var(--rule); border-radius: 6px; }
+.facts { font: 13px/1.5 var(--mono); color: var(--dim); font-variant-numeric: tabular-nums; }
+.facts b { color: var(--ink); font-weight: 500; }
+.warn { color: var(--sink); }
+.shots { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 12px; }
+figure { margin: 0; display: grid; gap: 6px; min-width: 0; }
+figure img { width: 100%; aspect-ratio: 16 / 9; display: block; background: #000; border-radius: 3px; }
+figcaption { font: 12px/1.35 var(--mono); color: var(--dim); }
+.setup { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.seg { display: inline-flex; border: 1px solid var(--rule); border-radius: 5px; overflow: hidden; }
+.seg button { font: 500 13px/1 var(--mono); padding: 9px 14px; background: transparent; color: var(--dim); border: 0; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--brass); color: var(--bench); }
+.seg button:focus-visible, .pick input:focus-visible + span, button:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+.picks { display: grid; gap: 18px; }
+.pick { display: grid; gap: 8px; }
+.pick .q { font-weight: 600; }
+.pick .opts { display: flex; flex-wrap: wrap; gap: 8px; }
+.pick label { display: inline-flex; cursor: pointer; }
+.pick input { position: absolute; opacity: 0; pointer-events: none; }
+.pick label span { padding: 7px 12px; border: 1px solid var(--rule); border-radius: 5px; font-size: 14px; }
+.pick input:checked + span { border-color: var(--brass); color: var(--brass); background: rgba(209, 162, 83, 0.08); }
+textarea { width: 100%; box-sizing: border-box; background: var(--bench); color: var(--ink); border: 1px solid var(--rule); border-radius: 5px; padding: 10px; font: 13px/1.5 var(--mono); }
+#out { min-height: 170px; }
+.copy { justify-self: start; font: 600 14px/1 var(--display); letter-spacing: 0.04em; padding: 10px 18px; background: var(--brass); color: var(--bench); border: 0; border-radius: 5px; cursor: pointer; }
+.copied { font: 13px var(--mono); color: var(--dim); }
+.crop { width: 100%; max-width: 720px; background-repeat: no-repeat; image-rendering: pixelated; border-radius: 3px; background-color: #000; }
+.decided { font: 13px/1.6 var(--mono); color: var(--dim); }
+table { border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: 3px 10px; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+tr.ours td:first-child { color: var(--brass); }
+.tilegrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 10px; }
+.tilegrid figure img { aspect-ratio: 1; image-rendering: pixelated; }
+.tilegrid figcaption.ours { color: var(--brass); }
+</style>
+
+<main>
+  <header>
+    <div class="eyebrow">More Cosmetics · online screen</div>
+    <h1>Every tile on the customization screen</h1>
+    <p class="lede">The online customization screen as built, in each setup, and every tile on its own as the game renders it. A white frame on a tile in the full screen is the mouse cursor resting there.</p>
+    <div class="setup">
+      <span class="facts">Show the screen</span>
+      <div class="seg" role="group" aria-label="Setup" id="setups"></div>
+    </div>
+  </header>
+
+  <section>
+    <h2>The screen</h2>
+    <div class="block">
+      <div class="shots">
+        <figure><img data-shot="built_ours" alt="The built screen wearing our chef's hat, monocle and teal"><figcaption>Wearing ours: chef's hat, monocle, teal; the caret is on teal.</figcaption></figure>
+        <figure><img data-shot="built_game" alt="The built screen wearing the game's top hat, sunglasses and purple"><figcaption>Wearing the game's: top hat, sunglasses, purple. The labels keep the game's codes.</figcaption></figure>
+      </div>
+      <p class="facts" id="facts"></p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Every tile</h2>
+    <div class="block">
+      <p>Each tile's own 128×128 preview at one moment of its turn (the game spins every tile), glasses first. Ours are marked in brass.</p>
+      <div class="tilegrid" id="tilegrid"></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>The tiles, close up</h2>
+    <div class="block">
+      <div class="crop" data-crop="built_game" role="img" aria-label="The item grid at twice its size"></div>
+      <p id="order"></p>
+      <div style="overflow-x:auto"><table class="facts" id="tiles"></table></div>
+      <p class="facts">Measured from each tile's own preview (128×128) at one moment of its turn: <b>lit</b> is the share of pixels above luma 0.06, <b>brightness</b> their mean luma, and <b>offset</b> how far their middle sits from the tile's centre, as fractions of the tile (+x right, +y down). <span id="game-range"></span></p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Your picks</h2>
+    <div class="block picks" id="picks"></div>
+  </section>
+</main>
+
+<script>
+const DATA = /*%%DATA%%*/null;
+const DECIDED = ["layout: B (7 columns)", "tiles: eyepatch a little darker, kippah a little brighter"];
+const LIFTED = DATA.grid.lifted;
+const PICKS = [
+  ["screen", "The built screen?", [["approve", "Approve"], ["rework", "Rework (say what in notes)"]]],
+];
+let setup = Object.keys(DATA.setups)[0];
+
+function render() {
+  const d = DATA.setups[setup];
+  document.querySelectorAll("img[data-shot]").forEach(img => { img.src = d.shots[img.dataset.shot]; });
+  const f = d.facts;
+  // The crop frames the item grid with a 6-px margin, from the saved screen's tile rects.
+  const [x0, y0, x1, y1] = [f.grid[0] - 6, f.grid[1] - 6, f.grid[2] + 6, f.grid[3] + 6];
+  const [cw, ch, w, h] = [f.canvas[0], f.canvas[1], x1 - x0, y1 - y0];
+  document.querySelectorAll("[data-crop]").forEach(el => {
+    el.style.backgroundImage = `url(${d.shots[el.dataset.crop]})`;
+    el.style.aspectRatio = `${w} / ${h}`;
+    el.style.backgroundSize = `${cw / w * 100}% auto`;
+    el.style.backgroundPosition = `${x0 / (cw - w) * 100}% ${y0 / (ch - h) * 100}%`;
+  });
+  document.getElementById("facts").innerHTML =
+    `Tiles <b>${DATA.grid.tile} px</b> on the ${f.canvas[0]}×${f.canvas[1]} canvas, <b>${Math.round(DATA.grid.tile * f.scale)} px</b> on your ${f.window[0]}×${f.window[1]} window (computed). ` +
+    `${f.boxes} tiles, swatches and buttons checked: none overlaps another or the game's controls, and all are on the canvas.`;
+  document.getElementById("tiles").innerHTML =
+    `<tr><th>Tile</th><th>lit</th><th>brightness</th><th>offset x</th><th>offset y</th><th></th></tr>` +
+    f.tiles.map(t => `<tr class="${t.id.startsWith("xc_") ? "ours" : ""}"><td>${t.id}</td><td>${t.cover.toFixed(3)}</td><td>${t.luma.toFixed(3)}</td>` +
+      `<td>${t.dx >= 0 ? "+" : ""}${t.dx.toFixed(3)}</td><td>${t.dy >= 0 ? "+" : ""}${t.dy.toFixed(3)}</td><td>${LIFTED.includes(t.id) ? "lifted" : ""}</td></tr>`).join("");
+  const ids = f.tiles.map(t => t.id);
+  const order = ids.filter(id => id.includes("glasses")).concat(ids.filter(id => !id.includes("glasses")));
+  document.getElementById("tilegrid").innerHTML = order.map(id =>
+    `<figure><img src="${d.tiles[id]}" alt="${id} tile"><figcaption class="${id.startsWith("xc_") ? "ours" : ""}">${id.replace(/^xc_/, "").replace(/_/g, " ")}</figcaption></figure>`).join("");
+  const game = f.tiles.filter(t => !t.id.startsWith("xc_")).sort((a, b) => a.luma - b.luma);
+  document.getElementById("game-range").textContent = `The game's own tiles run from ${game[0].luma.toFixed(3)} (${game[0].id}) to ` +
+    `${game[game.length - 1].luma.toFixed(3)} in brightness, median ${((game[Math.floor((game.length - 1) / 2)].luma + game[Math.ceil((game.length - 1) / 2)].luma) / 2).toFixed(3)}.`;
+  const hats = ids.filter(id => !id.includes("glasses")).length;
+  document.getElementById("order").textContent = `${ids.length} tiles, ${DATA.grid.columns} to a row: the game's hats, then our ${ids.filter(id => id.startsWith("xc_") && !id.includes("glasses")).length}, ` +
+    `then the game's glasses and our ${ids.filter(id => id.startsWith("xc_") && id.includes("glasses")).length}. ${hats} hats in all.`;
+  document.querySelectorAll(".seg button").forEach(b => b.setAttribute("aria-pressed", String(b.id === "setup-" + setup)));
+}
+
+function buildPicks() {
+  const root = document.getElementById("picks");
+  root.insertAdjacentHTML("beforeend", `<p class="decided">Already picked: ${DECIDED.join(" · ")}</p>`);
+  for (const [key, q, opts] of PICKS) {
+    const box = document.createElement("div");
+    box.className = "pick";
+    box.innerHTML = `<div class="q">${q}</div><div class="opts">` + opts.map(([v, label]) =>
+      `<label><input type="radio" name="${key}" id="${key}-${v}" value="${v}"><span>${label}</span></label>`).join("") + `</div>`;
+    root.appendChild(box);
+  }
+  root.insertAdjacentHTML("beforeend",
+    `<div class="pick"><label class="q" for="notes">Notes</label><textarea id="notes" rows="4"></textarea></div>` +
+    `<div class="pick"><label class="q" for="out">Copy this back</label><textarea id="out" readonly></textarea></div>` +
+    `<div class="setup"><button type="button" class="copy" id="copy">Copy</button><span class="copied" id="copied"></span></div>`);
+  root.addEventListener("input", update);
+  root.addEventListener("change", update);
+  document.getElementById("copy").addEventListener("click", () => {
+    const out = document.getElementById("out");
+    navigator.clipboard.writeText(out.value).then(() => { document.getElementById("copied").textContent = "Copied"; },
+      () => { out.select(); document.getElementById("copied").textContent = "Selected; press Ctrl+C"; });
+  });
+  update();
+}
+
+function update() {
+  const lines = DECIDED.slice();
+  for (const [key] of PICKS) {
+    const on = document.querySelector(`input[name="${key}"]:checked`);
+    lines.push(`${key}: ${on ? on.value : "(no pick)"}`);
+  }
+  const notes = document.getElementById("notes").value.trim();
+  lines.push("notes: " + (notes ? notes.replace(/\n/g, " / ") : ""));
+  document.getElementById("out").value = lines.join("\n");
+  document.getElementById("copied").textContent = "";
+}
+
+for (const [key, s] of Object.entries(DATA.setups)) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.id = "setup-" + key;
+  b.textContent = s.label;
+  b.addEventListener("click", () => { setup = key; render(); });
+  document.getElementById("setups").appendChild(b);
+}
+render();
+buildPicks();
+</script>

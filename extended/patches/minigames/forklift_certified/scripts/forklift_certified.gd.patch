@@ -1,0 +1,1136 @@
+diff --git a/minigames/forklift_certified/scripts/forklift_certified.gd b/minigames/forklift_certified/scripts/forklift_certified.gd
+--- a/minigames/forklift_certified/scripts/forklift_certified.gd
++++ b/minigames/forklift_certified/scripts/forklift_certified.gd
+@@ -2,6 +2,13 @@ extends Minigame
+ 
+ class_name ForkliftCertifiedMinigame
+ 
++# ============================================================ [MP8] Forklift Certified for 8 players
++#
++# One player per bay. Above four players, four more bays and spawns go at the mid-edges of the yard (the
++# section at the end), and the crates go in the free centre cell, ten at most. The team roster runs here
++# with teams of one; crate_manager bounds its sampler, and spawn_blood_rpc reuses the scene's four decals.
++# ==============================================================================
++
+ const player_scene = preload("uid://bsv3e0qog8k42")
+ 
+ @export_category("Variables")
+@@ -44,6 +51,25 @@ var set_inactive_area_to: int = -2
+ 
+ var ach_crate_number: int = 4
+ 
++
++# ------------------------------------------------------------------ [MP8] Constants and state
++
++# One row per bay, [position Vector3, yaw degrees float]: bay i spawns at row i.
++var _mp8_spawns: Array = []
++
++# [bay index] -> [network_id, ...]. A bay's members are eliminated together; alive and score checks use this.
++var _mp8_area_members: Array = []
++
++# network_manager's spawn top-up leaves this minigame alone: its markers would make _mp8v_add_spawn_markers
++# see more than the shipped four and add none.
++var mp8_owns_spawns: bool = true
++
++var _mp8_blood_pool: Array = []           # placed decals, oldest first; reused once the scene's are used up
++
++# The yard's (x, z) scale this match, from the host's zz_mp8v_add_delivery_areas_rpc; (1, 1) when not expanded.
++var _mp8v_yard: Vector2 = Vector2.ONE
++
++
+ func _ready() -> void :
+ 	super._ready()
+ 
+@@ -84,7 +110,12 @@ func initialize(_round_number: int, _total_rounds: int, _scores: Dictionary = {}
+ 	super.initialize(_round_number, _total_rounds, _scores)
+ 
+ 	spawn_players()
+-	crate_manager.spawn_crates(PlayerManager.player_presences.keys().size() * 2)
++
++	# A mixed room asks for the game's crates (D120).
++	if NetworkManager.mp8_room_extended():
++		crate_manager.spawn_crates(_mp8_apply_crate_profile(PlayerManager.player_presences.keys().size()))
++	else:
++		crate_manager.spawn_crates(PlayerManager.player_presences.keys().size() * 2)
+ 
+ 	round_number = _round_number
+ 	total_rounds = _total_rounds
+@@ -92,32 +123,66 @@ func initialize(_round_number: int, _total_rounds: int, _scores: Dictionary = {}
+ 
+ 	state_machine.transition_to_rpc.rpc(&"Round", {"round": _round_number, "total": _total_rounds})
+ 
++
++# [MP8] The shipped box and separation with a 10-crate cap; above four players, the free centre cell.
++func _mp8_apply_crate_profile(count: int) -> int :
++
++	crate_manager.spawn_radius = 4.0
++	crate_manager.mp8_crate_cap = MP8V_CRATE_CAP
++	_mp8v_set_crate_region()
++	return count * 2
++
++
+ func spawn_players():
+ 
+-	var shuffled_indicies: Array[int] = []
+-	for i in player_spawn_positions_node.get_child_count():
+-		shuffled_indicies.append(i)
+-	shuffled_indicies.shuffle()
++	if not NetworkManager.mp8_room_extended():
++		print("[MP8] Forklift Certified: a mixed room, the game's spawns, rounds and lights")
++		_mp8_game_spawn_players()
++		return
+ 
+-	var spawn_positions = player_spawn_positions_node.get_children()
+-	var delivery_area_nodes = delivery_area_parent.get_children()
+ 	player_count = PlayerManager.player_presences.size()
+ 
++	# [MP8] Above four players, four more bays at the mid-edges, each with its own spawn.
++	_mp8v_expand_yard()
++
++	var area_nodes = delivery_area_parent.get_children()
++	var area_count: int = area_nodes.size()
++
++	# [MP8] One player per bay, the bays in a shuffled order as in vanilla; bay i spawns at _mp8_spawns[i].
++	var shuffled_areas: Array[int] = []
++	for i in area_count:
++		shuffled_areas.append(i)
++	shuffled_areas.shuffle()
++
++	_mp8_area_members = []
++	for i in area_count:
++		_mp8_area_members.append([])
++
++	if player_count > shuffled_areas.size():
++		# Only when the yard could not expand. Doubling up beats leaving a player unspawned: check_game_end
++		# waits for one team left, so a missing player can keep the match from ending.
++		push_warning("[MP8] Forklift Certified: %d players but only %d bays; the extra players double up" % [player_count, shuffled_areas.size()])
++
+ 	var counter: int = 0
+ 	for i in PlayerManager.player_presences.size():
+ 		var network_id = PlayerManager.player_presences.keys()[i]
+ 
++		var area_i: int = shuffled_areas[counter % shuffled_areas.size()]
++		var row: Array = _mp8_spawns[area_i]
++
+ 		var player_character = player_scene.instantiate()
+ 		players_node.add_child(player_character, true)
+ 
+ 		player_character.set_player_presence.rpc(network_id)
+ 		player_character.setup_rpc.rpc(
+-			spawn_positions[shuffled_indicies[counter]].global_position, 
+-			spawn_positions[shuffled_indicies[counter]].global_rotation, 
+-			delivery_areas[shuffled_indicies[counter]].get_path()
++			row[0] as Vector3,
++			Vector3(0.0, deg_to_rad(float(row[1])), 0.0),
++			delivery_areas[area_i].get_path()
+ 		)
+ 
+-		delivery_area_nodes[shuffled_indicies[counter]].set_owner_rpc.rpc(network_id)
++		area_nodes[area_i].set_owner_rpc.rpc(network_id)
++
++		_mp8_area_members[area_i].append(network_id)
+ 
+ 		players[network_id] = player_character
+ 		active_players[network_id] = player_character
+@@ -125,12 +190,18 @@ func spawn_players():
+ 
+ 		counter += 1
+ 
++	_mp8_refresh_score_mults()
++	_mp8_log_teams()
++
+ func cleanup():
+ 
+ 	if is_multiplayer_authority():
+ 		queue_free()
+ 
+ func player_disconnected(_network_id: int):
++	# [MP8] The room is read before the await, which can outlast this minigame's latch. A mixed room
++	# keeps the game's own end check (D116).
++	var mp8_ext: bool = NetworkManager.mp8_room_extended()
+ 	super.player_disconnected(_network_id)
+ 
+ 	if not multiplayer.is_server():
+@@ -139,25 +210,39 @@ func player_disconnected(_network_id: int):
+ 	disconnect_player_rpc.rpc(_network_id)
+ 	await get_tree().create_timer(1.0).timeout
+ 
++	# [MP8] A disconnect before the round starts (someone still loading) must not end it: spawn_players()
++	# has not run, so _mp8_active_team_count() is 0 and check_game_end's from_disconnect return, which
++	# needs more than one team, does not stop it. The cleanup above still runs.
++	if mp8_ext and not is_all_player_loaded:
++		print("[MP8] Forklift Certified: %d disconnected before the round started; skipping the end check" % _network_id)
++		return
++
+ 	check_game_end(true)
+ 
+ func check_game_end(from_disconnect: bool = false):
+ 
+-	if active_players.size() > 1:
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_check_game_end(from_disconnect)
++		return
++
++	# [MP8] Counts teams, not players: two players left may be one team (the match is over) or two.
++	# With one player per bay it equals vanilla's `active_players.size()`.
++	if _mp8_active_team_count() > 1:
+ 		if from_disconnect:
+ 			return
+ 		else:
+ 			start_new_round()
+ 			return
+ 
++	# [MP8] Every surviving player gets the winner's score (vanilla breaks after the first), so both
++	# members of a winning team score.
+ 	for network_id in active_players.keys():
+ 		player_scores[network_id] = player_count
+ 
+-
+-		break
+-
+ 	player_scores_finalized.emit(player_scores)
+ 
++	_mp8_log_scores()
++
+ 	await get_tree().create_timer(2.0).timeout
+ 	set_minigame_sfx_linear_volume_rpc.rpc(0.0)
+ 
+@@ -194,6 +279,10 @@ func round_finished():
+ 
+ func remove_zero_scoring_players():
+ 
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_remove_zero_scoring_players()
++		return
++
+ 	var zero_scoring_areas: Array[ForkilftCertifiedDeliveryArea]
+ 	var zero_scoring_player_ids: Array[int]
+ 
+@@ -204,11 +293,15 @@ func remove_zero_scoring_players():
+ 
+ 		if delivery_area.crates_in_area.size() == 0:
+ 			zero_scoring_areas.append(delivery_area)
+-			zero_scoring_player_ids.append(delivery_area.belongs_to_id)
++			# [MP8] The bay's whole team goes, not only belongs_to_id.
++			for pid in _mp8_members_of_area(delivery_area):
++				zero_scoring_player_ids.append(pid)
+ 
+ 	var players_removed: Array[int]
+ 	for network_id in zero_scoring_player_ids:
+ 		remove_active_player_rpc.rpc(network_id)
++		# dead_players grows only in the loop below, so everyone eliminated this round scores the same,
++		# teammates included.
+ 		player_scores[network_id] = dead_players.size()
+ 		players_removed.append(network_id)
+ 
+@@ -221,7 +314,12 @@ func remove_zero_scoring_players():
+ 
+ func calculate_results():
+ 
+-	if active_players.keys().size() <= 1:
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_calculate_results()
++		return
++
++	# [MP8] Counts teams, as in check_game_end.
++	if _mp8_active_team_count() <= 1:
+ 		return
+ 
+ 
+@@ -236,10 +334,13 @@ func calculate_results():
+ 
+ 	var player_ids_by_score: Dictionary
+ 	for delivery_area in active_delivery_areas:
+-		var score = delivery_area.crates_in_area.size()
++		# [MP8] The multiplied count (_mp8_refresh_score_mults); 1 per crate with a player per bay.
++		var score = _mp8_area_score(delivery_area)
+ 		if not player_ids_by_score.has(score):
+ 			player_ids_by_score[score] = []
+-		player_ids_by_score[score].append(delivery_area.belongs_to_id)
++		# [MP8] The bay's whole team goes into the score bucket, not only belongs_to_id.
++		for pid in _mp8_members_of_area(delivery_area):
++			player_ids_by_score[score].append(pid)
+ 
+ 	var lowest_score: int = player_ids_by_score.keys().min()
+ 	var heighest_score: int = player_ids_by_score.keys().max()
+@@ -252,7 +353,7 @@ func calculate_results():
+ 			player_scores[player_id] = dead_players.size()
+ 			players_removed.append(player_id)
+ 			for delivery_area in all_delivery_areas:
+-				if delivery_area.belongs_to_id == player_id:
++				if _mp8_area_has_member(delivery_area, player_id):
+ 					delivery_area.set_owner_rpc.rpc(set_inactive_area_to)
+ 
+ 	for score in player_ids_by_score.keys():
+@@ -265,7 +366,7 @@ func calculate_results():
+ 				player_scores[network_id] = dead_players.size()
+ 				players_removed.append(network_id)
+ 				for delivery_area in all_delivery_areas:
+-					if delivery_area.belongs_to_id == network_id:
++					if _mp8_area_has_member(delivery_area, network_id):
+ 						delivery_area.set_owner_rpc.rpc(set_inactive_area_to)
+ 
+ 	for pid in players_removed:
+@@ -318,6 +419,36 @@ func disconnect_player_rpc(_network_id: int):
+ 		active_players[_network_id].queue_free()
+ 		active_players.erase(_network_id)
+ 
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_disconnect_bay(_network_id)
++		return
++
++	# [MP8] A bay closes only when its last member leaves, and stays in delivery_areas: _mp8_area_members
++	# is aligned with its indices. A closed bay is filtered by `belongs_to_id <= check_id_threshold`
++	# wherever delivery_areas is walked, so keeping it behaves the same.
++	for i in _mp8_area_members.size():
++		var members: Array = _mp8_area_members[i]
++		if not members.has(_network_id):
++			continue
++		members.erase(_network_id)
++		if members.is_empty() and i < delivery_areas.size():
++			delivery_areas[i].set_owner_rpc.rpc(set_inactive_area_to)
++		elif i < delivery_areas.size() and delivery_areas[i].belongs_to_id == _network_id:
++			# The owner left: hand the bay to a remaining member, or it would be filtered as empty.
++			delivery_areas[i].set_owner_rpc.rpc(int(members[0]))
++
++	# [MP8] The roster changed, so the multipliers are recomputed. Each one is 1 with a player per bay, but
++	# the host still re-sends the counter of every bay with a roster, eliminated bays included.
++	_mp8_refresh_score_mults()
++
++	player_scores.erase(_network_id)
++	if not dead_players.has(_network_id):
++		dead_players.append(_network_id)
++
++# [MP8] The game's tail of disconnect_player_rpc, for a mixed room (D120): the leaver's bay leaves delivery_areas,
++# so its crates stop counting toward the lead.
++func _mp8_game_disconnect_bay(_network_id: int) -> void :
++
+ 	var remove_delivery_area_index: int = -1
+ 	for i in delivery_areas.size():
+ 		var da = delivery_areas[i]
+@@ -341,9 +472,9 @@ func remove_active_player_rpc(_network_id: int):
+ 
+ 		if multiplayer.is_server():
+ 			var blood_decal_position = Vector3(
+-				active_players[_network_id].global_position.x, 
+-				1.3, 
+-				active_players[_network_id].global_position.z, 
++				active_players[_network_id].global_position.x,
++				1.3,
++				active_players[_network_id].global_position.z,
+ 			)
+ 			spawn_blood_rpc.rpc(blood_decal_position)
+ 		active_players.erase(_network_id)
+@@ -351,9 +482,29 @@ func remove_active_player_rpc(_network_id: int):
+ @rpc("authority", "call_local", "reliable")
+ func spawn_blood_rpc(_at_pos: Vector3):
+ 
+-	var decal: Node3D = blood_decals_environment_parent.get_child(0)
+-	decal.get_parent().remove_child(decal)
+-	add_child(decal)
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_spawn_blood_rpc(_at_pos)
++		return
++
++	# [MP8] The scene has four decals and up to seven players die; vanilla's bare get_child(0) gets null on the
++	# fifth. The placed decals are reused oldest first, not duplicated: a duplicated decor node can freeze
++	# SessionIntro without an error.
++	var decal: Node3D = null
++
++	if blood_decals_environment_parent.get_child_count() > 0:
++		decal = blood_decals_environment_parent.get_child(0)
++		decal.get_parent().remove_child(decal)
++		add_child(decal)
++		_mp8_blood_pool.append(decal)
++	elif not _mp8_blood_pool.is_empty():
++		decal = _mp8_blood_pool.pop_front()
++		if not is_instance_valid(decal):
++			return
++		_mp8_blood_pool.append(decal)
++	else:
++		push_warning("[MP8] Forklift Certified: no blood decal available; skipping this one")
++		return
++
+ 	decal.global_position = _at_pos
+ 	decal.global_rotation = Vector3(decal.global_rotation.x, randf_range(0, 360), decal.global_rotation.z)
+ 
+@@ -366,6 +517,58 @@ func update_timers_rpc(_time_remaining: int):
+ 
+ func _on_crate_numbers_changed():
+ 
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_crate_numbers_changed()
++		return
++
++	var highest_score: int = 0
++	for da in delivery_areas:
++		# [MP8] The achievement counts real crates, not the multiplied score.
++		var crate_numbers: int = da.crates_in_area.size()
++
++		if crate_numbers >= ach_crate_number:
++			if da.belongs_to_id > check_id_threshold:
++				# [MP8] Every member of the bay gets the achievement.
++				for pid in _mp8_members_of_area(da):
++					if active_players.has(pid):
++						active_players[pid].trigger_achievement_rpc.rpc()
++
++		# [MP8] The lead uses the multiplied score, the number elimination uses.
++		if _mp8_area_score(da) > highest_score:
++			highest_score = _mp8_area_score(da)
++
++	if highest_score == 0:
++		for da in delivery_areas:
++			if da.belongs_to_id <= check_id_threshold:
++				continue
++
++			_mp8_set_indicator(da, false)
++		return
++
++	for da in delivery_areas:
++
++		if da.belongs_to_id <= check_id_threshold:
++			continue
++
++		_mp8_set_indicator(da, _mp8_area_score(da) == highest_score)
++
++
++# [MP8] A bay's light is broadcast only when it flips: both branches of the bay's set_indicator_light_rpc
++# play its own speaker, so re-sending every bay on each crate change plays them all at once.
++# The cache is `mp8_indicator_state` on the bay; `set_owner_rpc` resets it to -1.
++func _mp8_set_indicator(da, winning: bool) -> void :
++
++	var want: int = 1 if winning else 0
++	if da.mp8_indicator_state == want:
++		return
++
++	da.mp8_indicator_state = want
++	da.set_indicator_light_rpc.rpc(winning)
++	_mp8_light_team(da, winning)
++
++# [MP8] The game's _on_crate_numbers_changed, for a mixed room (D116): every bay's light re-sent on each change.
++func _mp8_game_crate_numbers_changed() -> void :
++
+ 	var highest_score: int = 0
+ 	for da in delivery_areas:
+ 		var crate_numbers: int = da.crates_in_area.size()
+@@ -426,3 +629,720 @@ func _on_player_died(_network_id: int):
+ 	await get_tree().create_timer(1.0).timeout
+ 
+ 	check_game_end()
++
++
++# ============================================================== [MP8] The game's own, for a mixed room
++# Verbatim copies of the game's functions that Extended changed; a mixed room calls these (D120).
++
++func _mp8_game_spawn_players():
++
++	var shuffled_indicies: Array[int] = []
++	for i in player_spawn_positions_node.get_child_count():
++		shuffled_indicies.append(i)
++	shuffled_indicies.shuffle()
++
++	var spawn_positions = player_spawn_positions_node.get_children()
++	var delivery_area_nodes = delivery_area_parent.get_children()
++	player_count = PlayerManager.player_presences.size()
++
++	var counter: int = 0
++	for i in PlayerManager.player_presences.size():
++		var network_id = PlayerManager.player_presences.keys()[i]
++
++		var player_character = player_scene.instantiate()
++		players_node.add_child(player_character, true)
++
++		player_character.set_player_presence.rpc(network_id)
++		player_character.setup_rpc.rpc(
++			spawn_positions[shuffled_indicies[counter]].global_position, 
++			spawn_positions[shuffled_indicies[counter]].global_rotation, 
++			delivery_areas[shuffled_indicies[counter]].get_path()
++		)
++
++		delivery_area_nodes[shuffled_indicies[counter]].set_owner_rpc.rpc(network_id)
++
++		players[network_id] = player_character
++		active_players[network_id] = player_character
++		player_scores[network_id] = 0
++
++		counter += 1
++
++func _mp8_game_check_game_end(from_disconnect: bool = false):
++
++	if active_players.size() > 1:
++		if from_disconnect:
++			return
++		else:
++			start_new_round()
++			return
++
++	for network_id in active_players.keys():
++		player_scores[network_id] = player_count
++
++
++		break
++
++	player_scores_finalized.emit(player_scores)
++
++	await get_tree().create_timer(2.0).timeout
++	set_minigame_sfx_linear_volume_rpc.rpc(0.0)
++
++	state_machine.transition_to_rpc.rpc(&"Finished")
++	set_effects_visibility_rpc.rpc(false)
++
++func _mp8_game_remove_zero_scoring_players():
++
++	var zero_scoring_areas: Array[ForkilftCertifiedDeliveryArea]
++	var zero_scoring_player_ids: Array[int]
++
++	for delivery_area in delivery_area_parent.get_children():
++
++		if delivery_area.belongs_to_id <= check_id_threshold:
++			continue
++
++		if delivery_area.crates_in_area.size() == 0:
++			zero_scoring_areas.append(delivery_area)
++			zero_scoring_player_ids.append(delivery_area.belongs_to_id)
++
++	var players_removed: Array[int]
++	for network_id in zero_scoring_player_ids:
++		remove_active_player_rpc.rpc(network_id)
++		player_scores[network_id] = dead_players.size()
++		players_removed.append(network_id)
++
++	for area in zero_scoring_areas:
++		area.set_owner_rpc.rpc(set_inactive_area_to)
++
++	for pid in players_removed:
++		if not dead_players.has(pid):
++			dead_players.append(pid)
++
++func _mp8_game_calculate_results():
++
++	if active_players.keys().size() <= 1:
++		return
++
++
++	var all_delivery_areas = delivery_area_parent.get_children()
++	var active_delivery_areas: Array[ForkilftCertifiedDeliveryArea] = []
++	for delivery_area in all_delivery_areas:
++
++		if delivery_area.belongs_to_id <= check_id_threshold:
++			continue
++
++		active_delivery_areas.append(delivery_area)
++
++	var player_ids_by_score: Dictionary
++	for delivery_area in active_delivery_areas:
++		var score = delivery_area.crates_in_area.size()
++		if not player_ids_by_score.has(score):
++			player_ids_by_score[score] = []
++		player_ids_by_score[score].append(delivery_area.belongs_to_id)
++
++	var lowest_score: int = player_ids_by_score.keys().min()
++	var heighest_score: int = player_ids_by_score.keys().max()
++
++	var players_removed: Array[int]
++	if lowest_score != heighest_score:
++
++		for player_id in player_ids_by_score[lowest_score]:
++			remove_active_player_rpc.rpc(player_id)
++			player_scores[player_id] = dead_players.size()
++			players_removed.append(player_id)
++			for delivery_area in all_delivery_areas:
++				if delivery_area.belongs_to_id == player_id:
++					delivery_area.set_owner_rpc.rpc(set_inactive_area_to)
++
++	for score in player_ids_by_score.keys():
++		if score >= heighest_score:
++			continue
++		var player_ids = player_ids_by_score[score]
++		for network_id in player_ids:
++			if not players_removed.has(network_id):
++				remove_active_player_rpc.rpc(network_id)
++				player_scores[network_id] = dead_players.size()
++				players_removed.append(network_id)
++				for delivery_area in all_delivery_areas:
++					if delivery_area.belongs_to_id == network_id:
++						delivery_area.set_owner_rpc.rpc(set_inactive_area_to)
++
++	for pid in players_removed:
++		if not dead_players.has(pid):
++			dead_players.append(pid)
++
++func _mp8_game_spawn_blood_rpc(_at_pos: Vector3):
++
++	var decal: Node3D = blood_decals_environment_parent.get_child(0)
++	decal.get_parent().remove_child(decal)
++	add_child(decal)
++	decal.global_position = _at_pos
++	decal.global_rotation = Vector3(decal.global_rotation.x, randf_range(0, 360), decal.global_rotation.z)
++
++
++# ============================================================== [MP8] Team helpers
++
++func _mp8_members_of_area(area) -> Array :
++
++	# The roster first; before it is built, vanilla's single belongs_to_id.
++	var idx: int = delivery_areas.find(area)
++	if idx >= 0 and idx < _mp8_area_members.size():
++		var members: Array = _mp8_area_members[idx]
++		if not members.is_empty():
++			return members
++
++	if area.belongs_to_id > check_id_threshold:
++		return [area.belongs_to_id]
++	return []
++
++
++func _mp8_area_has_member(area, network_id: int) -> bool :
++	return _mp8_members_of_area(area).has(network_id)
++
++
++# Teams with at least one player alive; equals active_players.size() with one player per bay.
++func _mp8_active_team_count() -> int :
++
++	if _mp8_area_members.is_empty():
++		return active_players.size()
++
++	var n: int = 0
++	for members in _mp8_area_members:
++		for pid in members:
++			if active_players.has(pid):
++				n += 1
++				break
++	return n
++
++
++# Score multiplier per bay = largest team / this team. Elimination, the lead light and the bay counter use
++# the multiplied count; the achievement uses the real one. With one player per bay it is 1; only a yard
++# that could not expand doubles players up.
++func _mp8_refresh_score_mults() -> void :
++
++	# A mixed room sends neither the multipliers nor their counter refresh; every bay keeps 1 (D116).
++	if not NetworkManager.mp8_room_extended():
++		return
++
++	var areas: Array = delivery_area_parent.get_children()
++
++	var max_team: int = 1
++	for members in _mp8_area_members:
++		max_team = maxi(max_team, (members as Array).size())
++
++	for i in _mp8_area_members.size():
++		if i >= areas.size():
++			continue
++		var n: int = (_mp8_area_members[i] as Array).size()
++		if n <= 0:
++			continue
++		NetworkManager.mp8_rpc(areas[i], &"mp8_set_score_mult_rpc", [max_team / n])
++
++
++func _mp8_area_score(area) -> int :
++	return area.crates_in_area.size() * area.mp8_score_mult
++
++
++func _mp8_light_team(area, on: bool) -> void :
++
++	for pid in _mp8_members_of_area(area):
++		# has(): between a player's elimination and the bay closing, a crate knocked out of the bay
++		# reaches here for a player no longer in active_players.
++		if active_players.has(pid):
++			active_players[pid].set_indicator_light_rpc.rpc(on)
++
++
++func _mp8_log_teams() -> void :
++
++	var areas: Array = delivery_area_parent.get_children()
++
++	var lines := PackedStringArray()
++	for i in _mp8_area_members.size():
++		var members: Array = _mp8_area_members[i]
++		if members.is_empty():
++			continue
++		var names := PackedStringArray()
++		for pid in members:
++			names.append("%s(%d)" % [_mp8_name_of(pid), pid])
++		var mult: int = (int(areas[i].mp8_score_mult) if i < areas.size() else 1)
++		lines.append("bay%d=[%s]%s" % [
++			i, ", ".join(names), ("" if mult <= 1 else " x%d per crate" % mult)
++		])
++
++	print("[MP8] Forklift Certified: %d players in %d teams - %s" % [
++		player_count, _mp8_active_team_count(), "  ".join(lines)
++	])
++
++	# The smallest distance between the spawns in use: a count alone does not show two forklifts overlapping.
++	var used: Array = []
++	for i in _mp8_area_members.size():
++		for _pid in _mp8_area_members[i]:
++			used.append((_mp8_spawns[i] as Array)[0])
++	var worst: float = INF
++	for a in used.size():
++		for b in range(a + 1, used.size()):
++			var pa: Vector3 = used[a]
++			var pb: Vector3 = used[b]
++			worst = minf(worst, Vector2(pa.x - pb.x, pa.z - pb.z).length())
++	if used.size() >= 2:
++		print("[MP8] Forklift Certified: %d spawns, min spacing %.2f m (forklift 3.0x6.0, source=8p version)" % [
++			used.size(), worst
++		])
++		if worst < 3.2:
++			push_warning("[MP8] Forklift Certified: spawns only %.2f m apart; two forklifts may overlap" % worst)
++
++
++func _mp8_name_of(network_id: int) -> String :
++	if PlayerManager.player_presences.has(network_id):
++		var p = PlayerManager.player_presences[network_id]
++		if p != null:
++			return String(p.network_name)
++	return "?"
++
++
++func _mp8_log_scores() -> void :
++
++	var rows := PackedStringArray()
++	for pid in player_scores.keys():
++		rows.append("%s(%d)=%d" % [_mp8_name_of(pid), pid, player_scores[pid]])
++	print("[MP8] Forklift Certified scores: %s" % "  ".join(rows))
++
++
++# ============================================================== [MP8] The added bays
++#
++# Adapted from machine-party-8p's forklift_certified.gd. Above four players, four more bays go at the
++# mid-edges of the yard, a 3x3 ring with a free centre: the floor box is the only static collider, so all
++# of it is drivable. One player per bay, so the team code above runs with teams of one.
++
++const MP8V_AREAS: int = 4
++const MP8V_CRATE_CAP: int = 10
++# DUPLICATE_GROUPS | DUPLICATE_SCRIPTS, no signals: a bay connects its own body signals in its _ready, and
++# the host's crate_number_changed hookup is made in _mp8v_expand_yard; copies would count every crate twice.
++const MP8V_DUPLICATE_FLAGS: int = 6
++# A 3x3 crate at any yaw reaches its half-diagonal, so crates keep this far inside every bay edge.
++const MP8V_CRATE_CLEARANCE: float = 2.122
++# @export node references survive duplicate() still pointing at the template's nodes; a clone re-points these.
++const MP8V_ZONE_NODE_EXPORTS: Array[String] = [
++	"border_mesh_instance",
++	"display_background_mesh_instance",
++	"counter_label",
++	"area_light",
++	"speaker_mechanism",
++]
++# The shipped plates sit below the drive plane in recessed bays; the mid-edge floor is flat, so they are lifted.
++const MP8V_ZONE_ART_CLEARANCE: float = 0.03
++const MP8V_ZONE_ART_MARGIN: float = 0.3
++# The grey grid plate is painted into the floor mesh, so an added bay samples it from the shipped atlas.
++const MP8V_PLATE_TEXTURE: String = "res://minigames/forklift_certified/models/forklift certified visuals1/forklift certified visuals1_fc area indicator8 marked8.png"
++const MP8V_PLATE_UV_OFFSET: Vector2 = Vector2(34.0 / 512.0, 6.0 / 512.0)
++const MP8V_PLATE_UV_SCALE: Vector2 = Vector2(276.0 / 512.0, 260.0 / 512.0)
++const MP8V_PLATE_INSET: float = 0.86
++const MP8V_BORDER_SHRINK: float = 0.9
++const MP8V_READOUT_GAP_FALLBACK: float = 2.16
++# The yard's (x, z) scale above four players: the room's art, walls, lights and bay positions grow about the
++# origin; bays, forklifts and crates keep their size. The owner's pick from in-game renders (D104);
++# `mp8forkyard=<sx>,<sz>` overrides it, and `mp8forkyard=1,1` is the shipped yard.
++const MP8V_YARD_SCALE: Vector2 = Vector2(1.3, 1.3)
++const MP8V_ROOM: String = "forklift certified visuals1"
++const MP8V_WALLS: String = "Placeholder/CSGBox3D main collider"
++const MP8V_CAMERA: String = "Placeholder/Camera3D"
++const MP8V_TIMER_SCREEN: String = "MeshInstance3D"
++
++
++func _mp8v_expand_yard() -> void :
++
++	if PlayerManager.player_presences.size() > MP8V_AREAS:
++		NetworkManager.mp8_rpc(self, &"zz_mp8v_add_delivery_areas_rpc", [_mp8v_yard_arg()])
++		# _ready builds delivery_areas and its crate_number_changed hookups before the clones exist.
++		if multiplayer.is_server():
++			for c in delivery_area_parent.get_children():
++				var area: ForkilftCertifiedDeliveryArea = c as ForkilftCertifiedDeliveryArea
++				if area == null or delivery_areas.has(area):
++					continue
++				delivery_areas.append(area)
++				if not area.crate_number_changed.is_connected(_on_crate_numbers_changed):
++					area.crate_number_changed.connect(_on_crate_numbers_changed)
++		_mp8v_add_spawn_markers()
++
++	# Bay i pairs with marker i: the shipped child orders match, and the added ones append in the same order.
++	_mp8_spawns = []
++	for m in player_spawn_positions_node.get_children():
++		_mp8_spawns.append([(m as Node3D).global_position, (m as Node3D).rotation_degrees.y])
++	print("[MP8] Forklift Certified 8p: %d bays, %d spawns" % [
++		delivery_area_parent.get_child_count(), _mp8_spawns.size()])
++
++
++# The shipped four, ordered far-west, far-east, near-west, near-east; empty unless there are exactly four.
++func _mp8v_sorted_grid(parent: Node) -> Array[Node3D] :
++	var ordered: Array[Node3D] = []
++	var out: Array[Node3D] = []
++	for c in parent.get_children():
++		if c is Node3D:
++			out.append(c as Node3D)
++	if out.size() != MP8V_AREAS:
++		return ordered
++
++	out.sort_custom(func(a: Node3D, b: Node3D) -> bool: return a.position.z < b.position.z)
++	var far_row: Array[Node3D] = [out[0], out[1]]
++	var near_row: Array[Node3D] = [out[2], out[3]]
++	far_row.sort_custom(func(a: Node3D, b: Node3D) -> bool: return a.position.x < b.position.x)
++	near_row.sort_custom(func(a: Node3D, b: Node3D) -> bool: return a.position.x < b.position.x)
++	ordered.append_array(far_row)
++	ordered.append_array(near_row)
++	return ordered
++
++
++# [position, template index] for the four mid-edge slots. The template is the shipped node whose row the
++# new one joins; the two mid-band slots have no row and take the far row's, facing along the wall.
++func _mp8v_mid_edge_slots(grid: Array[Node3D]) -> Array :
++	return [
++		[(grid[0].position + grid[1].position) * 0.5, 0],
++		[(grid[2].position + grid[3].position) * 0.5, 2],
++		[(grid[0].position + grid[2].position) * 0.5, 0],
++		[(grid[1].position + grid[3].position) * 0.5, 1],
++	]
++
++
++func _mp8v_zone_rect(area: Node3D) -> Rect2 :
++	for c in area.get_children():
++		if c is CollisionShape3D and (c as CollisionShape3D).shape is BoxShape3D:
++			var box: BoxShape3D = (c as CollisionShape3D).shape as BoxShape3D
++			var centre: Vector3 = (c as CollisionShape3D).global_position
++			return Rect2(centre.x - box.size.x * 0.5, centre.z - box.size.z * 0.5, box.size.x, box.size.z)
++	return Rect2()
++
++
++func _mp8v_add_zone_plate(copy: Node3D, floor_y: float) -> bool :
++	var border: Node3D = copy.get("border_mesh_instance") as Node3D
++	if border == null:
++		return false
++	var texture: Texture2D = load(MP8V_PLATE_TEXTURE) as Texture2D
++	if texture == null:
++		push_warning("[MP8] Forklift Certified 8p: no plate texture at %s" % MP8V_PLATE_TEXTURE)
++		return false
++
++	var mesh: PlaneMesh = PlaneMesh.new()
++	mesh.size = _mp8v_plane_size(border) * MP8V_PLATE_INSET
++	var mat: StandardMaterial3D = StandardMaterial3D.new()
++	mat.albedo_texture = texture
++	mat.uv1_offset = Vector3(MP8V_PLATE_UV_OFFSET.x, MP8V_PLATE_UV_OFFSET.y, 0.0)
++	mat.uv1_scale = Vector3(MP8V_PLATE_UV_SCALE.x, MP8V_PLATE_UV_SCALE.y, 1.0)
++	mat.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST_WITH_MIPMAPS
++	mat.texture_repeat = false
++
++	var plate: MeshInstance3D = MeshInstance3D.new()
++	plate.name = "MP8VZonePlate"
++	plate.mesh = mesh
++	plate.material_override = mat
++	copy.add_child(plate)
++	plate.global_position = Vector3(border.global_position.x, floor_y + MP8V_ZONE_ART_CLEARANCE * 2.0, border.global_position.z)
++	return true
++
++
++func _mp8v_floor_y() -> float :
++	var markers: Array[Node3D] = _mp8v_sorted_grid(player_spawn_positions_node)
++	if markers.is_empty():
++		return 0.0
++	return markers[0].global_position.y
++
++
++# From mesh.size and the node's scale, not get_transformed_aabb(), which returns null in the release template.
++func _mp8v_plane_size(node: Node3D) -> Vector2 :
++	var mi: MeshInstance3D = node as MeshInstance3D
++	if mi == null or not (mi.mesh is PlaneMesh):
++		return Vector2.ZERO
++	var plane: PlaneMesh = mi.mesh as PlaneMesh
++	var scale: Vector3 = mi.global_transform.basis.get_scale()
++	return Vector2(plane.size.x * scale.x, plane.size.y * scale.z)
++
++
++func _mp8v_readout_gap(template: Node3D) -> float :
++	var plate: Node3D = template.get("border_mesh_instance") as Node3D
++	var readout: Node3D = template.get("display_background_mesh_instance") as Node3D
++	if plate == null or readout == null:
++		return MP8V_READOUT_GAP_FALLBACK
++	return readout.position.z - (plate.position.z + _mp8v_plane_size(plate).y * 0.5)
++
++
++# An added bay's plates, lifted onto the floor and clear of the shipped readouts. The mid-band bays put
++# their readout past the outer edge along X, turned a quarter: unturned, the 4.6-long housing hits the wall.
++func _mp8v_fit_added_zone(copy: Node3D, shipped: Array[Node3D], floor_y: float, is_side: bool) -> bool :
++	var border: Node3D = copy.get("border_mesh_instance") as Node3D
++	var display: Node3D = copy.get("display_background_mesh_instance") as Node3D
++
++	if border != null:
++		border.scale *= MP8V_BORDER_SHRINK
++
++	if is_side and border != null:
++		var border_far_edge: float = border.global_position.z - _mp8v_plane_size(border).y * 0.5
++		var blocked: float = -INF
++		for zone in shipped:
++			var panel: Node3D = zone.get("display_background_mesh_instance") as Node3D
++			if panel == null or panel.global_position.z >= copy.global_position.z:
++				continue
++			blocked = maxf(blocked, panel.global_position.z + _mp8v_plane_size(panel).y * 0.5)
++		if not is_inf(blocked):
++			var shift: float = blocked + MP8V_ZONE_ART_MARGIN - border_far_edge
++			if shift > 0.0:
++				copy.position.z += shift
++
++		if display != null and not shipped.is_empty():
++			var outward: float = signf(copy.global_position.x)
++			var gap: float = _mp8v_readout_gap(shipped[0])
++			display.position.x = border.position.x + outward * (_mp8v_plane_size(border).x * 0.5 + gap)
++			display.position.z = border.position.z
++			display.rotation_degrees.y += -90.0 * outward
++
++	if border != null:
++		border.global_position.y = floor_y + MP8V_ZONE_ART_CLEARANCE
++	if display != null:
++		display.global_position.y = floor_y + MP8V_ZONE_ART_CLEARANCE
++	return _mp8v_add_zone_plate(copy, floor_y)
++
++
++func _mp8v_rebind_zone_exports(template: Node3D, copy: Node3D) -> int :
++	var rebound: int = 0
++	for prop in MP8V_ZONE_NODE_EXPORTS:
++		var ref: Node = template.get(prop) as Node
++		if ref == null:
++			push_warning("[MP8] Forklift Certified 8p: %s has no %s to rebind" % [template.name, prop])
++			continue
++		var mine: Node = copy.get_node_or_null(template.get_path_to(ref))
++		if mine == null:
++			push_warning("[MP8] Forklift Certified 8p: %s has no node for %s" % [copy.name, prop])
++			continue
++		copy.set(prop, mine)
++		rebound += 1
++	return rebound
++
++
++# Built on every peer: the game drives bays by node path (set_owner_rpc, update_counter_rpc), so a bay only
++# on the host is an RPC into nothing.
++func zz_mp8v_add_delivery_areas_rpc(yard: Vector2) -> void :
++
++	if delivery_area_parent.get_child_count() > MP8V_AREAS:
++		return
++	var grid: Array[Node3D] = _mp8v_sorted_grid(delivery_area_parent)
++	if grid.is_empty():
++		push_warning("[MP8] Forklift Certified 8p: expected 4 shipped bays, found %d; not expanding" % delivery_area_parent.get_child_count())
++		return
++
++	# Before the clones: their slots are the midpoints of the moved shipped bays.
++	_mp8v_scale_yard(grid, yard)
++
++	var floor_y: float = _mp8v_floor_y()
++	var slots: Array = _mp8v_mid_edge_slots(grid)
++	for i in slots.size():
++		var template: Node3D = grid[slots[i][1]]
++		var copy: Node3D = template.duplicate(MP8V_DUPLICATE_FLAGS) as Node3D
++		copy.name = "DropArea_MP8V%d" % (MP8V_AREAS + 1 + i)
++		copy.position = slots[i][0]
++		# Before add_child: the bay's _ready caches a material off border_mesh_instance.
++		_mp8v_rebind_zone_exports(template, copy)
++		delivery_area_parent.add_child(copy)
++		_mp8v_fit_added_zone(copy, grid, floor_y, i >= 2)
++
++	# A shipped bay's border and readout sit in grooves of the floor mesh, which a scaled room moves out
++	# from under them; they get the clones' treatment (lifted, the grid plate, the 0.9 border). After the
++	# clones, which copy them.
++	if not _mp8v_yard.is_equal_approx(Vector2.ONE):
++		for area in grid:
++			_mp8v_fit_added_zone(area, grid, floor_y, false)
++
++
++# Host only: clients never read a marker, only the position setup_rpc carries.
++func _mp8v_add_spawn_markers() -> void :
++
++	if not multiplayer.is_server() or player_spawn_positions_node.get_child_count() > MP8V_AREAS:
++		return
++	var grid: Array[Node3D] = _mp8v_sorted_grid(player_spawn_positions_node)
++	if grid.is_empty():
++		push_warning("[MP8] Forklift Certified 8p: expected 4 shipped spawns, found %d; not expanding" % player_spawn_positions_node.get_child_count())
++		return
++	# The shipped markers sit on the shipped bays' origins, so they move with them.
++	for m in grid:
++		m.position *= Vector3(_mp8v_yard.x, 1.0, _mp8v_yard.y)
++	var slots: Array = _mp8v_mid_edge_slots(grid)
++	for i in slots.size():
++		var marker: Marker3D = Marker3D.new()
++		marker.name = "Marker3D_MP8V%d" % (MP8V_AREAS + 1 + i)
++		player_spawn_positions_node.add_child(marker)
++		marker.position = slots[i][0]
++		marker.rotation = grid[slots[i][1]].rotation
++
++
++# The crates go in the free centre cell of the ring, inside the inner edges of the bays either side of it.
++func _mp8v_set_crate_region() -> void :
++
++	var zones: Array[Node] = delivery_area_parent.get_children()
++	if zones.size() <= MP8V_AREAS:
++		return
++
++	var mean: Vector2 = Vector2.ZERO
++	var rects: Array[Rect2] = []
++	for z in zones:
++		var r: Rect2 = _mp8v_zone_rect(z as Node3D)
++		if not r.has_area():
++			push_warning("[MP8] Forklift Certified 8p: bay %s has no box collider; the shipped crate box stays" % z.name)
++			return
++		rects.append(r)
++		mean += r.get_center()
++	mean /= rects.size()
++
++	var gap: float = rects[0].size.x * 0.25
++	var x0: float = -INF
++	var x1: float = INF
++	var z0: float = -INF
++	var z1: float = INF
++	for r in rects:
++		var c: Vector2 = r.get_center()
++		if c.x < mean.x - gap:
++			x0 = maxf(x0, r.end.x)
++		elif c.x > mean.x + gap:
++			x1 = minf(x1, r.position.x)
++		if c.y < mean.y - gap:
++			z0 = maxf(z0, r.end.y)
++		elif c.y > mean.y + gap:
++			z1 = minf(z1, r.position.y)
++	if is_inf(x0) or is_inf(x1) or is_inf(z0) or is_inf(z1):
++		push_warning("[MP8] Forklift Certified 8p: no free centre cell; the shipped crate box stays")
++		return
++
++	var region: Rect2 = Rect2(x0, z0, x1 - x0, z1 - z0).grow(-MP8V_CRATE_CLEARANCE)
++	if region.size.x <= 0.0 or region.size.y <= 0.0:
++		push_warning("[MP8] Forklift Certified 8p: the centre cell is smaller than a crate; the shipped crate box stays")
++		return
++	crate_manager.mp8_spawn_region = region
++	print("[MP8] Forklift Certified 8p: crates in the centre cell, %.1f x %.1f m" % [region.size.x, region.size.y])
++
++
++# The host's yard scale: the pick, or `mp8forkyard=<sx>,<sz>` when it parses to two factors of at least 1.
++func _mp8v_yard_arg() -> Vector2 :
++
++	for a in NetworkManager.mp8_dev_args():
++		var s: String = String(a)
++		if not s.begins_with("mp8forkyard="):
++			continue
++		var parts: PackedStringArray = s.substr("mp8forkyard=".length()).split(",")
++		if parts.size() == 2 and parts[0].is_valid_float() and parts[1].is_valid_float() \
++				and float(parts[0]) >= 1.0 and float(parts[1]) >= 1.0:
++			return Vector2(float(parts[0]), float(parts[1]))
++		push_warning("[MP8] Forklift Certified 8p: %s not recognised (sx,sz, each at least 1)" % s)
++	return MP8V_YARD_SCALE
++
++
++# Every peer scales the same yard from the host's factors. The room's art scales as one node; the
++# magnet's moving axes hang under a plain Node, so they stay in world space, and magnet_manager's clamp
++# (z -22.9..23.9, x >= -27.9) still lifts a crate past it from the clamped spot, as by the stock back wall.
++func _mp8v_scale_yard(grid: Array[Node3D], yard: Vector2) -> void :
++
++	_mp8v_yard = yard
++	if yard.is_equal_approx(Vector2.ONE):
++		print("[MP8] Forklift Certified 8p: the shipped yard")
++		return
++
++	var room: Node3D = get_node_or_null(MP8V_ROOM) as Node3D
++	var walls: CSGBox3D = get_node_or_null(MP8V_WALLS) as CSGBox3D
++	var cam: Camera3D = get_node_or_null(MP8V_CAMERA) as Camera3D
++	if room == null or walls == null or cam == null:
++		push_warning("[MP8] Forklift Certified 8p: no room, walls or camera; the shipped yard stays")
++		_mp8v_yard = Vector2.ONE
++		return
++
++	var s: Vector3 = Vector3(yard.x, 1.0, yard.y)
++	var stock_groups: Array = _mp8v_frame_groups(walls, grid)
++	walls.size *= s
++	walls.position *= s
++	room.global_transform = Transform3D(Basis.from_scale(s), Vector3.ZERO) * room.global_transform
++
++	var screen: Node3D = get_node_or_null(MP8V_TIMER_SCREEN) as Node3D
++	if screen != null:
++		screen.position *= s
++	for c in get_children():
++		if c is OmniLight3D:
++			(c as OmniLight3D).position *= s
++			(c as OmniLight3D).omni_range *= maxf(yard.x, yard.y)
++	for area in grid:
++		area.position *= s
++
++	# The magnet's beam rests across the yard between the camera and the bays, in world space; it rests and
++	# returns as far out as the room grows, or the fitted camera sees it as a bar along the bottom of the shot.
++	var magnet: MagnetManager = crate_manager.magnet if crate_manager != null else null
++	if magnet != null and magnet.pos_home != null and magnet.axis_vertical != null:
++		magnet.pos_home.position *= s
++		magnet.axis_vertical.global_position.z *= yard.y
++	else:
++		push_warning("[MP8] Forklift Certified 8p: no magnet rig; its beam may show at the bottom of the shot")
++
++	var d0: float = cam.global_position.length()
++	_mp8v_fit_camera(cam, stock_groups, _mp8v_frame_groups(walls, grid))
++	print("[MP8] Forklift Certified 8p: yard x%.2f, z%.2f; walls %.1f x %.1f m, floor x%.2f; camera %.1f -> %.1f, forklifts drawn x%.2f" % [
++		yard.x, yard.y, walls.size.x, walls.size.z, yard.x * yard.y, d0, cam.global_position.length(),
++		d0 / cam.global_position.length()])
++
++
++# What the camera keeps framed as it was, group by group: the floor's corners (the near ones sit below the
++# shipped frame) and the shipped bays' readouts, which must stay in it.
++func _mp8v_frame_groups(walls: CSGBox3D, grid: Array[Node3D]) -> Array :
++	var c: Vector3 = walls.global_position
++	var hx: float = walls.size.x * 0.5
++	var hz: float = walls.size.z * 0.5
++	var corners: Array[Vector3] = [Vector3(c.x - hx, 0.0, c.z - hz), Vector3(c.x + hx, 0.0, c.z - hz),
++		Vector3(c.x - hx, 0.0, c.z + hz), Vector3(c.x + hx, 0.0, c.z + hz)]
++	var readouts: Array[Vector3] = []
++	for area in grid:
++		var readout: Node3D = area.get("display_background_mesh_instance") as Node3D
++		if readout != null:
++			readouts.append(readout.global_position)
++	return [corners, readouts]
++
++
++# (largest |x|, largest y, smallest y) of the points' view slopes from a camera at xf; slopes need no fov.
++func _mp8v_view_slopes(xf: Transform3D, points: Array) -> Vector3 :
++	var out: Vector3 = Vector3(0.0, -INF, INF)
++	for p in points:
++		var v: Vector3 = xf.affine_inverse() * p
++		var depth: float = maxf(-v.z, 0.001)
++		out.x = maxf(out.x, absf(v.x / depth))
++		out.y = maxf(out.y, v.y / depth)
++		out.z = minf(out.z, v.y / depth)
++	return out
++
++
++# The stock orientation, slid back along the view axis until the
++# scaled yard's frame groups each sit no further out in the frame than the shipped ones do.
++func _mp8v_fit_camera(cam: Camera3D, stock_groups: Array, groups: Array) -> void :
++
++	var xf: Transform3D = cam.global_transform
++	var limits: Array[Vector3] = []
++	for g in stock_groups:
++		limits.append(_mp8v_view_slopes(xf, g))
++	# The readouts (group 1) bound only the bottom: the near row's are the lowest thing in the shipped frame.
++	limits[1] = Vector3(INF, INF, limits[1].z)
++	var back: Vector3 = xf.basis.z.normalized()
++	var origin: Vector3 = xf.origin
++	var t: float = 0.0
++	while t < 200.0:
++		xf.origin = origin + back * t
++		var fits: bool = true
++		for i in groups.size():
++			var v: Vector3 = _mp8v_view_slopes(xf, groups[i])
++			var limit: Vector3 = limits[i]
++			if v.x > limit.x + 0.0001 or v.y > limit.y + 0.0001 or v.z < limit.z - 0.0001:
++				fits = false
++		if fits:
++			break
++		t += 0.25
++	if t >= 200.0:
++		push_warning("[MP8] Forklift Certified 8p: the camera fit did not converge; the camera stays")
++		return
++	# The sway animation keys the camera's position as well as its rotation, every frame, so the move goes on
++	# its parent; the parent's other children (the walls) are moved back to stay where they are.
++	var offset: Vector3 = xf.origin - origin
++	var holder: Node3D = cam.get_parent() as Node3D
++	if holder == null:
++		push_warning("[MP8] Forklift Certified 8p: the camera has no 3D parent; the camera stays")
++		return
++	holder.position += offset
++	for c in holder.get_children():
++		if c != cam and c is Node3D:
++			(c as Node3D).position -= offset

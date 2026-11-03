@@ -1,0 +1,52 @@
+diff --git a/minigames/knife_at_the_office/components/player/scripts/knife_at_the_office_player.gd b/minigames/knife_at_the_office/components/player/scripts/knife_at_the_office_player.gd
+--- a/minigames/knife_at_the_office/components/player/scripts/knife_at_the_office_player.gd
++++ b/minigames/knife_at_the_office/components/player/scripts/knife_at_the_office_player.gd
+@@ -336,6 +336,13 @@ func anim_stop_searching():
+ 	var tween_search = create_tween().set_ease(Tween.EASE_IN_OUT).set_trans(Tween.TRANS_CUBIC)
+ 	tween_search.tween_property(animation_tree, "parameters/blend_searching/blend_amount", 1, 0.3)
+ 
++# [MP8] Stabbing waits for the hunt: searching_disabled is the synced flag the game sets when it starts,
++# about 1.5 s after the find. A mixed room lets the item stab at once, as the game does (D116).
++func _mp8_stab_waits() -> bool :
++	if not NetworkManager.mp8_room_extended():
++		return false
++	return game_reference != null and not game_reference.searching_disabled
++
+ func update_has_knife(_delta: float):
+ 
+ 	if GameManager.local_game and player_presence and not player_presence.local_controller_connected:
+@@ -347,6 +354,9 @@ func update_has_knife(_delta: float):
+ 	if not has_item:
+ 		return
+ 
++	if _mp8_stab_waits():
++		return
++
+ 	if DynamicInput.is_action_just_pressed(player_presence.device_id, "action_1") && !knife_on_cooldown:
+ 
+ 		if is_holding_syringe:
+@@ -523,6 +533,10 @@ func play_scream_sound():
+ 
+ func set_infected_name_label():
+ 
++	# Retail split screen does not reveal infected ally names. Layer 20 is
++	# available for P8's fog output locally, so no name mesh may use it here.
++	if GameManager.local_game:
++		return
+ 	if infected_label_visible:
+ 		return
+ 
+@@ -570,7 +584,13 @@ func set_local_values(starting_layer: int):
+ 
+ 	local_visual_layer_from = starting_layer
+ 
++	# World geometry, characters and the ambient light occupy layers 1..4.
++	for layer in range(1, 5):
++		local_camera.set_cull_mask_value(layer, true)
++	for layer in range(5, 21):
++		local_camera.set_cull_mask_value(layer, false)
+ 	local_camera.set_cull_mask_value(starting_layer + 1, true)
++	fog_of_war.overhead_camera.cull_mask = 0
+ 	fog_of_war.set_local_values(starting_layer)
+ 
+ @rpc("any_peer", "call_local", "reliable")

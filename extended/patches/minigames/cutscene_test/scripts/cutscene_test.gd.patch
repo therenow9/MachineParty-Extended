@@ -1,0 +1,72 @@
+diff --git a/minigames/cutscene_test/scripts/cutscene_test.gd b/minigames/cutscene_test/scripts/cutscene_test.gd
+--- a/minigames/cutscene_test/scripts/cutscene_test.gd
++++ b/minigames/cutscene_test/scripts/cutscene_test.gd
+@@ -34,6 +34,14 @@ var sentinel_messages_array: Array[String] = [
+ 	"LOC_SENTINEL_03", 
+ ]
+ 
++# [MP8] The scene has 4 spawn markers, and the generic midpoint top-up would crowd 4 more between them, touching
++# and hiding each other. This opts out: from 5 players the rest stand in a second row, further from the fixed
++# camera and in the gaps the first row leaves in its view, well outside FieldHouseProximity's 30 of the house.
++var mp8_owns_spawns: bool = true
++const MP8_GAME_SPOTS := 4
++const MP8_SECOND_ROW: Array[Vector3] = [Vector3(-6.4, 0.0, 45.5), Vector3(1.7, 0.0, 45.5),
++	Vector3(5.4, 0.0, 45.5), Vector3(11.4, 0.0, 45.5)]
++
+ var grass_shader: ShaderMaterial
+ var player_has_reached_house = false
+ 
+@@ -79,6 +87,34 @@ func initialize(_round_number: int, _total_rounds: int, _scores: Dictionary = {}
+ 
+ func spawn_players():
+ 
++	# [MP8] A mixed room spawns as the game does (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_spawn_players()
++		return
++
++	var spawn_positions = players_spawn_node.get_children()
++	spawn_positions.shuffle()
++	var mp8_spots := _mp8_spawn_spots(spawn_positions, PlayerManager.player_presences.size())
++
++	for i in PlayerManager.player_presences.size():
++		var network_id = PlayerManager.player_presences.keys()[i]
++
++		var position: Vector3 = mp8_spots[i]
++		var player_character: CutsceneTestPlayer = player_scene.instantiate()
++
++		players_node.add_child(player_character, true)
++		player_character.get_child(0).set_manager_from_path_rpc.rpc(self.get_path())
++		player_character.set_marker_camera_from_path_rpc.rpc(cam.get_path())
++
++		player_character.set_player_presence.rpc(network_id)
++		player_character.teleport_rpc.rpc(position)
++
++		players[network_id] = player_character
++		player_scores[network_id] = 0
++
++# The game's spawn_players, for a mixed room (D120).
++func _mp8_game_spawn_players():
++
+ 	var spawn_positions = players_spawn_node.get_children()
+ 	spawn_positions.shuffle()
+ 
+@@ -98,6 +134,18 @@ func spawn_players():
+ 		players[network_id] = player_character
+ 		player_scores[network_id] = 0
+ 
++# [MP8] The markers' positions in the order given, then above 4 players the second row, shuffled: the markers
++# fill first, so a game of up to 4 is the game's own.
++func _mp8_spawn_spots(markers: Array, players: int) -> Array[Vector3]:
++	var spots: Array[Vector3] = []
++	for marker in markers:
++		spots.append(marker.global_position)
++	if players > MP8_GAME_SPOTS:
++		var row := MP8_SECOND_ROW.duplicate()
++		row.shuffle()
++		spots.append_array(row)
++	return spots
++
+ func initialize_debug_specifics():
+ 	minigame_overlay.visible = false
+ 

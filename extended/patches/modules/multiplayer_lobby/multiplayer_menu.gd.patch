@@ -1,0 +1,277 @@
+diff --git a/modules/multiplayer_lobby/multiplayer_menu.gd b/modules/multiplayer_lobby/multiplayer_menu.gd
+--- a/modules/multiplayer_lobby/multiplayer_menu.gd
++++ b/modules/multiplayer_lobby/multiplayer_menu.gd
+@@ -17,7 +17,7 @@ var player_order_by_seat: Dictionary[int, int] = {
+ 	0: -1, 
+ 	1: -1, 
+ 	2: -1, 
+-	3: -1
++	3: -1, 4: -1, 5: -1, 6: -1, 7: -1  # [MP8] stock has 4 seats
+ }
+ 
+ func _ready() -> void :
+@@ -97,47 +97,155 @@ func _ready() -> void :
+ 	var arguments = Array(OS.get_cmdline_args())
+ 	var m_size = DisplayServer.screen_get_usable_rect()
+ 
+-	if arguments.has("1"):
+-		debug_lobby_handler.name_entry.text = "P1"
+-		get_window().size = Vector2(m_size.size.x * 0.5, m_size.size.y * 0.5)
+-		get_window().position = Vector2(m_size.position.x + (m_size.size.x * 0.5), 0.0)
+-
+-	elif arguments.has("2"):
+-		debug_lobby_handler.name_entry.text = "P2"
+-		get_window().size = Vector2(m_size.size.x * 0.5, m_size.size.y * 0.5)
+-		get_window().position = Vector2(m_size.position.x, 0.0)
++	# [MP8] A test build runs Extended's test instances (1 to MAX_PLAYERS, _mp8_test_instances); a shipped
++	# build, the game's own 1-4, which also size and place each window.
++	if NetworkManager.mp8_development_tools_allowed():
++		await _mp8_test_instances()
++	else:
++		if arguments.has("1"):
++			debug_lobby_handler.name_entry.text = "P1"
++			get_window().size = Vector2(m_size.size.x * 0.5, m_size.size.y * 0.5)
++			get_window().position = Vector2(m_size.position.x + (m_size.size.x * 0.5), 0.0)
++
++		elif arguments.has("2"):
++			debug_lobby_handler.name_entry.text = "P2"
++			get_window().size = Vector2(m_size.size.x * 0.5, m_size.size.y * 0.5)
++			get_window().position = Vector2(m_size.position.x, 0.0)
++
++		elif arguments.has("3"):
++			debug_lobby_handler.name_entry.text = "P3"
++			get_window().size = Vector2(m_size.size.x * 0.5, m_size.size.y * 0.5)
++			get_window().position = Vector2(m_size.position.x + (m_size.size.x * 0.5), m_size.size.y * 0.5)
++
++		elif arguments.has("4"):
++			debug_lobby_handler.name_entry.text = "P4"
++			get_window().size = Vector2(m_size.size.x * 0.5, m_size.size.y * 0.5)
++			get_window().position = Vector2(m_size.position.x, m_size.size.y * 0.5)
++
++		if arguments.has("host"):
++			_on_host_button_pressed()
++
++		elif arguments.has("join"):
++			if arguments.has("1"):
++				await get_tree().create_timer(0.2, false).timeout
++				AudioServer.set_bus_mute(0, true)
++			if arguments.has("2"):
++				await get_tree().create_timer(0.6, false).timeout
++			if arguments.has("3"):
++				await get_tree().create_timer(0.8, false).timeout
++				AudioServer.set_bus_mute(0, true)
++			if arguments.has("4"):
++				await get_tree().create_timer(1, false).timeout
++				AudioServer.set_bus_mute(0, true)
++
++			_on_join_button_pressed()
+ 
+-	elif arguments.has("3"):
+-		debug_lobby_handler.name_entry.text = "P3"
+-		get_window().size = Vector2(m_size.size.x * 0.5, m_size.size.y * 0.5)
+-		get_window().position = Vector2(m_size.position.x + (m_size.size.x * 0.5), m_size.size.y * 0.5)
++	lobby_handler.root.visible = false
++	hide_screens()
++	debug_lobby_handler.set_active(true)
+ 
+-	elif arguments.has("4"):
+-		debug_lobby_handler.name_entry.text = "P4"
+-		get_window().size = Vector2(m_size.size.x * 0.5, m_size.size.y * 0.5)
+-		get_window().position = Vector2(m_size.position.x, m_size.size.y * 0.5)
++# [MP8] The game's built-in 1-4 test instances, extended to MAX_PLAYERS, in a test build. The window is not
++# resized or moved here, so --resolution/--position on the command line keep 8 windows from stacking.
++func _mp8_test_instances() -> void :
+ 
+-	if arguments.has("host"):
+-		_on_host_button_pressed()
++	var mp8_args := NetworkManager.mp8_dev_args()
++	var mp8_index: int = 0
++	for k in range(1, NetworkManager.MAX_PLAYERS + 1):
++		if mp8_args.has(str(k)):
++			mp8_index = k
++			break
+ 
+-	elif arguments.has("join"):
+-		if arguments.has("1"):
+-			await get_tree().create_timer(0.2, false).timeout
+-			AudioServer.set_bus_mute(0, true)
+-		if arguments.has("2"):
+-			await get_tree().create_timer(0.6, false).timeout
+-		if arguments.has("3"):
+-			await get_tree().create_timer(0.8, false).timeout
+-			AudioServer.set_bus_mute(0, true)
+-		if arguments.has("4"):
+-			await get_tree().create_timer(1, false).timeout
++	if mp8_index > 0:
++		debug_lobby_handler.name_entry.text = "P%d" % mp8_index
++		# [MP8] mp8longname: a 20-character test name; the two-character "P1".."P8" hide name-field
++		# layout problems and whether the 20-character limit holds.
++		if mp8_args.has("mp8longname"):
++			debug_lobby_handler.name_entry.text = (
++				("P%d" % mp8_index) + "_ABCDEFGHIJKLMNOPQRST"
++			).left(20)
++		# [MP8] Mutes every instance but one (mp8audio=<n>, default 1). Sounds played only on the
++		# authority's machine (the hunter's bolt, reload, scope) are then missing from other instances,
++		# while RPC'd ones (the shot) are heard: that is the mute, not a missing sound.
++		var mp8_audio_index: int = 1
++		for a in mp8_args:
++			var s_audio: String = String(a)
++			if s_audio.begins_with("mp8audio="):
++				mp8_audio_index = int(s_audio.substr(9))
++		if mp8_audio_index > 0 and mp8_index != mp8_audio_index:
+ 			AudioServer.set_bus_mute(0, true)
++		elif mp8_audio_index <= 0:
++			print("[MP8] this instance (P%d) keeps sound (mp8audio=0: none muted)" % mp8_index)
++		else:
++			print("[MP8] this instance (P%d) keeps sound, others muted" % mp8_index)
+ 
++	if mp8_args.has("host"):
++		print("[MP8] auto HOST (P%d)" % mp8_index)
++		_on_host_button_pressed()
++
++		# [MP8] Auto start: mp8start waits for MAX_PLAYERS, mp8start=<n> for n players.
++		var mp8_want: int = 0
++		for a in mp8_args:
++			var s: String = String(a)
++			if s == "mp8start":
++				mp8_want = NetworkManager.MAX_PLAYERS
++			elif s.begins_with("mp8start="):
++				mp8_want = maxi(int(s.substr(9)), 2)
++		if mp8_want > 0:
++			_mp8_autostart(mp8_want)
++
++	elif mp8_args.has("join"):
++		await get_tree().create_timer(0.4 * float(maxi(mp8_index, 1)), false).timeout
++		print("[MP8] auto JOIN (P%d)" % mp8_index)
+ 		_on_join_button_pressed()
+ 
+-	lobby_handler.root.visible = false
+-	hide_screens()
+-	debug_lobby_handler.set_active(true)
++# [MP8] Auto start on the host instance: presses START once everyone is in, and gives up on a
++# timeout rather than holding the lobby.
++func _mp8_autostart(want: int) -> void :
++
++	print("[MP8] autostart: waiting for %d players" % want)
++
++	var waited: int = 0
++	while waited < 180:
++
++		await get_tree().create_timer(1.0).timeout
++		waited += 1
++
++		if not NetworkManager.active_backend:
++			continue
++
++		var n: int = NetworkManager.active_backend.connected_players.size()
++
++		if waited % 5 == 0:
++			print("[MP8] autostart: %d/%d connected (%d s)" % [n, want, waited])
++
++		if n >= want:
++			print("[MP8] autostart: %d players in, starting in 3 s" % n)
++			# [MP8] The lobby promo shot, mid-wait: the only moment with every seat filled before the
++			# start. The 3 s wait is split around it.
++			await get_tree().create_timer(1.5).timeout
++			_mp8_lobby_shot()
++			await get_tree().create_timer(1.5).timeout
++			print("[MP8] autostart: starting")
++			_on_lobby_start_button_pressed()
++			return
++
++	print("[MP8] autostart: gave up after %d s without %d players" % [waited, want])
++
++
++# [MP8] The 8-seat lobby promo shot (mp8promo), from the host's viewport. game.gd's in-match shots
++# hang off load_minigame() and game.gd is not in the tree yet in the lobby, hence this one.
++func _mp8_lobby_shot() -> void :
++
++	if not NetworkManager.mp8_dev_args().has("mp8promo"):
++		return
++
++	await RenderingServer.frame_post_draw
++
++	var img: Image = get_viewport().get_texture().get_image()
++	if img != null:
++		img.save_png("user://mp8_promo_lobby.png")
++		print("[MP8] mp8promo: saved user://mp8_promo_lobby.png")
++
+ 
+ func hide_screens():
+ 
+@@ -151,8 +259,15 @@ func setup_lobby_view():
+ func update_player_list():
+ 
+ 	if not NetworkManager.active_backend:
++		print("[MP8] update_player_list: no active_backend, skipping")
+ 		return
+ 
++	print("[MP8] update_player_list seats=%s connected=%d slots=%d" % [
++		str(player_order_by_seat.values()),
++		NetworkManager.active_backend.connected_players.size(),
++		lobby_handler.players.size(),
++	])
++	NetworkManager.mp8_lobby_layout(lobby_handler, player_order_by_seat.size() > NetworkManager.MP8_MIXED_CAP)  # [MP8] D121
+ 	lobby_handler.update_player_list(player_order_by_seat.values())
+ 
+ func show_message(_message: String):
+@@ -179,17 +294,37 @@ func _on_customization_button_pressed():
+ 
+ 	get_tree().change_scene_to_file("res://scenes/character_customization.tscn")
+ 
++# [MP8] Host/join run once: a second press (easy to make when clicking a test window to focus it)
++# would rebuild the server and reset player_order_by_seat, dropping every connected peer.
++# Test NetworkManager.active_backend, not the SceneTree's multiplayer: Godot's default
++# OfflineMultiplayerPeer always reports a connected peer. active_backend is set synchronously.
++func _mp8_net_busy() -> bool :
++
++	return NetworkManager.active_backend != null
++
++
+ func _on_host_button_pressed():
++	if _mp8_net_busy():
++		print("[MP8] HOST pressed, but a backend exists (%s) - ignored (would rebuild the server)" % str(NetworkManager.active_backend))
++		return
++	print("[MP8] HOST button pressed")
+ 	NetworkManager.start_host(debug_lobby_handler.name_entry.text)
+ 
+-	player_order_by_seat = {0: 1, 1: -1, 2: -1, 3: -1}
++	player_order_by_seat = {0: 1, 1: -1, 2: -1, 3: -1, 4: -1, 5: -1, 6: -1, 7: -1}  # [MP8]
+ 	player_list_updated_rpc.rpc(player_order_by_seat)
+ 
+ func _on_steam_host_button_pressed():
++	if _mp8_net_busy():
++		print("[MP8] STEAM HOST pressed, but already online - ignored")
++		return
+ 	NetworkManager.active_backend_type = NetworkManager.NetworkBackendType.Steam
+ 	NetworkManager.start_host(debug_lobby_handler.name_entry.text)
+ 
+ func _on_join_button_pressed():
++	if _mp8_net_busy():
++		print("[MP8] JOIN pressed, but already online - ignored (would reconnect)")
++		return
++	print("[MP8] JOIN button pressed")
+ 	NetworkManager.start_client(debug_lobby_handler.name_entry.text)
+ 
+ 	update_player_list()
+@@ -316,6 +451,8 @@ func _on_peer_disconnected(_network_id: int):
+ 			player_order_by_seat[key] = -1
+ 			break
+ 
++	# [MP8] D121: a leave's broadcast is fitted too; a vanilla peer may be connecting.
++	player_order_by_seat = NetworkManager.mp8_fit_seats(player_order_by_seat, NetworkManager.mp8_room_extended())
+ 	player_list_updated_rpc.rpc(player_order_by_seat)
+ 
+ func _on_subscreen_message_sent(_message: String):
+@@ -424,6 +561,11 @@ func _on_input_device_changed(input_device: GameManager.InputDevice):
+ @rpc("any_peer", "call_remote", "reliable")
+ func player_joined_lobby_rpc(_network_id: int):
+ 
++	# [MP8] D121: the seat map fitted to the room, before the game's loop takes the first free seat.
++	var mp8_seats := player_order_by_seat.size()
++	player_order_by_seat = NetworkManager.mp8_fit_seats(player_order_by_seat, NetworkManager.mp8_room_extended())
++	if player_order_by_seat.size() != mp8_seats:
++		print("[MP8] seat map: %d -> %d seats %s" % [mp8_seats, player_order_by_seat.size(), str(player_order_by_seat.values())])
+ 
+ 	for key in player_order_by_seat.keys():
+ 		if player_order_by_seat[key] < 0:

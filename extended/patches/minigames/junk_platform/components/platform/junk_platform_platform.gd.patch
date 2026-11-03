@@ -1,0 +1,29 @@
+diff --git a/minigames/junk_platform/components/platform/junk_platform_platform.gd b/minigames/junk_platform/components/platform/junk_platform_platform.gd
+--- a/minigames/junk_platform/components/platform/junk_platform_platform.gd
++++ b/minigames/junk_platform/components/platform/junk_platform_platform.gd
+@@ -93,12 +93,14 @@ func stop_blinking():
+ 			damage_circles[i].set_surface_override_material(0, mat_unlit)
+ 
+ var blinking = false
++# [MP8] The game's loop awaits only while the deck has a tree, so a deck still blinking when the match
++# leaves the tree would loop without yielding and freeze the game. Out of the tree, the loop ends.
+ func blink():
+-	while blinking:
++	while blinking and is_inside_tree():
+ 		if alarm_playing: speaker_alarm.play()
+ 		for i in damage_circles.size():
+ 			damage_circles[i].set_surface_override_material(0, mat_unlit)
+-		if get_tree() != null && blinking: await get_tree().create_timer(0.1, false).timeout
++		if is_inside_tree() && blinking: await get_tree().create_timer(0.1, false).timeout
+ 		for i in damage_circles.size():
+ 			if lit_array[i] == true:
+ 				if i >= 7:
+@@ -106,7 +108,7 @@ func blink():
+ 				else:
+ 					damage_circles[i].set_surface_override_material(0, mat_lit)
+ 		if alarm_playing: speaker_alarm.play()
+-		if get_tree() != null && blinking: await get_tree().create_timer(0.1, false).timeout
++		if is_inside_tree() && blinking: await get_tree().create_timer(0.1, false).timeout
+ 
+ @rpc("any_peer", "call_local", "reliable")
+ func update_indicator_rpc(_ratio: int):

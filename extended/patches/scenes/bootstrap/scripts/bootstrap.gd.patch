@@ -1,0 +1,48 @@
+diff --git a/scenes/bootstrap/scripts/bootstrap.gd b/scenes/bootstrap/scripts/bootstrap.gd
+--- a/scenes/bootstrap/scripts/bootstrap.gd
++++ b/scenes/bootstrap/scripts/bootstrap.gd
+@@ -25,10 +25,13 @@ func _ready() -> void :
+ 		get_tree().call_deferred("change_scene_to_file", local_development_scene)
+ 		return
+ 
+-	if OS.has_feature("editor") and Globals.debug:
++	# [MP8] A test build's -debug-tools reaches the debug lobby too; a shipped build, the editor only (the game's).
++	if NetworkManager.mp8_development_tools_allowed() and Globals.debug:
+ 
++		print("[MP8] bootstrap -> debug lobby ", development_scene)
+ 		get_tree().call_deferred("change_scene_to_file", development_scene)
+ 	else:
++		print("[MP8] bootstrap -> main menu ", release_scene)
+ 		get_tree().call_deferred("change_scene_to_file", release_scene)
+ 
+ func check_debug_tools_launch(command_line_arguments):
+@@ -36,8 +39,29 @@ func check_debug_tools_launch(command_line_arguments):
+ 	for arg in command_line_arguments:
+ 		if arg == "-debug-tools":
+ 			Globals.allow_singleplayer = true
++			# [MP8] Routes _ready() to the debug lobby in a test build. The game's own code reads Globals.debug
++			# too (pause menu, backend, debug tools), so a shipped build leaves it as the game does.
++			if NetworkManager.mp8_development_tools_allowed():
++				Globals.debug = true
+ 			Globals.enable_debug_tools()
+ 
++	for arg in NetworkManager.mp8_dev_args():
++		# [MP8] Test fast-forward: skips only cutscenes outside minigames (the opening and the
++		# intermission intro), never timing inside one. Do not add debug_skip_intermission (clients'
++		# nodes are not built when the server's RPCs arrive) or debug_skip_brief (disco_dodge's
++		# 7-second symbol timers then fire after start_pattern() and desync display from logic).
++		if arg == "mp8fast":
++			Globals.debug_instant_start = true
++			Globals.skipping_intro_cutscene = true
++			print("[MP8] mp8fast: skipping cutscenes outside minigames only (in-match timing untouched)")
++
++		# [MP8] Skips only the opening cutscene, which the lobby's own skip-intro option also does, and
++		# touches no timing. `mp8fast` also sets `debug_instant_start`, which shortens the intermission
++		# intro's setup and shows extra recv_nodes errors; judge play with this one, not that.
++		if arg == "mp8skipintro":
++			Globals.skipping_intro_cutscene = true
++			print("[MP8] mp8skipintro: skipping the opening cutscene, in-match timing as in normal play")
++
+ func check_game_invite_launch(command_line_arguments):
+ 	var join_lobby = false
+ 	var lobby_code = -1

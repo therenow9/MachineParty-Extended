@@ -1,0 +1,314 @@
+diff --git a/minigames/intermission_new/components/intermission_cutscene_intro.gd b/minigames/intermission_new/components/intermission_cutscene_intro.gd
+--- a/minigames/intermission_new/components/intermission_cutscene_intro.gd
++++ b/minigames/intermission_new/components/intermission_cutscene_intro.gd
+@@ -33,7 +33,84 @@ class_name Intermission_Cutscene_Intro extends Node
+ var vessel_to_insert_index = 0
+ var synced_player_names_list = []
+ 
++# [MP8] The rack has 4 slots. From 5 players the slot block becomes two copies of itself at MP8_STACK_SCALE,
++# one above the other, with 8 slots. The block is separate nodes under "intermission intro2" (a backing with its
++# holes baked in, 3 meshes per name bar, a socket per tube); the rack's own mesh has a hole where it sits.
++const MP8_GAME_SLOTS := 4
++const MP8_STACK_SCALE := 0.7
++const MP8_STACK_GAP := 0.02
++const MP8_BACKING := "intermission intro2/Cube_003"
++const MP8_BARS := [["Cube_002", "Cube_004", "Cube_005"], ["Cube_006", "Cube_007", "Cube_008"],
++	["Cube_009", "Cube_010", "Cube_011"], ["Cube_012", "Cube_013", "Cube_014"]]
++const MP8_SOCKET := "intermission intro2/fake vessel parent/real vessel%d"
++# The camera's free mount (axes right, up, back) during a stacked intro: closer and to the left, which also keeps
++# the open end of the scientist's sleeve (the arm stops at the elbow) off screen.
++const MP8_STACK_VIEW := Vector3(-0.2, -0.3, 0.25)
++const MP8_STACK_INSERT_WAIT := 2.5
++const MP8_FILL_ENERGY := 0.15
++const MP8_BEEP_BASE := 0.32
++
++var _mp8_stacked := false
++# The scene as authored, kept by _mp8_build_rack for _mp8_unstack_rack: the four arrays, the moved nodes'
++# transforms, the arm's scale, and every node the build added.
++var _mp8_rest_tags: Array[Intermission_RackNametag] = []
++var _mp8_rest_tubes: Array[Node3D] = []
++var _mp8_rest_hands: Array[Vector3] = []
++var _mp8_rest_hidden: Array[Node3D] = []
++var _mp8_rest_xf: Dictionary = {}
++var _mp8_rest_arm_scale := Vector3.ONE
++var _mp8_added: Array[Node] = []
++# While Extended's intro plays, its loop and the insert animation's method track index the stacked arrays, so a
++# room that turns mixed mid-intro keeps the stack until the next show.
++var _mp8_intro_playing := false
++
+ func start_intro_cutscene():
++
++	# [MP8] A mixed room plays the game's intro (D120), on the game's 4 slots.
++	if not NetworkManager.mp8_room_extended():
++		_mp8_unstack_rack()
++		await _mp8_game_start_intro_cutscene()
++		return
++	await _mp8_build_rack(PlayerManager.player_presences.size())
++	_mp8_intro_playing = true
++	var mp8_camera_mount: Node3D = intermission_manager.intermission_cam.get_parent()
++	if _mp8_stacked:
++		mp8_camera_mount.position = MP8_STACK_VIEW
++	if multiplayer.get_unique_id() == get_multiplayer_authority():
++		setup_synced_player_name_list()
++	for vessel in vessels_in_main_rack:
++		vessel.visible = false
++	vessel_to_insert_index = 0
++	visual_parent_scientist_hand.visible = false
++	ik_scientist_arm.start()
++	intermission_manager.intermission_main_parent.visible = true
++	intermission_manager.intermission_cam.current = true
++	anim_intermission_cam.play("intro2 setup")
++	await get_tree().create_timer(2, false).timeout
++	temp_viewblocker.visible = false
++	MusicManager.play_intro_music()
++	speaker_intro_wind.play()
++	anim_intermission_cam.play("intro2")
++
++	visual_parent_scientist_hand.visible = true
++	anim_intermission_cam.play("intro2")
++	await get_tree().create_timer(1.2, false).timeout
++	for i in PlayerManager.player_presences.size():
++		insert_vessel_into_rack()
++		await get_tree().create_timer(MP8_STACK_INSERT_WAIT if _mp8_stacked else 3.0).timeout
++		vessel_to_insert_index += 1
++	if _mp8_stacked:
++		create_tween().set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT).tween_property(mp8_camera_mount, "position", Vector3.ZERO, 0.8)
++	tower_mesh_to_hide.visible = false
++	anim_intermission_cam.play("intro3", 4)
++	await get_tree().create_timer(0.5, false).timeout
++	intermission_manager.set_intermission_viewport_screen(true)
++	await get_tree().create_timer(0.4, false).timeout
++	_mp8_intro_playing = false
++	intermission_manager.picker.start_minigame_pick()
++
++# The game's start_intro_cutscene, for a mixed room (D120).
++func _mp8_game_start_intro_cutscene():
+ 	if multiplayer.get_unique_id() == get_multiplayer_authority():
+ 		setup_synced_player_name_list()
+ 	for vessel in vessels_in_main_rack:
+@@ -71,6 +148,29 @@ func play_nametag_death_2():
+ 	speaker_intro_nametag_death2.play()
+ 
+ func skip_intro_cutscene():
++
++	# [MP8] A mixed room plays the game's intro (D120), on the game's 4 slots.
++	if not NetworkManager.mp8_room_extended():
++		_mp8_unstack_rack()
++		await _mp8_game_skip_intro_cutscene()
++		return
++	# [MP8] The session end lights one tag per player whether or not the intro played.
++	await _mp8_build_rack(PlayerManager.player_presences.size())
++	for i in visuals_to_hide:
++		i.visible = false
++	anim_intermission_cam.play("RESET")
++	anim_env.play("set env to intermission screen instant")
++	tower_mesh_to_hide.visible = false
++	await get_tree().create_timer(0.5, false).timeout
++	temp_viewblocker.get_child(1).play("fade out")
++	MusicManager.start_playing_music_host(true, 2, true, 3)
++	if !Globals.debug_instant_start:
++		intermission_manager.set_intermission_viewport_screen(true)
++		await get_tree().create_timer(1, false).timeout
++	intermission_manager.picker.start_minigame_pick()
++
++# The game's skip_intro_cutscene, for a mixed room (D120).
++func _mp8_game_skip_intro_cutscene():
+ 	for i in visuals_to_hide:
+ 		i.visible = false
+ 	anim_intermission_cam.play("RESET")
+@@ -94,6 +194,26 @@ func insert_vessel_into_rack():
+ 	speaker_intro_insert_vessel.play()
+ 
+ func bootup_nametag():
++
++	# [MP8] A mixed room plays the game's intro (D120), on the game's 4 slots.
++	if not NetworkManager.mp8_room_extended():
++		_mp8_unstack_rack()
++		_mp8_game_bootup_nametag()
++		return
++	# [MP8] Stacked, the beep climbs a semitone per tube from the middle of the game's random range.
++	if _mp8_stacked:
++		speaker_intro_show_nametag.pitch_scale = MP8_BEEP_BASE * pow(2.0, vessel_to_insert_index / 12.0)
++	else:
++		speaker_intro_show_nametag.pitch_scale = randf_range(0.3, 0.34)
++	speaker_intro_show_nametag.play()
++	var player_name = synced_player_names_list[vessel_to_insert_index]
++	if player_name.length() > 10:
++		player_name = player_name.left(9) + "-"
++	rack_nametags[vessel_to_insert_index].set_nametag_text(player_name.to_upper())
++	rack_nametags[vessel_to_insert_index].show_nametag()
++
++# The game's bootup_nametag, for a mixed room (D120).
++func _mp8_game_bootup_nametag():
+ 	speaker_intro_show_nametag.pitch_scale = randf_range(0.3, 0.34)
+ 	speaker_intro_show_nametag.play()
+ 	var player_name = synced_player_names_list[vessel_to_insert_index]
+@@ -149,6 +269,31 @@ func setup_synced_player_name_list():
+ @rpc("any_peer", "call_remote", "reliable")
+ func reset_nametags_rpc(id_array: Array):
+ 
++	# [MP8] A mixed room plays the game's intro (D120), on the game's 4 slots.
++	if not NetworkManager.mp8_room_extended():
++		_mp8_unstack_rack()
++		_mp8_game_reset_nametags_rpc(id_array)
++		return
++
++	# [MP8] A peer that reconnects mid-session has a fresh scene; without the slots, tags 5-8 are dropped.
++	await _mp8_build_rack(id_array.size())
++	for i in id_array.size():
++
++		if i >= rack_nametags.size():
++			break
++
++		var id: int = id_array[i]
++		var player_name: String = intermission_manager.get_user_name_from_network_id(id)
++
++		if player_name.length() > 10:
++			player_name = player_name.left(9) + "-"
++
++		rack_nametags[i].set_nametag_text(player_name.to_upper())
++		rack_nametags[i].show_nametag()
++
++# The game's reset_nametags_rpc, for a mixed room (D120).
++func _mp8_game_reset_nametags_rpc(id_array: Array):
++
+ 	for i in id_array.size():
+ 
+ 		if i >= rack_nametags.size():
+@@ -168,3 +313,136 @@ func set_synced_player_names_list(id_array):
+ 	synced_player_names_list = []
+ 	for id in id_array:
+ 		synced_player_names_list.append(intermission_manager.get_user_name_from_network_id(id))
++
++# [MP8] Idempotent, so the intro, the skip and a reconnect can each call it. Slots 0-3 move the scene's own nodes
++# onto the upper copy; 4-7 are copies of them on the lower one. The arm scales with the slots, about its own origin,
++# so each hand position is mapped like its socket. Nodes added under "intermission intro2" hide and show with it.
++func _mp8_build_rack(count: int) -> void:
++	if _mp8_stacked or count <= MP8_GAME_SLOTS:
++		return
++	var root: Node = get_parent()
++	if not root.is_node_ready():
++		# The scene refuses add_child while it is still adding its own children.
++		await root.ready
++		if _mp8_stacked:
++			return
++	var intro2: Node3D = root.get_node_or_null("intermission intro2")
++	var backing: MeshInstance3D = root.get_node_or_null(MP8_BACKING)
++	var sockets: Array = range(MP8_GAME_SLOTS).map(func(i): return root.get_node_or_null(MP8_SOCKET % i))
++	var bars: Array = MP8_BARS.map(func(b): return b.map(func(n): return intro2.get_node_or_null(n) if intro2 else null))
++	if intro2 == null or backing == null or sockets.has(null) or bars.any(func(b): return b.has(null)) \
++			or rack_nametags.size() < MP8_GAME_SLOTS or vessels_in_main_rack.size() < MP8_GAME_SLOTS \
++			or hand_armature_parent_position_by_rack_index.size() < MP8_GAME_SLOTS:
++		push_warning("[MP8] intro: the rack's slot block is not where it was; staying at %d slots" % MP8_GAME_SLOTS)
++		return
++	_mp8_stacked = true
++	_mp8_rest_tags = rack_nametags
++	_mp8_rest_tubes = vessels_in_main_rack
++	_mp8_rest_hands = hand_armature_parent_position_by_rack_index
++	_mp8_rest_hidden = visuals_to_hide
++	_mp8_rest_arm_scale = hand_armature_parent.scale
++	_mp8_rest_xf.clear()
++	_mp8_rest_xf[backing] = backing.global_transform
++	for s in MP8_GAME_SLOTS:
++		for n in bars[s] + [sockets[s], rack_nametags[s], vessels_in_main_rack[s]]:
++			_mp8_rest_xf[n] = n.global_transform
++	var box: AABB = backing.global_transform * backing.get_aabb()
++	var top := Vector3(box.end.x, box.end.y, box.get_center().z)
++	var decks: Array[Transform3D] = []
++	for d in 2:
++		var to := top - Vector3(0, d * (MP8_STACK_SCALE * box.size.y + MP8_STACK_GAP), 0)
++		decks.append(Transform3D(Basis.from_scale(Vector3.ONE * MP8_STACK_SCALE), to - MP8_STACK_SCALE * top))
++	var rig: Vector3 = visual_parent_scientist_hand.global_position
++	var tags: Array = rack_nametags.duplicate()
++	var tubes: Array = vessels_in_main_rack.duplicate()
++	var hands: Array = hand_armature_parent_position_by_rack_index.duplicate()
++	var xf := func(n: Node3D) -> Transform3D: return n.global_transform
++	var tag_xf: Array = tags.map(xf)
++	var tube_xf: Array = tubes.map(xf)
++	var socket_xf: Array = sockets.map(xf)
++	var bar_xf: Array = bars.map(func(b): return b.map(xf))
++	var backing_xf: Transform3D = backing.global_transform
++	_mp8_plate(intro2, backing, box)
++	_mp8_copy(backing, decks[1] * backing_xf)
++	backing.global_transform = decks[0] * backing_xf
++	_mp8_fill_light(intro2, decks[1] * box.get_center())
++	hand_armature_parent.scale = Vector3.ONE * MP8_STACK_SCALE
++	# New arrays, assigned: an exported value array may be the scene's own copy, which clear() would rewrite.
++	var new_tags: Array[Intermission_RackNametag] = []
++	var new_tubes: Array[Node3D] = []
++	var new_hands: Array[Vector3] = []
++	var new_hidden: Array[Node3D] = visuals_to_hide.duplicate()
++	for k in 2 * MP8_GAME_SLOTS:
++		var s := k % MP8_GAME_SLOTS
++		var deck: Transform3D = decks[1 if k >= MP8_GAME_SLOTS else 0]
++		for j in bars[s].size():
++			_mp8_place(bars[s][j], k, deck * bar_xf[s][j])
++		_mp8_place(sockets[s], k, deck * socket_xf[s])
++		new_tags.append(_mp8_place(tags[s], k, deck * tag_xf[s]) as Intermission_RackNametag)
++		var tube: Node3D = _mp8_place(tubes[s], k, deck * tube_xf[s])
++		if k >= MP8_GAME_SLOTS:
++			new_hidden.append(tube)
++		new_tubes.append(tube)
++		new_hands.append(deck * (rig + hands[s]) - rig)
++	rack_nametags = new_tags
++	vessels_in_main_rack = new_tubes
++	hand_armature_parent_position_by_rack_index = new_hands
++	visuals_to_hide = new_hidden
++	print("[MP8] intro: %d slots in two stacks for %d players" % [rack_nametags.size(), count])
++
++# A copy is a sibling of the scene's node, so it hides and shows with the same parent.
++func _mp8_place(node: Node3D, k: int, at: Transform3D) -> Node3D:
++	var placed: Node3D = node if k < MP8_GAME_SLOTS else _mp8_copy(node, at)
++	placed.global_transform = at
++	return placed
++
++func _mp8_copy(node: Node3D, at: Transform3D) -> Node3D:
++	var copy: Node3D = node.duplicate()
++	copy.name = "%s mp8 %d" % [node.name, node.get_parent().get_child_count()]
++	node.get_parent().add_child(copy)
++	copy.global_transform = at
++	_mp8_added.append(copy)
++	return copy
++
++# Behind both copies, over the rack's hole that the smaller blocks no longer fill, in the backing's own material.
++func _mp8_plate(intro2: Node3D, backing: MeshInstance3D, box: AABB) -> void:
++	var plate := MeshInstance3D.new()
++	var mesh := BoxMesh.new()
++	mesh.size = Vector3(0.06, box.size.y, box.size.z)
++	plate.mesh = mesh
++	plate.material_override = backing.get_active_material(0)
++	intro2.add_child(plate)
++	_mp8_added.append(plate)
++	plate.global_position = Vector3(box.end.x - 0.05, box.get_center().y, box.get_center().z)
++
++# The scene's lights miss the lower copy. No shadow, so the arm passing in front doesn't darken it.
++func _mp8_fill_light(intro2: Node3D, centre: Vector3) -> void:
++	var light := OmniLight3D.new()
++	light.light_energy = MP8_FILL_ENERGY
++	light.light_color = Color(0.8, 0.95, 0.9)
++	light.omni_range = 3.5
++	intro2.add_child(light)
++	_mp8_added.append(light)
++	light.global_position = centre + Vector3(2.0, 0.3, 0)
++
++# [MP8] _mp8_build_rack undone: the added nodes gone, the scene's own nodes and arrays as authored. A rack
++# stacked at a session start of 5 or more, in a room that has since turned mixed, is the game's again.
++func _mp8_unstack_rack() -> void:
++	if not _mp8_stacked or _mp8_intro_playing:
++		return
++	for n in _mp8_added:
++		if is_instance_valid(n):
++			n.get_parent().remove_child(n)
++			n.queue_free()
++	_mp8_added.clear()
++	for n in _mp8_rest_xf:
++		if is_instance_valid(n):
++			n.global_transform = _mp8_rest_xf[n]
++	_mp8_rest_xf.clear()
++	hand_armature_parent.scale = _mp8_rest_arm_scale
++	rack_nametags = _mp8_rest_tags
++	vessels_in_main_rack = _mp8_rest_tubes
++	hand_armature_parent_position_by_rack_index = _mp8_rest_hands
++	visuals_to_hide = _mp8_rest_hidden
++	_mp8_stacked = false
++	print("[MP8] intro: the game's %d slots again (a mixed room)" % rack_nametags.size())

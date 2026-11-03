@@ -1,0 +1,574 @@
+diff --git a/minigames/duck_hunt/components/hunter_player/scripts/hunter_player.gd b/minigames/duck_hunt/components/hunter_player/scripts/hunter_player.gd
+--- a/minigames/duck_hunt/components/hunter_player/scripts/hunter_player.gd
++++ b/minigames/duck_hunt/components/hunter_player/scripts/hunter_player.gd
+@@ -18,6 +18,7 @@ class_name DuckHuntHunterPlayer
+ @export var hand_meshes: Array[MeshInstance3D]
+ @export var laser_mesh: MeshInstance3D
+ 
++# [MP8] The game's tables, read by its shoot and set_active_rpc in a mixed room (D120).
+ @export var magazine_capacity_by_duck_count: Dictionary[int, int] = {
+ 	0: 7, 
+ 	1: 7, 
+@@ -31,6 +32,313 @@ class_name DuckHuntHunterPlayer
+ 	3: 0.8, 
+ }
+ 
++# [MP8] Hunter tuning, keyed by total player count rather than duck count (5 and 6 players both
++# have 4 ducks but need opposite tuning). _mp8_tier() clamps the count into the key range, so a
++# lookup never falls to a default. Fire per duck (hunters x shots/s / ducks, reload included) is
++# 0.21-0.22 in every tier but 7 players (0.24), left higher on purpose.
++@export var magazine_capacity_by_player_count: Dictionary[int, int] = {
++	4: 10,
++	5: 12,
++	6: 7,
++	7: 8,
++	8: 10,
++}
++# cycle_time is not the interval between shots: the interval is the game's fixed 0.5 s + cycle_time,
++# so a rate change is computed on the whole interval (1.20 s / 1.3 = 0.92 s -> cycle 0.42).
++# The reload (2.85 s) is fixed in reload() and not tuned here.
++@export var cycle_time_by_player_count: Dictionary[int, float] = {
++	4: 0.80,   # interval 1.30 s (baseline)
++	5: 0.42,   # interval 0.92 s
++	6: 1.375,  # interval 1.875 s
++	7: 0.80,   # interval 1.30 s
++	8: 0.80,   # interval 1.30 s
++}
++
++# [MP8] Total player count from setup_rpc (0 = not passed; the tier falls back to duck count)
++var mp8_player_count: int = 0
++
++
++# [MP8] Hip-fire spread: the game's ray is exact scoped or not, so an unscoped shot
++# (zoom_fov_index 0) is turned to a random direction within this cone. The miss grows with
++# distance: at 8 degrees the median is about 1 m at 10 m and 12 m at 125 m, so unscoped shots
++# land only up close. The `mp8spread=<degrees>` command-line argument overrides it.
++@export var mp8_hipfire_spread_deg: float = 8.0
++
++var _mp8_spread_saved_rotation: Vector3 = Vector3.ZERO
++var _mp8_spread_applied: bool = false
++
++
++# [MP8] Fire-rate debug keys 1 / 2 / 3 (normal, 2x, half rate), only with the `mp8ratekeys`
++# command-line argument. The scale applies to the whole interval, the fixed 0.5 s included:
++# scaling cycle_time alone changes the interval too little to feel.
++var _mp8_rate_scale: float = 1.0
++var _mp8_rate_keys: bool = false
++var _mp8_rate_label: Label = null
++var _mp8_id_label: RichTextLabel = null  # two lines in two colours need rich text
++var _mp8_debug_canvas: CanvasLayer = null
++
++# [MP8] This round's hunter count, from setup_rpc
++var mp8_hunter_total: int = 1
++
++
++func _mp8_init_rate_keys() -> void :
++	# [MP8] Only the explicit `mp8ratekeys` argument, not -debug-tools: the test bench always passes
++	# -debug-tools, which would leave the keys on.
++	_mp8_rate_keys = NetworkManager.mp8_dev_args().has("mp8ratekeys")
++
++
++func _mp8_handle_rate_key(event: InputEvent) -> void :
++
++	if not _mp8_rate_keys:
++		return
++	if not (event is InputEventKey):
++		return
++	var key: InputEventKey = event
++	if not key.pressed or key.echo:
++		return
++
++	var scale: float = -1.0
++	match key.keycode:
++		KEY_1:
++			scale = 1.0
++		KEY_2:
++			scale = 0.5
++		KEY_3:
++			scale = 2.0
++	if scale < 0.0:
++		return
++
++	_mp8_rate_scale = scale
++
++	var base: float = 0.5 + _mp8_effective_cycle()
++	var label: String = "normal rate" if is_equal_approx(scale, 1.0) else (
++		"2x rate" if scale < 1.0 else "half rate"
++	)
++	var msg: String = "[rate debug] %s  shot interval %.2f s (%d-player tier cycle=%.2f)" % [
++		label, base * scale, _mp8_tier(), _mp8_effective_cycle()
++	]
++	print("[MP8] " + msg)
++	_mp8_show_rate_hint(msg)
++
++
++# [MP8] One overlay layer, shared by the rate hint and the top-right HUD
++func _mp8_debug_layer() -> CanvasLayer:
++	if _mp8_debug_canvas == null:
++		_mp8_debug_canvas = CanvasLayer.new()
++		_mp8_debug_canvas.layer = 100
++		add_child(_mp8_debug_canvas)
++	return _mp8_debug_canvas
++
++
++# [MP8] Debug labels set the game's font, Terminal F4, as the game's own labels do: the default
++# theme font renders with broken spacing, the glyphs piled on top of each other.
++func _mp8_style_debug_label(lbl: Label, color: Color) -> void :
++
++	var f = load("res://fonts/Terminal F4.ttf")
++	if f != null:
++		lbl.add_theme_font_override("font", f)
++	lbl.add_theme_font_size_override("font_size", 26)
++	lbl.add_theme_color_override("font_color", color)
++	lbl.add_theme_color_override("font_outline_color", Color.BLACK)
++	lbl.add_theme_constant_override("outline_size", 6)
++	lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
++
++
++# [MP8] Top-right HUD, shown in normal play: whether this round's magazine and fire rate are
++# buffed (red), nerfed (blue) or normal (green) against the 4-player tier, without numbers.
++# Nothing else tells a hunter the tier's effect.
++func _mp8_show_id_hud() -> void :
++
++	if player_presence == null:
++		return
++
++	# Online, every peer has both hunters' nodes: only the hunter this peer controls shows the HUD,
++	# or two labels stack in the corner of each screen.
++	if not GameManager.local_game:
++		if player_presence.network_id != multiplayer.get_unique_id():
++			return
++
++	# In a local game the HUD goes in the hunter's own split-screen tile, one line at 14 px (owner's
++	# pick): the overlay layer draws over the whole window, where both hunters' labels land on one spot.
++	var in_tile: bool = GameManager.local_game
++
++	if _mp8_id_label == null:
++		var lbl := RichTextLabel.new()
++		lbl.bbcode_enabled = true
++		lbl.scroll_active = false
++		lbl.fit_content = true
++		lbl.set_anchors_preset(Control.PRESET_TOP_RIGHT)
++		lbl.offset_left = -352.0 if in_tile else -420.0
++		lbl.offset_top = 12.0
++		lbl.offset_right = -16.0
++		lbl.offset_bottom = 120.0
++		var f = load("res://fonts/Terminal F4.ttf")
++		if f != null:
++			lbl.add_theme_font_override("normal_font", f)
++		lbl.add_theme_font_size_override("normal_font_size", 14 if in_tile else 26)
++		lbl.add_theme_color_override("font_outline_color", Color.BLACK)
++		lbl.add_theme_constant_override("outline_size", 6)
++		lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
++		if in_tile:
++			hud.add_child(lbl)
++		else:
++			_mp8_debug_layer().add_child(lbl)
++		_mp8_id_label = lbl
++
++	var tier: int = _mp8_tier()
++
++	# Against the 4-player tier: a larger magazine is a buff, and so is a shorter cycle (a wait, not a rate)
++	var base_mag: int = magazine_capacity_by_player_count.get(4, 10)
++	var base_cycle: float = cycle_time_by_player_count.get(4, 0.80)
++	var mag: int = _mp8_effective_magazine()
++	var cyc: float = _mp8_effective_cycle()
++
++	_mp8_id_label.text = "[right]%s%s%s[/right]" % [
++		_mp8_buff_line("MAG", _mp8_sign(float(mag - base_mag))),
++		"  " if in_tile else "\n",
++		_mp8_buff_line("RATE", _mp8_sign(base_cycle - cyc)),
++	]
++
++
++# [MP8] 1 = buffed, -1 = nerfed, 0 = normal. The tolerance keeps float noise (0.7999) from reading as a nerf.
++func _mp8_sign(v: float) -> int:
++	if v > 0.001:
++		return 1
++	if v < -0.001:
++		return -1
++	return 0
++
++
++# [MP8] One HUD line, the stat and buffed / nerfed / normal, in red, blue or green.
++# No numbers, on purpose.
++func _mp8_buff_line(what: String, direction: int) -> String:
++
++	var color: String = "#4dff6a"
++	var word: String = "NORMAL"
++	if direction > 0:
++		color = "#ff2d2d"
++		word = "BUFFED"
++	elif direction < 0:
++		color = "#3fa9ff"
++		word = "NERFED"
++
++	return "[color=%s]%s %s[/color]" % [color, what, word]
++
++
++func _mp8_show_rate_hint(text: String) -> void :
++
++	if _mp8_rate_label == null:
++		var lbl := Label.new()
++		lbl.set_anchors_preset(Control.PRESET_TOP_WIDE)
++		lbl.offset_top = 40.0
++		lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
++		_mp8_style_debug_label(lbl, Color(1.0, 0.85, 0.2))
++		_mp8_debug_layer().add_child(lbl)
++		_mp8_rate_label = lbl
++
++	_mp8_rate_label.text = text
++	_mp8_rate_label.modulate.a = 1.0
++	var t := create_tween()
++	t.tween_interval(2.0)
++	t.tween_property(_mp8_rate_label, "modulate:a", 0.0, 0.6)
++
++
++# [MP8] Speed that makes an animation fill `window` seconds: its length / window, or 1.0 when the
++# length is unknown. Clamped to [0.25, 4.0]: beyond that it smears or looks frozen, and staying
++# out of sync is better.
++func _mp8_anim_speed_for(anim_name: StringName, window: float) -> float:
++
++	if window <= 0.0 or anim_rig == null:
++		return 1.0
++	if not anim_rig.has_animation(anim_name):
++		return 1.0
++
++	var anim: Animation = anim_rig.get_animation(anim_name)
++	if anim == null or anim.length <= 0.0:
++		return 1.0
++
++	return clampf(anim.length / window, 0.25, 4.0)
++
++
++func _mp8_hipfire_spread_deg() -> float:
++	for a in NetworkManager.mp8_dev_args():
++		var t: String = String(a)
++		if t.begins_with("mp8spread="):
++			return float(t.substr(10))
++	return mp8_hipfire_spread_deg
++
++
++func _mp8_apply_hipfire_spread() -> void :
++
++	_mp8_spread_applied = false
++
++	if laser_raycast == null:
++		return
++	if zoom_fov_index > 0:   # scoped shots stay exact
++		return
++
++	var spread: float = deg_to_rad(_mp8_hipfire_spread_deg())
++	if spread <= 0.0:
++		return
++
++	_mp8_spread_saved_rotation = laser_raycast.rotation
++	_mp8_spread_applied = true
++
++	# Uniform over the cone's area: sqrt(randf()) for the radius, or hits bunch at the centre and
++	# the spread is smaller than set.
++	var angle: float = randf() * TAU
++	var radius: float = sqrt(randf()) * spread
++	laser_raycast.rotation.x += sin(angle) * radius
++	laser_raycast.rotation.y += cos(angle) * radius
++
++	# RayCast3D's result is from the last physics step: without the forced update,
++	# is_colliding()/get_collider() still see the unturned ray and the spread does nothing.
++	laser_raycast.force_raycast_update()
++
++
++func _mp8_clear_hipfire_spread() -> void :
++
++	if not _mp8_spread_applied:
++		return
++	_mp8_spread_applied = false
++	laser_raycast.rotation = _mp8_spread_saved_rotation
++	laser_raycast.force_raycast_update()
++
++
++# [MP8] Lone hunter round: every player hunts once, two at a time, so with 7 players the last
++# round has one hunter against 6 ducks. It gets the 5-player tier scaled by 1.5 (6:1 against 4:1):
++# magazine 12 x 1.5 = 18, interval 0.92 / 1.5 = 0.61 s (cycle 0.11). Fire per duck, reload
++# included, then matches the 5-player tier.
++@export var mp8_lone_hunter_magazine: int = 18
++@export var mp8_lone_hunter_cycle: float = 0.11
++
++
++# A round that should have two hunters but has one
++func _mp8_is_lone_hunter() -> bool:
++	return mp8_hunter_total == 1 and mp8_player_count >= 6
++
++
++# [MP8] Clamp the player count into the tables' key range so a lookup never falls to a default
++func _mp8_tier() -> int:
++	var n: int = mp8_player_count
++	if n <= 0:
++		n = duck_count + 1  # no count passed: ducks + 1 hunter
++	return clampi(n, 4, 8)
++
++
++# [MP8] This round's magazine and shot cycle (the lone hunter round has its own). set_active_rpc,
++# shoot()'s wait and the HUD all read these, so the HUD matches how the gun fires.
++func _mp8_effective_magazine() -> int:
++	if _mp8_is_lone_hunter():
++		return mp8_lone_hunter_magazine
++	return magazine_capacity_by_player_count.get(_mp8_tier(), 10)
++
++
++func _mp8_effective_cycle() -> float:
++	if _mp8_is_lone_hunter():
++		return mp8_lone_hunter_cycle
++	return cycle_time_by_player_count.get(_mp8_tier(), 0.80)
++
+ @export_category("Zoom")
+ @export var zoom_fovs: Array[float] = [
+ 	75.0, 
+@@ -158,6 +466,11 @@ func _input(event: InputEvent) -> void :
+ 	if PauseMenu.active:
+ 		return
+ 
++	# [MP8] Fire-rate debug keys, before the using_joystick check so pad players can use the
++	# keyboard too. Only the hunter this peer controls.
++	if GameManager.local_game or multiplayer.get_unique_id() == get_multiplayer_authority():
++		_mp8_handle_rate_key(event)
++
+ 	if player_presence.using_joystick:
+ 		return
+ 
+@@ -326,6 +639,110 @@ func update_recoil():
+ 
+ func shoot():
+ 
++	# [MP8] A mixed room runs the game's shoot (D120).
++	if not NetworkManager.mp8_room_extended():
++		await _mp8_game_shoot()
++		return
++
++	if !can_shoot: return
++
++	laser_scale_node.visible = false
++
++	_mp8_apply_hipfire_spread()  # [MP8] spread when unscoped
++
++	if laser_raycast.is_colliding():
++		var collider = laser_raycast.get_collider()
++		if collider is DuckHuntHitbox:
++
++			if collider.player.active:
++
++				if collider.is_head:
++					AchievementManager.set_achievement("ACH_11")
++					speaker_headshot.play()
++					var sc: SpeakerController = speaker_fire.get_child(0)
++					sc.speaker.volume_linear = 0
++					sc.fade_duration = 0.3
++					sc.fade_in()
++
++				var damage = collider.damage_on_hit
++				collider.player.shot_rpc.rpc(damage)
++
++			EffectManager.spawn_rpc.rpc(
++				&"hit_blood", 
++				laser_raycast.get_collision_point(), 
++				laser_raycast.get_collision_point() + laser_raycast.get_collision_normal(), 
++				Vector3.ONE, 
++				true
++			)
++
++		else:
++
++			DecalManager.spawn_rpc.rpc(
++				&"bullet_hole", 
++				laser_raycast.get_collision_point(), 
++				laser_raycast.get_collision_point() + laser_raycast.get_collision_normal(), 
++				Vector3.ONE * (1.0 + (randf() * 0.25)), 
++				true
++			)
++
++			EffectManager.spawn_rpc.rpc(
++				&"mine_explosion", 
++				laser_raycast.get_collision_point(), 
++				laser_raycast.get_collision_point() + laser_raycast.get_collision_normal(), 
++				Vector3.ONE, 
++				true
++			)
++
++	_mp8_clear_hipfire_spread()  # [MP8] restore the ray at once so the laser and later frames are unaffected
++
++	recoil_progress = 0.0
++	var t = create_tween()
++	t.tween_property(
++		self, "recoil_progress", 1.0, 0.5
++	)
++
++	var zoom_index: float = zoom_fov_index
++	can_shoot = false
++
++	recoil_start_rotation = camera_vertical.rotation.x
++	look_recoil.x += 0.025 * (-1 + (randf() * 2))
++
++	play_shoot_sound_rpc.rpc()
++	# [MP8] The bolt-rack sound stays where the game plays it, at the shot. At the faster tiers the
++	# interval is down to 0.92 s, and moved 0.5 s later to match the bolt animation it runs into
++	# the next shot.
++	if num_of_current_rounds_in_magazine != 1:
++		if GameManager.local_game or (multiplayer.get_unique_id() == get_multiplayer_authority()):
++			speaker_rack_rifle.play()
++
++	await get_tree().create_timer(0.5 * _mp8_rate_scale).timeout  # [MP8] debug scale
++	if unzoom_after_shot:
++		zoom_fov_index = 0
++		update_zoom()
++
++	num_of_current_rounds_in_magazine -= 1
++
++	var cycle_time = _mp8_effective_cycle()  # [MP8] by total player count; the lone hunter round has its own
++	var cycle_window: float = cycle_time * _mp8_rate_scale             # [MP8] debug scale
++
++	if num_of_current_rounds_in_magazine == 0:
++		await reload()
++	else:
++		# [MP8] The bolt animation is timed to the shot cycle, which varies with the tier and the
++		# debug scale: at the game's fixed speed it overruns a fast cycle and ends early in a slow one.
++		anim_rig.play("rifle_pull_bolt_overwrite", -1, _mp8_anim_speed_for(
++			&"rifle_pull_bolt_overwrite", cycle_window
++		))
++
++	await get_tree().create_timer(cycle_window).timeout
++	if return_to_zoom_after_shot:
++		zoom_fov_index = zoom_index
++		update_zoom(zoom_index > 0)
++	can_shoot = true
++
++# The game's shoot, for a mixed room (D120).
++func _mp8_game_shoot():
++
+ 	if !can_shoot: return
+ 
+ 	laser_scale_node.visible = false
+@@ -414,6 +831,9 @@ func reload():
+ 	if GameManager.local_game or (multiplayer.get_unique_id() == get_multiplayer_authority()):
+ 		play_reload_sound_rpc.rpc()
+ 	can_shoot = false
++
++	# [MP8] The reload and its animation stay as the game has them, on purpose: neither
++	# the tier tables nor the debug scale touch them.
+ 	anim_rig.play("rifle_reload_main_overwrite")
+ 	num_of_current_rounds_in_magazine = magazine_capacity
+ 	await get_tree().create_timer(3.8 - 0.95, false).timeout
+@@ -483,6 +903,14 @@ func initialize_hunter_rpc(initial_delay: float):
+ 	if not GameManager.local_game:
+ 		if multiplayer.get_unique_id() != get_multiplayer_authority(): return
+ 
++	# [MP8] This RPC equips the rifle (animation and sound) on the owning peer only. A hunter
++	# missing this line never got the RPC, and its rifle is never equipped.
++	if NetworkManager.mp8_dev_args().has("-debug-tools"):
++		print("[MP8] Hunter init: local=%d owner=%d delay=%.1f" % [
++			multiplayer.get_unique_id() if multiplayer.has_multiplayer_peer() else 0,
++			player_presence.network_id if player_presence else -1, initial_delay
++		])
++
+ 	await get_tree().create_timer(initial_delay, false).timeout
+ 	anim_sensitivity_prompt.play("show")
+ 	await get_tree().create_timer(4, false).timeout
+@@ -528,6 +956,23 @@ func cleanup_rpc():
+ 
+ @rpc("any_peer", "call_local", "reliable")
+ func set_active_rpc(_active: bool) -> void :
++
++	# [MP8] A mixed room runs the game's set_active_rpc (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_set_active_rpc(_active)
++		return
++	active = _active
++
++	# [MP8] Magazine by total player count (the tables at the top); the lone hunter round has its own
++	magazine_capacity = _mp8_effective_magazine()
++	num_of_current_rounds_in_magazine = magazine_capacity
++	print("[MP8] Hunter tuning: %d-player tier%s -> magazine %d, shot cycle %.2f" % [
++		_mp8_tier(), ", lone hunter round" if _mp8_is_lone_hunter() else "",
++		magazine_capacity, _mp8_effective_cycle()
++	])
++
++# The game's set_active_rpc, for a mixed room (D120).
++func _mp8_game_set_active_rpc(_active: bool) -> void :
+ 	active = _active
+ 
+ 	magazine_capacity = magazine_capacity_by_duck_count.get(
+@@ -547,6 +992,9 @@ func set_player_presence(network_id: int) -> void :
+ 			local_viewport.physics_object_picking = true
+ 
+ 		hud.reparent(local_viewport)
++		# [MP8] The prompt is laid out for 960x540: a one-hunter tile (480x540) cuts off its sides, and a
++		# two-hunter tile (480x270, from 6 players) leaves it below the edge. Half size fits both (owner's pick).
++		anim_sensitivity_prompt.get_parent().scale = Vector2(0.5, 0.5)
+ 
+ 		laser_mesh.set_layer_mask_value(1, false)
+ 		laser_mesh.set_layer_mask_value(11, true)
+@@ -619,10 +1067,33 @@ func set_player_presence(network_id: int) -> void :
+ 
+ @rpc("any_peer", "call_local", "reliable")
+ func setup_rpc(_position: Vector3, _duck_count: int):
++
++	# [MP8] A mixed room runs the game's setup_rpc (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_setup_rpc(_position, _duck_count)
++		return
++	mp8_setup_rpc(_position, _duck_count)
++
++# The game's setup_rpc, for a mixed room (D120).
++func _mp8_game_setup_rpc(_position: Vector3, _duck_count: int):
+ 	global_position = _position
+ 	duck_count = _duck_count
+ 
+ 
++# [MP8] Extended's setup, sent by the relay in an Extended room (duck_hunt.gd's spawn_players) with the
++# player count and the hunters; the game's setup_rpc above runs it without them.
++func mp8_setup_rpc(
++	_position: Vector3, _duck_count: int, _player_count: int = 0,
++	_hunter_index: int = -1, _hunter_total: int = 1
++):
++	global_position = _position
++	duck_count = _duck_count
++	mp8_player_count = _player_count  # [MP8] tuning by total player count; 0 = not passed
++	mp8_hunter_total = _hunter_total
++	_mp8_init_rate_keys()
++	_mp8_show_id_hud.call_deferred()  # top-right buff/nerf HUD
++
++
+ 
+ func _on_input_device_changed(input_device: GameManager.InputDevice):
+ 
+@@ -637,9 +1108,32 @@ func _on_input_device_changed(input_device: GameManager.InputDevice):
+ 
+ 
+ 
++func mp8_setup_local_view(index: int) -> void:
++	# Each local hunter camera sees its own weapon and hands on private layer 12 or 13. Layer 11
++	# (the aiming beams, which the duck cameras see) stays off, as in the game's cull mask.
++	var layer: int = 12 + clampi(index, 0, 1)
++	local_camera.set_cull_mask_value(12, false)
++	local_camera.set_cull_mask_value(13, false)
++	local_camera.set_cull_mask_value(11, false)
++	local_camera.set_cull_mask_value(layer, true)
++	_mp8_set_local_mesh_layer(weapon_parent, 1 << (layer - 1))
++	for mesh in hand_meshes:
++		mesh.layers = 1 << (layer - 1)
++	# The beam goes on layer 11: it warns ducks, and in the game a hunter never sees its own.
++	laser_mesh.layers = 1 << 10
++
++func _mp8_set_local_mesh_layer(node: Node, mask: int) -> void:
++	if node is VisualInstance3D:
++		node.layers = mask
++	for child in node.get_children():
++		_mp8_set_local_mesh_layer(child, mask)
++
+ func reveal_role():
+ 
+ 	role_label.text = tr("LOC_CONTROL_HUNTER_NAME") % player_presence.network_name
++	if GameManager.local_game:
++		var fallback: int = maxi(0, PlayerManager.player_presences.keys().find(player_presence.network_id))
++		role_label.text = "P%d · %s" % [int(player_presence.get_meta("mp8_local_seat", fallback)) + 1, role_label.text]
+ 
+ 	role_overlay.modulate.a = 1.0
+ 	role_overlay.visible = true

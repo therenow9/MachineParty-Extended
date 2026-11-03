@@ -1,0 +1,1495 @@
+diff --git a/minigames/spine_breaker/scripts/spine_breaker.gd b/minigames/spine_breaker/scripts/spine_breaker.gd
+--- a/minigames/spine_breaker/scripts/spine_breaker.gd
++++ b/minigames/spine_breaker/scripts/spine_breaker.gd
+@@ -2,6 +2,8 @@ extends Minigame
+ 
+ class_name SpineBreakerMinigame
+ 
++const MP8_LAYOUT_LIMIT: float = 10000.0
++
+ const player_scene = preload("uid://b774mjndcdeqg")
+ 
+ @export_category("Nodes")
+@@ -24,9 +26,260 @@ var player_count: int = 0
+ 
+ var playing: bool = false
+ 
++# [MP8] Spawn point pool. `mp8_owns_spawns` keeps network_manager's generic spawn fill out: its
++# midpoints between the game's 4 points fall in navmesh holes around the central structure here.
++# Every player count uses the pool, in pool order, enabling only the first N points (fewer players
++# start closer); picks keep a minimum gap. Points added to the pool need this table raised too.
++const MP8_POOL_BY_COUNT: Dictionary = {
++	4: 10,
++	5: 13,
++	6: 16,
++	7: 20,
++	8: 25,
++}
++
++# Devices spawn from the same pool, this far from every player spawn, so nobody is caught at the
++# start. Relaxed step by step when no point qualifies.
++const MP8_DEVICE_MIN_GAP: float = 8.0
++
++# Devices per player count.
++const MP8_DEVICES_BY_COUNT: Dictionary = {
++	4: 1,
++	5: 1,
++	6: 2,
++	7: 2,
++	8: 2,
++}
++
++# [MP8] Logs rank, name and score at the end; scores are not changed.
++func _mp8_log_scores() -> void :
++
++	var ranked: Array = player_scores.keys()
++	ranked.sort_custom(func(a, b): return player_scores[a] > player_scores[b])
++
++	var parts: PackedStringArray = []
++	for i in ranked.size():
++		var nid = ranked[i]
++		var nm: String = "id%d" % nid
++		if PlayerManager.player_presences.has(nid):
++			nm = String(PlayerManager.player_presences[nid].network_name)
++		parts.append("#%d %s %d pts" % [i + 1, nm, player_scores[nid]])
++
++	print("[MP8] Spine Breaker results (%d players / %d dead): %s" % [
++		player_count, dead_players.size(), " / ".join(parts)
++	])
++
++
++# Command line `mp8devwait=<seconds>`: one post-kill wait for every device; 0 = not given. A dev
++# tool that widens the `_on_device_requested_target` await window to reproduce races. It also
++# changes the devices' stagger (period = fuse + wait, see MP8_DEVICE_WAIT), so never in real play.
++func _mp8_wait_forced() -> float :
++	if not NetworkManager.mp8_development_tools_allowed():
++		return 0.0
++	for a in NetworkManager.mp8_dev_args():
++		var s: String = str(a)
++		if s.begins_with("mp8devwait="):
++			var v: String = s.substr(len("mp8devwait="))
++			if v.is_valid_float():
++				return clampf(float(v), 0.0, 60.0)
++
++	return 0.0
++
++
++# Post-kill wait for this device, by mp8_index (from 1); devices past the table use device 1's.
++func _mp8_wait_for(which) -> float :
++
++	var forced: float = _mp8_wait_forced()
++	if forced > 0.0:
++		return forced
++
++	var i: int = 0
++	if which != null and is_instance_valid(which):
++		i = maxi(0, int(which.mp8_index) - 1)
++
++	return float(MP8_DEVICE_WAIT[i] if i < MP8_DEVICE_WAIT.size() else MP8_DEVICE_WAIT[0])
++
++
++# The kill that leaves 2 players retires its device (players - 2: the 4th kill of 6, the 6th of 8),
++# so the final 1v1 has one device. Earlier retirement leaves one device chasing too many players.
++func _mp8_retire_at() -> int :
++
++	# player_count is set only in the server's spawn_players(); on clients it is 0 here.
++	var n: int = (player_count if player_count > 0 else PlayerManager.player_presences.size())
++	return maxi(1, n - 2)
++
++
++# [MP8] Tints a device's body; returns the number of surfaces tinted. Never edit the material
++# itself: it is embedded in device.tscn and shared by both devices and cached across matches.
++# A duplicated material goes in a per-node surface override. Visible StandardMaterial3D surfaces
++# only: `Visuals/MeshInstance3D` is a hidden helper sphere; the hourglass keeps its material_override.
++func _mp8_tint_device(d, c: Color) -> int :
++
++	if not is_instance_valid(d):
++		return 0
++
++	var n: int = 0
++
++	for mi in d.find_children("", "MeshInstance3D", true, false):
++
++		if not mi.visible or mi.mesh == null or mi.material_override != null:
++			continue
++
++		for s in mi.mesh.get_surface_count():
++
++			var src = mi.get_active_material(s)
++			if not (src is StandardMaterial3D):
++				continue
++
++			var sd: StandardMaterial3D = src
++
++			# Record the body texture key, for the white device too: after attach it identifies the
++			# device's surface among the meshes on the player's back.
++			if d.mp8_tex_key == "" and sd.albedo_texture != null:
++				var f: String = str(sd.albedo_texture.resource_path).get_file()
++				var us: int = f.rfind("_")
++				d.mp8_tex_key = (f.substr(us + 1) if us >= 0 else f)
++
++			if c == Color.WHITE:
++				continue
++
++			# Runs every round; without this, each round would duplicate the material again.
++			if mi.get_surface_override_material(s) != null:
++				continue
++
++			var m: StandardMaterial3D = sd.duplicate()
++			m.albedo_color = c
++			mi.set_surface_override_material(s, m)
++			n += 1
++
++	return n
++
++
++# Command line `mp8spinefuse=<seconds>`: one fuse for every device; 0 = not given. A dev tool:
++# equal fuses lock the devices in step, reproducing two deaths in one frame (see MP8_DEVICE_FUSE).
++func _mp8_fuse_forced() -> float :
++	if not NetworkManager.mp8_development_tools_allowed():
++		return 0.0
++	for a in NetworkManager.mp8_dev_args():
++		var s: String = str(a)
++		if s.begins_with("mp8spinefuse="):
++			var v: String = s.substr(len("mp8spinefuse="))
++			if v.is_valid_float():
++				return clampf(float(v), 1.0, 60.0)
++
++	return 0.0
++
++
++# Per device (index = mp8_index - 1; devices past the table use device 1's): device 1 is the
++# game's (20 s fuse, the game's value, base speed), device 2 is fiercer. Unequal fuses are what
++# keep the devices out of step (death = dispatch + fuse; the fuse burns during the chase):
++# period = fuse + MP8_DEVICE_WAIT, 23 s vs 17 s. Speed only changes how early a victim is caught.
++const MP8_DEVICE_FUSE: Array[float] = [20.0, 15.0]
++const MP8_DEVICE_SPEED: Array[float] = [1.0, 1.2]
++
++# Wait after a kill before setting out again. The longer wait goes with the longer fuse (device 1)
++# so the period difference adds up; swapped, the periods can come out equal and lock in step.
++const MP8_DEVICE_WAIT: Array[float] = [3.0, 2.0]
++
++# Body colours: the added, fiercer device is a near-black widow (D103). Color.WHITE = untinted.
++# albedo_color multiplies the texture; below about 0.12 every body reads as black.
++const MP8_DEVICE_TINT: Array[Color] = [Color.WHITE, Color(0.06, 0.06, 0.07)]
++
++# Which devices wear the hourglass on their back (spine_breaker_device.mp8_make_mark).
++const MP8_DEVICE_MARK: Array[bool] = [false, true]
++
++const MP8_DEVICE_SCENE: String = "res://minigames/spine_breaker/components/device/spine_breaker_device.tscn"
++# Minimum gap between picked points, relaxed step by step when the picks fall short: a missing
++# player could stop the round from ever ending (check_game_end needs active_players <= 1).
++const MP8_PICK_MIN_GAP: float = 4.0
++
++# The pool laid out in the mp8spineedit editor: all on the navmesh and in camera, at least 2.99 m
++# apart. The first 3 are the game's points 1-3. A saved layout file takes precedence.
++const MP8_POOL_BAKED: Array = [
++	[Vector3(3.05, 0.0, 2.85), 43.0],
++	[Vector3(7.20, 0.0, -1.58), 42.0],
++	[Vector3(9.49, 0.0, 3.17), 42.0],
++	[Vector3(0.15, 0.0, 6.38), 298.0],
++	[Vector3(-5.92, 0.0, 6.82), 283.0],
++	[Vector3(10.09, 0.0, 6.86), 43.0],
++	[Vector3(13.09, 0.0, 4.86), 43.0],
++	[Vector3(15.08, 0.0, -1.14), 43.0],
++	[Vector3(15.07, 0.0, -4.14), 43.0],
++	[Vector3(6.10, 0.0, 1.84), 43.0],
++	[Vector3(-0.91, 0.0, 1.80), 358.0],
++	[Vector3(3.07, 0.0, -2.18), 43.0],
++	[Vector3(-6.93, 0.0, -0.19), 283.0],
++	[Vector3(-7.93, 0.0, -3.20), 238.0],
++	[Vector3(-6.91, 0.0, 2.81), 313.0],
++	[Vector3(-9.89, 0.0, 6.80), 313.0],
++	[Vector3(-13.92, 0.0, 1.78), 313.0],
++	[Vector3(-13.97, 0.0, -5.22), 253.0],
++	[Vector3(-11.98, 0.0, -10.22), 208.0],
++	[Vector3(-4.98, 0.0, -10.21), 238.0],
++	[Vector3(4.02, 0.0, -10.18), 148.0],
++	[Vector3(10.02, 0.0, -10.14), 133.0],
++	[Vector3(14.01, 0.0, -12.13), 133.0],
++	[Vector3(2.06, 0.0, -6.20), 118.0],
++	[Vector3(-1.94, 0.0, -7.20), 118.0],
++]
++
++const MP8_LAYOUT_FILE: String = "user://mp8_spine_layout.txt"
++const MP8_EDIT_STEPS: Array[float] = [1.0, 0.5, 0.1]
++const MP8_EDIT_YAW_STEP: float = 15.0
++const MP8_MARKER_H: float = 2.0
++# Tolerance for "is this point on the navmesh": the player capsule radius is 0.70.
++const MP8_NAV_TOL: float = 0.75
++
++# Read by network_manager with Object.get(); true keeps its generic fill off our spawn container.
++var mp8_owns_spawns: bool = true
++
++var _mp8_devices: Array = []             # [0] is always the scene's own device
++var _mp8_retire_claimed: bool = false    # this round's retirement has been claimed
++var _mp8_counted_victims: Array = []     # network_ids already counted this round, so one death counts once
++var _mp8_kills_started: int = 0          # kills started this round, counted at the strike (see mp8_claim_retire())
++
++var _mp8_pool: Array = []                # [[Vector3 pos, float yaw], ...], index = priority
++var _mp8_pool_src: String = "scene default"
++var _mp8_edit_on: bool = false
++var _mp8_edit_sel: int = 0
++var _mp8_edit_step_i: int = 0
++var _mp8_edit_canvas: CanvasLayer = null
++var _mp8_edit_panel: Label = null
++var _mp8_markers: Array[Node3D] = []
++
++
+ func _ready() -> void :
+ 	super._ready()
+ 
++	# [MP8] A mixed room runs the rest of the game's _ready (D120): one device, unbound, no spawn pool or editor.
++	if not NetworkManager.mp8_room_extended():
++		await _mp8_game_ready_tail()
++		return
++
++	camera.current = true
++
++	# [MP8] The scene's device is device 1; spawn_players() adds the second by player count.
++	_mp8_devices = [device]
++	device.mp8_index = 1
++
++	if multiplayer.is_server():
++
++		countdown_state.countdown_started.connect(_on_countdown_started)
++		countdown_state.tick.connect(_on_countdown_tick)
++		countdown_state.expired.connect(_on_countdown_expired)
++
++		# [MP8] The game's signal has no argument; bind the device so two can be told apart.
++		device.request_new_target.connect(_on_device_requested_target.bind(device))
++
++	# Local Ready listeners initialize synchronously; the spawn pool must exist.
++	_mp8_ready()
++	if GameManager.local_game:
++		await get_tree().create_timer(1.0).timeout
++		minigame_ready.emit(1)
++
++# The game's _ready after its super call, for a mixed room (D120).
++func _mp8_game_ready_tail():
++
+ 	camera.current = true
+ 
+ 	if multiplayer.is_server():
+@@ -91,6 +344,59 @@ func initialize(_round_number: int, _total_rounds: int, _scores: Dictionary = {}
+ 
+ func spawn_players():
+ 
++	# [MP8] A mixed room runs the game's spawn_players (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_spawn_players()
++		return
++
++	player_count = PlayerManager.player_presences.size()
++
++	# [MP8] Create this round's devices on every peer by RPC: device.tscn has a
++	# MultiplayerSynchronizer, which pairs by node path, so name and parent must match on each peer.
++	# PlayerSpawner does not help: it spawns only the player scene.
++	NetworkManager.mp8_rpc(self, &"mp8_ensure_devices_rpc", [_mp8_want_devices(player_count)])
++
++	# initialize() runs once per round, so retirement and the retired device are reset per round.
++	_mp8_retire_claimed = false
++	_mp8_kills_started = 0
++	_mp8_counted_victims.clear()
++	NetworkManager.mp8_rpc(self, &"mp8_device_reset_rpc")
++
++	# [MP8] The game indexes its 4 spawn markers, which fails for a 5th player; the pool replaces it.
++	var picks: Array = _mp8_pick_spawns(player_count)
++
++	for i in PlayerManager.player_presences.size():
++		var network_id = PlayerManager.player_presences.keys()[i]
++
++		var position: Vector3 = picks[i][0]
++		var rot: Vector3 = Vector3(0.0, float(picks[i][1]), 0.0)
++		var player_character = player_scene.instantiate()
++		players_node.add_child(player_character, true)
++
++		player_character.set_player_presence.rpc(network_id)
++		player_character.setup_rpc.rpc(position, device.get_path(), rot)
++		player_character.set_manager_from_path_rpc.rpc(self.get_path())
++
++		player_character.emit_died.connect(_on_player_died)
++
++		players[network_id] = player_character
++		active_players[network_id] = player_character
++
++		player_scores[network_id] = 0
++
++	# [MP8] Devices after players: they must be far enough from every player spawn.
++	var taken: Array = []
++	for r in picks:
++		taken.append(r[0])
++	_mp8_place_devices(taken)
++
++	for d in _mp8_devices:
++		if is_instance_valid(d):
++			d.set_players_node(players_node)
++
++# The game's spawn_players, for a mixed room (D120).
++func _mp8_game_spawn_players():
++
+ 	var spawn_positions = player_spawn_positions_node.get_children()
+ 	spawn_positions.shuffle()
+ 
+@@ -123,6 +429,9 @@ func cleanup():
+ 		queue_free()
+ 
+ func player_disconnected(_network_id: int):
++	# [MP8] The room is read before the await, which can outlast this minigame's latch. A mixed room
++	# keeps the game's own end check (D116).
++	var mp8_ext: bool = NetworkManager.mp8_room_extended()
+ 	super.player_disconnected(_network_id)
+ 
+ 	if not multiplayer.is_server():
+@@ -131,10 +440,61 @@ func player_disconnected(_network_id: int):
+ 	remove_player_rpc.rpc(_network_id)
+ 	await get_tree().create_timer(1.0).timeout
+ 
++	# [MP8] Before all players have loaded, spawn_players() has not run and active_players is empty,
++	# which check_game_end() would end as a finished match. Clean up only.
++	if mp8_ext and not is_all_player_loaded:
++		print("[MP8] Spine Breaker: %d disconnected before the match started, skipping the end check" % _network_id)
++		return
++
+ 	check_game_end()
+ 
+ func check_game_end():
+ 
++	# [MP8] A mixed room runs the game's check_game_end (D120).
++	if not NetworkManager.mp8_room_extended():
++		await _mp8_game_check_game_end()
++		return
++
++	if finished:
++		return
++
++	if active_players.size() > 1:
++		return
++
++	finished = true
++
++	set_playing_rpc.rpc(false)
++	for d in _mp8_devices:                    # [MP8] stop every device
++		if is_instance_valid(d):
++			d.deactive_rpc.rpc()
++
++	for i in dead_players.size():
++		player_scores[dead_players[i]] = i
++
++	for network_id in active_players.keys():
++
++		# [MP8] The survivor scores dead_players.size(), one above the last to die (player_count would be
++		# a 2-point jump). Not `player_count - 1`: a player who disconnects is erased from active_players
++		# but never enters dead_players, and the survivor would gain points.
++		player_scores[network_id] = dead_players.size()
++
++
++		break
++
++	if multiplayer.is_server():
++		_mp8_log_scores()
++
++	player_scores_finalized.emit(player_scores)
++
++	await get_tree().create_timer(2.0).timeout
++	set_minigame_sfx_linear_volume_rpc.rpc(0.0)
++
++	state_machine.transition_to_rpc.rpc(&"Finished")
++	set_effects_visibility_rpc.rpc(false)
++
++# The game's check_game_end, for a mixed room (D120).
++func _mp8_game_check_game_end():
++
+ 	if finished:
+ 		return
+ 
+@@ -168,6 +528,27 @@ func check_game_end():
+ @rpc("any_peer", "call_local", "reliable")
+ func remove_player_rpc(_network_id: int):
+ 
++	# [MP8] A mixed room runs the game's remove_player_rpc (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_remove_player_rpc(_network_id)
++		return
++
++	var player_instance = players.get(_network_id, null)
++	if player_instance:
++
++		if multiplayer.is_server():
++			# [MP8] Any device may be on the leaving player; device.player_disconnected checks attached_to.
++			for d in _mp8_devices:
++				if is_instance_valid(d):
++					d.player_disconnected(player_instance)
++
++		player_instance.queue_free()
++		players.erase(_network_id)
++		active_players.erase(_network_id)
++
++# The game's remove_player_rpc, for a mixed room (D120).
++func _mp8_game_remove_player_rpc(_network_id: int):
++
+ 	var player_instance = players.get(_network_id, null)
+ 	if player_instance:
+ 
+@@ -187,7 +568,63 @@ func set_playing_rpc(_playing: bool):
+ func _on_countdown_tick(time_left: int):
+ 	super._on_countdown_tick(time_left)
+ 
+-func choose_new_target():
++# [MP8] which = null: a target for every device in play (round start); a device: that one only.
++func choose_new_target(which = null):
++
++	# [MP8] A mixed room runs the game's choose_new_target (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_choose_new_target()
++		return
++
++	# Each early exit leaves a device standing still, so each one logs.
++	if active_players.size() <= 1:
++		print("[MP8] Spine Breaker: target choice stopped - only %d players left" % active_players.size())
++		return
++
++	var list: Array = ([which] if which != null else _mp8_devices)
++
++	for d in list:
++
++		if not is_instance_valid(d):
++			print("[MP8] Spine Breaker: target choice skipped - device reference freed")
++			continue
++		if d.mp8_retired:
++			print("[MP8] Spine Breaker: target choice skipped - device %d is retired" % d.mp8_index)
++			continue
++
++		# [MP8] Never retarget a device that is on a player. This runs after
++		# `_on_device_requested_target`'s await, during which the device may have attached; moving it to
++		# Follow would leave the victim carrying a device that never strikes and cannot be thrown, so they
++		# never die and the round can hang. `attached_to` also covers BreakSpine; the fuse retargets it.
++		if d.attached_to != null and is_instance_valid(d.attached_to):
++			# The state tells an attached device from one mid-execution.
++			var st_name: String = "?"
++			if d.state_machine != null and d.state_machine.current_state != null:
++				st_name = String(d.state_machine.current_state.name)
++			print("[MP8] Spine Breaker: target choice skipped - device %d is on %s, state %s" % [
++				d.mp8_index, String(d.attached_to.name), st_name
++			])
++			continue
++
++		var prey = _mp8_pick_prey(d)
++		if prey == null:
++			print("[MP8] Spine Breaker: ⚠️ device %d found no prey (%d players in play), it will stand still" % [
++				d.mp8_index, active_players.size()
++			])
++			continue
++
++		d.state_machine.transition_to(&"Follow", {
++			"target": prey,
++			"new_target": true
++		})
++		d.start_timer()
++		print("[MP8] Spine Breaker: device %d now chases %s (state %s)" % [
++			d.mp8_index, String(prey.name),
++			String(d.state_machine.current_state.name) if d.state_machine.current_state != null else "?"
++		])
++
++# The game's choose_new_target, for a mixed room (D120).
++func _mp8_game_choose_new_target():
+ 
+ 	if active_players.size() <= 1:
+ 		return
+@@ -200,6 +637,82 @@ func choose_new_target():
+ 	})
+ 	device.start_timer()
+ 
++
++# The player this device is chasing or is on. Not device.target, which nothing assigns: the
++# chase target lives in the Follow state (follow_state.gd's set_target).
++func _mp8_hunting(d) -> SpineBreakerPlayer :
++
++	if not is_instance_valid(d):
++		return null
++	if d.attached_to != null and is_instance_valid(d.attached_to):
++		return d.attached_to
++	var st = d.state_machine.current_state
++	if st != null and String(st.name) == "Follow":
++		var t = st.get("target")
++		if t is SpineBreakerPlayer and is_instance_valid(t):
++			return t
++	return null
++
++
++# Picks prey, preferring players the other device is not chasing. Players carrying a device are
++# skipped: two fuses on one player would kill them twice.
++func _mp8_pick_prey(me) -> SpineBreakerPlayer :
++
++	var busy: Array = []
++	for d in _mp8_devices:
++		if d == me or not is_instance_valid(d):
++			continue
++		var h = _mp8_hunting(d)
++		if h != null:
++			busy.append(h)
++
++	var free: Array = []
++	var all: Array = []
++	for p in active_players.values():
++		if not is_instance_valid(p) or not p.active:
++			continue
++		if p.has_spine_breaker:
++			continue
++		all.append(p)
++		if not busy.has(p):
++			free.append(p)
++
++	if not free.is_empty():
++		return free.pick_random()
++	if not all.is_empty():
++		return all.pick_random()
++
++	# Nobody left: log why each player was filtered out.
++	var why := PackedStringArray()
++	for p in active_players.values():
++		if not is_instance_valid(p):
++			why.append("(freed reference)")
++		elif not p.active:
++			why.append("%s:inactive" % String(p.name))
++		elif p.has_spine_breaker:
++			why.append("%s:carrying a device" % String(p.name))
++		else:
++			why.append("%s:?" % String(p.name))
++	print("[MP8] Spine Breaker: every candidate filtered out - %s" % ", ".join(why))
++	return null
++
++
++# Is p chased by another device? Called by follow_state's _mp8_can_target, so its nearest-player
++# retarget does not converge both devices on one player. Targeting only, never attaching
++# (see follow_state's `_mp8_can_take` and `_mp8_can_target`).
++func mp8_is_claimed_by_other(p, me) -> bool :
++
++	if p == null or not is_instance_valid(p):
++		return false
++
++	for d in _mp8_devices:
++		if d == me or not is_instance_valid(d):
++			continue
++		if _mp8_hunting(d) == p:
++			return true
++
++	return false
++
+ func _on_countdown_expired():
+ 	super._on_countdown_expired()
+ 
+@@ -211,7 +724,27 @@ func _on_countdown_expired():
+ 
+ 	set_playing_rpc.rpc(true)
+ 
+-func _on_device_requested_target():
++func _on_device_requested_target(which = null):
++
++	# [MP8] A mixed room runs the game's _on_device_requested_target (D120).
++	if not NetworkManager.mp8_room_extended():
++		await _mp8_game_on_device_requested_target()
++		return
++
++	var wait: float = _mp8_wait_for(which)
++
++	if multiplayer.is_server():
++		var d = (which if which != null and is_instance_valid(which) else device)
++		print("[MP8] Spine Breaker: device %d requests a new target (sets out in %.1f s)" % [d.mp8_index, wait])
++		d.laugh_rpc.rpc()
++
++	await get_tree().create_timer(wait).timeout
++
++	# [MP8] Only the requesting device; the other keeps its chase.
++	choose_new_target(which)
++
++# The game's _on_device_requested_target, for a mixed room (D120).
++func _mp8_game_on_device_requested_target():
+ 
+ 	if multiplayer.is_server():
+ 		device.laugh_rpc.rpc()
+@@ -226,6 +759,884 @@ func _on_player_died(_network_id: int):
+ 		active_players.erase(_network_id)
+ 		dead_players.append(_network_id)
+ 
++		# [MP8] Both counts: retirement counts strikes, not deaths (see mp8_claim_retire()); the gap
++		# between them is how many deaths the death animation has not yet recorded.
++		print("[MP8] Spine Breaker: player %d died, %d left (devices struck %d times, retirement: %s)" % [
++			dead_players.size(), active_players.size(), _mp8_kills_started,
++			("claimed" if _mp8_retire_claimed else "not yet")
++		])
++
+ 	await get_tree().create_timer(1.0).timeout
+ 
+ 	check_game_end()
++
++
++# ---------- [MP8] Everything below is added by 8 Player Support
++
++func _mp8_ready() -> void :
++
++	var mp8_args := NetworkManager.mp8_dev_args()
++
++	# The spawn editor has its own switch, not -debug-tools: it takes over a set of keys.
++	_mp8_edit_on = mp8_args.has("mp8spineedit") and multiplayer.is_server() and NetworkManager.mp8_development_tools_allowed()
++
++	_mp8_init_pool(mp8_args.has("mp8spinenofile"))
++
++	if _mp8_edit_on:
++		_mp8_edit_begin()
++
++
++func _mp8_init_pool(ignore_file: bool) -> void :
++
++	_mp8_pool.clear()
++
++	for r in MP8_POOL_BAKED:
++		_mp8_pool.append([r[0], float(r[1])])
++	_mp8_pool_src = "built-in layout"
++
++	# An empty MP8_POOL_BAKED falls back to the scene's markers, read at runtime.
++	if _mp8_pool.is_empty() and player_spawn_positions_node != null:
++		for c in player_spawn_positions_node.get_children():
++			if not (c is Node3D):
++				continue
++			var n3: Node3D = c
++			var rot: Vector3 = n3.rotation_degrees
++			# Only yaw matters for a spawn; any x/z rotation is reported, not silently dropped.
++			if absf(rot.x) > 0.01 or absf(rot.z) > 0.01:
++				push_warning("[MP8] Spine Breaker: spawn %s has x/z rotation %s, using y only" % [
++					String(n3.name), str(rot)
++				])
++			_mp8_pool.append([n3.global_position, rot.y])
++		_mp8_pool_src = "scene default"
++
++	var from_scene: int = _mp8_pool.size()
++
++	if not ignore_file:
++		var rows: Array = _mp8_load_layout_file()
++		if not rows.is_empty():
++			_mp8_pool = rows
++			_mp8_pool_src = "saved file (%d points)" % rows.size()
++
++	if _mp8_pool.is_empty():
++		push_warning("[MP8] Spine Breaker: the spawn pool is empty, falling back to the game's container")
++		return
++
++	print("[MP8] Spine Breaker: spawn pool of %d, source=%s (%d built in); enabled %s" % [
++		_mp8_pool.size(), _mp8_pool_src, from_scene, _mp8_enable_desc()
++	])
++
++
++func _mp8_load_layout_file() -> Array :
++
++	# [MP8] The editor's file, read only in a test build: a shipped build plays the built-in layout (D116).
++	if not NetworkManager.mp8_development_tools_allowed() or not FileAccess.file_exists(MP8_LAYOUT_FILE):
++		return []
++
++	var f := FileAccess.open(MP8_LAYOUT_FILE, FileAccess.READ)
++	if f == null:
++		push_warning("[MP8] Spine Breaker: cannot read %s (error %d)" % [
++			MP8_LAYOUT_FILE, FileAccess.get_open_error()
++		])
++		return []
++
++	var rows: Array = []
++	while not f.eof_reached():
++		var line: String = f.get_line().strip_edges()
++		if line.is_empty() or line.begins_with("#"):
++			continue
++		var parts: PackedStringArray = line.split(",", false)
++		if parts.size() < 2:
++			push_warning("[MP8] Spine Breaker: unreadable layout file line, skipped - '%s'" % line)
++			continue
++		var x: float = float(parts[0].strip_edges())
++		var z: float = float(parts[1].strip_edges())
++		var yaw: float = (float(parts[2].strip_edges()) if parts.size() >= 3 else 0.0)
++		rows.append([Vector3(x, 0.0, z), yaw])
++	f.close()
++	return rows
++
++
++func _mp8_save_layout_file() -> bool :
++
++	var f := FileAccess.open(MP8_LAYOUT_FILE, FileAccess.WRITE)
++	if f == null:
++		push_warning("[MP8] Spine Breaker: cannot write %s (error %d)" % [
++			MP8_LAYOUT_FILE, FileAccess.get_open_error()
++		])
++		return false
++
++	f.store_line("# Spine Breaker (mp8game=14) spawn point pool")
++	f.store_line("# One point per line: x, z, facing in degrees. Order is priority: fewer players use only the first N:")
++	# Generated from MP8_POOL_BY_COUNT, so the file's note follows the table.
++	f.store_line("#   %s" % _mp8_enable_desc())
++	f.store_line("# Devices are drawn from this pool too (at least %.0f m from every player, relaxed a metre at a time)." % MP8_DEVICE_MIN_GAP)
++	f.store_line("# This file holds every point, the scene's stock 4 included:")
++	f.store_line("#    every player count uses the pool, 4 players too.")
++	f.store_line("# Delete this file to go back to the built-in layout. Safe to edit by hand.")
++	f.store_line("# Saved %s" % Time.get_datetime_string_from_system())
++	f.store_line("")
++	for r in _mp8_pool:
++		var p: Vector3 = r[0]
++		f.store_line("%.2f, %.2f, %.0f" % [p.x, p.z, float(r[1])])
++	f.close()
++
++	# Logged as code ready to paste into MP8_POOL_BAKED.
++	var snippet := PackedStringArray()
++	for r in _mp8_pool:
++		var p: Vector3 = r[0]
++		snippet.append("\t[Vector3(%.2f, 0.0, %.2f), %.1f]," % [p.x, p.z, float(r[1])])
++	print("[MP8] Spine Breaker: spawn pool saved (%d) -> %s" % [
++		_mp8_pool.size(), ProjectSettings.globalize_path(MP8_LAYOUT_FILE)
++	])
++	print("[MP8] Spine Breaker: ready to paste into the code - \n%s" % "\n".join(snippet))
++	return true
++
++
++# Exactly n spawns, from every branch: a player who is not spawned can keep check_game_end()
++# from ever reaching active_players <= 1, and this minigame has no timeout.
++func _mp8_pick_spawns(n: int) -> Array :
++	return _mp8_ensure_count(_mp8_pick_rows(n), n)
++
++
++func _mp8_ensure_count(rows: Array, n: int) -> Array :
++
++	if rows.size() == n:
++		return rows
++	if rows.size() > n:
++		return rows.slice(0, n)
++
++	if rows.is_empty():
++		push_warning("[MP8] Spine Breaker: no spawn points at all, all %d players at the origin" % n)
++		var zero: Array = []
++		for i in n:
++			zero.append([Vector3.ZERO, 0.0])
++		return zero
++
++	# Fewer points than players: reuse them cyclically. Stacked players can still play.
++	push_warning("[MP8] Spine Breaker: the pool gave %d points for %d players, reusing points cyclically" % [rows.size(), n])
++	var base: int = rows.size()
++	var out: Array = rows.duplicate()
++	for i in range(n - base):
++		out.append(out[i % base])
++	return out
++
++
++# Enables the first N points for the player count and picks n of them at random, a minimum gap apart.
++func _mp8_pick_rows(n: int) -> Array :
++
++	if _mp8_pool.is_empty():
++		# No pool: the game's container (_mp8_ensure_count fixes the length).
++		var out: Array = []
++		if player_spawn_positions_node != null:
++			for c in player_spawn_positions_node.get_children():
++				if c is Node3D:
++					out.append([(c as Node3D).global_position, (c as Node3D).rotation_degrees.y])
++		return out
++
++	# Not clampi(enabled, n, pool.size()): with more players than points min > max, and clampi returns
++	# the lower bound, an index past the pool. A shortfall is _mp8_ensure_count's job.
++	var enabled: int = int(MP8_POOL_BY_COUNT.get(n, _mp8_pool.size()))
++	enabled = maxi(mini(enabled, _mp8_pool.size()), 1)
++
++	var idx: Array = range(enabled)
++
++	# In the spawn editor, no shuffle: the first n points in order, so each point maps to a player.
++	if _mp8_edit_on:
++		return _mp8_rows(idx.slice(0, n))
++
++	idx.shuffle()
++
++	# Greedy: skip points too close; if a pass falls short, relax the gap and retry. Never return
++	# fewer than n (see _mp8_pick_spawns).
++	var gap: float = MP8_PICK_MIN_GAP
++	while gap > 0.0:
++		var chosen: Array = []
++		for i in idx:
++			var p: Vector3 = _mp8_pool[i][0]
++			var ok: bool = true
++			for c in chosen:
++				if p.distance_to(_mp8_pool[c][0]) < gap:
++					ok = false
++					break
++			if ok:
++				chosen.append(i)
++			if chosen.size() >= n:
++				break
++		if chosen.size() >= n:
++			if gap < MP8_PICK_MIN_GAP:
++				print("[MP8] Spine Breaker: %d players needed the minimum gap relaxed to %.1f m (pool too crowded or too few points enabled)" % [n, gap])
++			return _mp8_rows(chosen)
++		gap -= 1.0
++
++	# Fewer enabled points than players: reuse points (players stack, none is missing).
++	push_warning("[MP8] Spine Breaker: %d enabled points cannot seat %d players, spawn points repeat" % [enabled, n])
++	var fill: Array = []
++	for i in n:
++		fill.append(idx[i % idx.size()])
++	return _mp8_rows(fill)
++
++
++# A spot per device, at least the gap from every player and the other device, relaxed a metre at
++# a time. With no spot the device keeps its scene position, which is far from the players.
++func _mp8_place_devices(player_pts: Array) -> void :
++
++	if _mp8_pool.is_empty():
++		return
++
++	# Player spawns, plus each device as it is placed.
++	var occupied: Array = player_pts.duplicate()
++
++	for d in _mp8_devices:
++
++		if not is_instance_valid(d):
++			continue
++
++		var spot = _mp8_find_device_spot(occupied, player_pts.size())
++		if spot == null:
++			print("[MP8] Spine Breaker: device %d found no point >= %.0f m from everyone, staying in place" % [
++				d.mp8_index, MP8_DEVICE_MIN_GAP
++			])
++			continue
++
++		NetworkManager.mp8_rpc(self, &"mp8_device_place_rpc", [d.get_path(), spot])
++		occupied.append(spot)
++		print("[MP8] Spine Breaker: device %d placed at (%.2f, %.2f), %.1f m from the nearest player" % [
++			d.mp8_index, spot.x, spot.z, _mp8_min_dist(spot, player_pts)
++		])
++
++
++func _mp8_find_device_spot(occupied: Array, n: int):
++
++	var enabled: int = int(MP8_POOL_BY_COUNT.get(n, _mp8_pool.size()))
++	enabled = maxi(mini(enabled, _mp8_pool.size()), 1)
++
++	var cand: Array = range(enabled)
++	# No shuffle in the spawn editor, so devices stay put between rounds.
++	if not _mp8_edit_on:
++		cand.shuffle()
++
++	var gap: float = MP8_DEVICE_MIN_GAP
++	while gap > 0.0:
++		for i in cand:
++			var p: Vector3 = _mp8_pool[i][0]
++			if _mp8_min_dist(p, occupied) >= gap:
++				return p
++		gap -= 1.0
++
++	return null
++
++
++func _mp8_min_dist(p: Vector3, pts: Array) -> float :
++	var best: float = INF
++	for q in pts:
++		best = minf(best, p.distance_to(q))
++	return best
++
++
++func _mp8_enable_desc() -> String :
++	var parts := PackedStringArray()
++	for n in [4, 5, 6, 7, 8]:
++		parts.append("%d players -> first %d" % [n, int(MP8_POOL_BY_COUNT.get(n, _mp8_pool.size()))])
++	return "  ".join(parts)
++
++
++# Places a device on every peer: its physics runs only on the server, so clients would not see
++# a position set there alone.
++func mp8_device_place_rpc(dev_path: NodePath, pos: Vector3) -> void :
++	if not _mp8_host_command() or not _mp8_valid_layout_position(pos):
++		return
++	var d = get_node_or_null(dev_path)
++	if d == null or not is_instance_valid(d) or not _mp8_devices.has(d):
++		return
++	d.global_position = pos
++	d.velocity = Vector3.ZERO
++
++func _mp8_server_command() -> bool:
++	var sender: int = multiplayer.get_remote_sender_id()
++	return sender == get_multiplayer_authority() or (sender == 0 and multiplayer.is_server())
++
++# For relay-only targets. Online the host sends them from initialize(), inside the last client's player_loaded
++# RPC, so its own call carries that client's sender id; on the server the relay delivers them only from the host.
++func _mp8_host_command() -> bool:
++	return multiplayer.is_server() or _mp8_server_command()
++
++func _mp8_valid_layout_position(pos: Vector3) -> bool:
++	return pos.is_finite() and absf(pos.x) <= MP8_LAYOUT_LIMIT and absf(pos.y) <= MP8_LAYOUT_LIMIT and absf(pos.z) <= MP8_LAYOUT_LIMIT
++
++
++# ---------- [MP8] The second device
++
++func _mp8_want_devices(n: int) -> int :
++	return int(MP8_DEVICES_BY_COUNT.get(n, 1))
++
++
++# Creates the devices on every peer: device.tscn's MultiplayerSynchronizer pairs by node path, so
++# the name (MP8Device2) and parent must match. load(), not preload(): a bad path then yields null
++# here instead of failing the whole script.
++func mp8_ensure_devices_rpc(want: int) -> void :
++	if not _mp8_host_command() or want < 1 or want > 4:
++		return
++	if device == null or not is_instance_valid(device):
++		return
++
++	while _mp8_devices.size() < want:
++
++		var ps = load(MP8_DEVICE_SCENE)
++		if ps == null:
++			push_warning("[MP8] Spine Breaker: cannot load the device scene %s, no second device" % MP8_DEVICE_SCENE)
++			return
++
++		var idx: int = _mp8_devices.size() + 1
++		var d = ps.instantiate()
++		d.name = "MP8Device%d" % idx
++		device.get_parent().add_child(d)
++
++		# The scene sets this @export for its own device; an instantiated one needs it set here.
++		d.game_instance = self
++		d.mp8_index = idx
++		d.global_position = device.global_position
++
++		# The main scene overrides only activation_duration on its Device; the fuse is set per device below.
++
++		# [MP8] Devices never collide with each other: attached devices both wait at Vector3.DOWN * 100,
++		# and when they reset together the overlap would launch one into the sky. A collision exception
++		# leaves their collisions with floor, walls and players unchanged.
++		for other in _mp8_devices:
++			if is_instance_valid(other):
++				d.add_collision_exception_with(other)
++				other.add_collision_exception_with(d)
++
++		_mp8_devices.append(d)
++
++		# Server only, as in the game's _ready.
++		if multiplayer.is_server():
++			d.request_new_target.connect(_on_device_requested_target.bind(d))
++
++		print("[MP8] Spine Breaker: device %d ready (%s)" % [idx, str(d.get_path())])
++
++	# [MP8] Fuse and speed per device, device 1 included. call_local, so every peer sets every device.
++	var forced: float = _mp8_fuse_forced()
++	var parts: PackedStringArray = []
++
++	for i in _mp8_devices.size():
++
++		var d = _mp8_devices[i]
++		if not is_instance_valid(d):
++			continue
++
++		var fuse: float = (forced if forced > 0.0 else float(
++			MP8_DEVICE_FUSE[i] if i < MP8_DEVICE_FUSE.size() else MP8_DEVICE_FUSE[0]
++		))
++		var sp: float = float(
++			MP8_DEVICE_SPEED[i] if i < MP8_DEVICE_SPEED.size() else MP8_DEVICE_SPEED[0]
++		)
++
++		d.activation_duration = fuse
++
++		# Scale from the recorded base: this runs every round on reused devices (see mp8_speed_base).
++		if d.mp8_speed_base.is_empty():
++			d.mp8_speed_base = [
++				d.default_speed, d.new_target_speed, d.speed_increase_over_time
++			]
++		d.default_speed = d.mp8_speed_base[0] * sp
++		d.new_target_speed = d.mp8_speed_base[1] * sp
++		d.speed_increase_over_time = d.mp8_speed_base[2] * sp
++
++		var tint: Color = (
++			MP8_DEVICE_TINT[i] if i < MP8_DEVICE_TINT.size() else MP8_DEVICE_TINT[0]
++		)
++		# Kept on the device: after attach the device is hidden and its colour shows on the victim's back.
++		d.mp8_tint = tint
++		var painted: int = _mp8_tint_device(d, tint)
++
++		# The hourglass rides the body bone, so it follows the walk. Added once: devices are reused.
++		d.mp8_mark = (MP8_DEVICE_MARK[i] if i < MP8_DEVICE_MARK.size() else MP8_DEVICE_MARK[0])
++		if d.mp8_mark and d.skeleton.get_node_or_null("MP8Mark") == null:
++			var mark: Node3D = d.mp8_make_mark()
++			if mark != null:
++				var ba := BoneAttachment3D.new()
++				ba.name = "MP8Mark"
++				ba.bone_name = SpineBreakerDevice.MP8_MARK_BONE
++				d.skeleton.add_child(ba)
++				ba.add_child(mark)
++
++		var wait: float = _mp8_wait_for(d)
++
++		parts.append("device %d fuse %.1f s + wait %.1f s = period %.1f s, speed x%.2f (%.1f -> %.1f m/s)%s texture key=%s" % [
++			i + 1, fuse, wait, fuse + wait,
++			sp, float(d.mp8_speed_base[1]), d.new_target_speed,
++			("" if painted <= 0 else " tinted %d surfaces" % painted),
++			(d.mp8_tex_key if d.mp8_tex_key != "" else "❌not found")
++		])
++
++	if _mp8_devices.size() > 0:
++		print("[MP8] Spine Breaker: %d players -> %d devices, retirement at strike %d - %s" % [
++			PlayerManager.player_presences.size(), _mp8_devices.size(),
++			_mp8_retire_at(), " | ".join(parts)
++		])
++
++
++# Resets the devices each round: only this mod's state and what attach leaves behind (a retired
++# device sits hidden in BreakSpine with collision off). _mp8_place_devices repositions them.
++# The game's `active` and `deactivated` are left alone: `active` is never set true, and `deactivated` is never read.
++func mp8_device_reset_rpc() -> void :
++	if not _mp8_host_command():
++		return
++	for d in _mp8_devices:
++
++		if not is_instance_valid(d):
++			continue
++
++		# Detach first: going to Idle runs only attached_state.exit(), which leaves the device visual
++		# on the victim. Properties are set directly: this RPC is call_local, so each peer clears its own.
++		if d.attached_to != null and is_instance_valid(d.attached_to):
++			var victim = d.attached_to
++			victim.has_spine_breaker = false
++			victim.mp8_current_device = null
++			if victim.spine_breaker_visual != null:
++				victim.spine_breaker_visual.visible = false
++			victim.set_spinebreaker_visuals()
++
++		d.mp8_retired = false
++		d.attached_to = null
++		d.is_attached = false
++		d.breaking_spine = false
++		d.can_kick = true
++		d.can_proximity_target = true
++		d.can_proximity_attach = true
++		d.players_in_proximity.clear()
++		d.visible = true
++		d.set_collision_layer_value(1, true)
++		d.set_collision_mask_value(1, true)
++
++		if multiplayer.is_server():
++			d.state_machine.transition_to(&"Idle")
++
++
++# Claims retirement for the striking device (see _mp8_retire_at). First come, once per round: if
++# both devices retired, none would be left and the round could never end. Counts strikes, called
++# from BreakSpine.enter(), not dead_players, which lags by the death animation; `<`, not `==`,
++# so a missed count is caught on the next strike. Server only. victim deduplicates (optional).
++func mp8_claim_retire(victim = null) -> bool :
++
++	if not multiplayer.is_server():
++		return false
++
++	# [MP8] One strike per victim: two devices on one player would count them twice and retire early.
++	# Third guard after thrown_state's and break_spine_state's. Keyed by network_id, which is stable.
++	if victim != null and is_instance_valid(victim):
++		var vid = victim.player_presence.network_id if victim.player_presence != null else -1
++		if vid != -1:
++			if _mp8_counted_victims.has(vid):
++				print("[MP8] Spine Breaker: %s already counted, not counting again (two devices were on one player)" % String(victim.name))
++				return false
++			_mp8_counted_victims.append(vid)
++
++	_mp8_kills_started += 1
++
++	if _mp8_retire_claimed:
++		return false
++	if _mp8_devices.size() < 2:              # no retirement with one device (4-5 players)
++		return false
++	if _mp8_kills_started < _mp8_retire_at():
++		return false
++
++	_mp8_retire_claimed = true
++	return true
++
++
++func _mp8_rows(indices: Array) -> Array :
++	var out: Array = []
++	for i in indices:
++		out.append([_mp8_pool[i][0], float(_mp8_pool[i][1])])
++	return out
++
++
++# ---------- [MP8] Spawn checks (shown live in the spawn editor)
++
++# On the navmesh: devices chase with NavigationAgent3D. Asked of NavigationServer3D, not an XZ test
++# on navmesh vertices: the mesh has layers (y 0.5 to 6.5). The world comes from camera:
++# Minigame extends Node, which has no get_world_3d().
++func _mp8_on_navmesh(pos: Vector3) -> bool :
++	if camera == null:
++		return true
++	var map: RID = camera.get_world_3d().navigation_map
++	if not map.is_valid():
++		return true
++	var closest: Vector3 = NavigationServer3D.map_get_closest_point(map, pos)
++	return Vector2(closest.x - pos.x, closest.z - pos.z).length() <= MP8_NAV_TOL
++
++
++# The camera is fixed: a spawn outside the frame hides that player. 8% margin, since a point on
++# the edge leaves the frame as soon as the player moves.
++func _mp8_in_frame(pos: Vector3) -> bool :
++	var cam: Camera3D = get_viewport().get_camera_3d()
++	if cam == null:
++		return true
++	if cam.is_position_behind(pos):
++		return false
++	var vr: Rect2 = get_viewport().get_visible_rect()
++	var m: Vector2 = vr.size * 0.08
++	return Rect2(vr.position + m, vr.size - m * 2.0).has_point(cam.unproject_position(pos))
++
++
++func _mp8_nearest_gap(i: int) -> float :
++	var best: float = INF
++	var pi: Vector3 = _mp8_pool[i][0]
++	for j in _mp8_pool.size():
++		if j == i:
++			continue
++		var pj: Vector3 = _mp8_pool[j][0]
++		best = minf(best, pi.distance_to(pj))
++	return best
++
++
++# ---------- [MP8] Spawn editor (mp8spineedit)
++
++# The markers are nodes created at runtime, only in the spawn editor.
++func _mp8_edit_begin() -> void :
++
++	if _mp8_pool.is_empty():
++		push_warning("[MP8] Spine Breaker: the spawn pool is empty, the spawn editor does not start")
++		_mp8_edit_on = false
++		return
++
++	var lbl := Label.new()
++	lbl.name = "MP8SpineEditPanel"
++	lbl.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
++	lbl.offset_left = 16.0
++	lbl.offset_top = -190.0
++	lbl.offset_right = 1100.0
++	lbl.offset_bottom = -8.0
++	_mp8_style_label(lbl, Color(0.6, 0.95, 1.0))
++	_mp8_edit_layer().add_child(lbl)
++	_mp8_edit_panel = lbl
++
++	_mp8_rebuild_markers()
++	_mp8_edit_check_keys()
++	_mp8_edit_refresh()
++
++	print("[MP8] Spine Breaker: spawn editor on - %d points, source %s" % [
++		_mp8_pool.size(), _mp8_pool_src
++	])
++
++
++func _mp8_edit_layer() -> CanvasLayer :
++	if _mp8_edit_canvas == null:
++		_mp8_edit_canvas = CanvasLayer.new()
++		_mp8_edit_canvas.layer = 100
++		add_child(_mp8_edit_canvas)
++	return _mp8_edit_canvas
++
++
++# The game's own font: the default theme font's spacing is broken ("P3  id 104" renders as "P36idc104").
++func _mp8_style_label(lbl: Label, color: Color) -> void :
++	var f = load("res://fonts/Terminal F4.ttf")
++	if f != null:
++		lbl.add_theme_font_override("font", f)
++	lbl.add_theme_font_size_override("font_size", 22)
++	lbl.add_theme_color_override("font_color", color)
++	lbl.add_theme_color_override("font_outline_color", Color.BLACK)
++	lbl.add_theme_constant_override("outline_size", 6)
++	lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
++
++
++func _mp8_rebuild_markers() -> void :
++
++	for m in _mp8_markers:
++		if is_instance_valid(m):
++			m.queue_free()
++	_mp8_markers.clear()
++
++	var font = load("res://fonts/Terminal F4.ttf")
++
++	for i in _mp8_pool.size():
++
++		var root := Node3D.new()
++		root.name = "MP8SpawnMarker%d" % i
++		add_child(root)
++
++		var mi := MeshInstance3D.new()
++		var cyl := CylinderMesh.new()
++		cyl.top_radius = 0.35
++		cyl.bottom_radius = 0.35
++		cyl.height = MP8_MARKER_H
++		mi.mesh = cyl
++		var mat := StandardMaterial3D.new()
++		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
++		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
++		mat.albedo_color = Color(0.2, 1.0, 0.3, 0.45)
++		mi.material_override = mat
++		mi.position.y = MP8_MARKER_H * 0.5
++		root.add_child(mi)
++
++		# A short bar out of the front of the pillar shows the point's yaw.
++		var nose := MeshInstance3D.new()
++		var box := BoxMesh.new()
++		box.size = Vector3(0.18, 0.18, 1.2)
++		nose.mesh = box
++		nose.material_override = mat
++		nose.position = Vector3(0.0, 0.35, -0.8)
++		root.add_child(nose)
++
++		var tag := Label3D.new()
++		tag.billboard = BaseMaterial3D.BILLBOARD_ENABLED
++		tag.font_size = 180
++		tag.outline_size = 36
++		tag.outline_modulate = Color.BLACK
++		tag.no_depth_test = true      # visible through walls
++		if font != null:
++			tag.font = font
++		tag.text = str(i + 1)
++		tag.position = Vector3(0.0, MP8_MARKER_H + 0.6, 0.0)
++		root.add_child(tag)
++
++		_mp8_markers.append(root)
++
++	_mp8_sync_markers()
++
++
++func _mp8_sync_markers() -> void :
++
++	for i in _mp8_markers.size():
++		if i >= _mp8_pool.size():
++			break
++		var root: Node3D = _mp8_markers[i]
++		if not is_instance_valid(root):
++			continue
++		var p: Vector3 = _mp8_pool[i][0]
++		root.global_position = p
++		root.rotation_degrees = Vector3(0.0, float(_mp8_pool[i][1]), 0.0)
++
++		# Selected yellow, valid green, invalid red.
++		var col := Color(0.2, 1.0, 0.3, 0.45)
++		if not _mp8_on_navmesh(p) or not _mp8_in_frame(p):
++			col = Color(1.0, 0.25, 0.2, 0.55)
++		if i == _mp8_edit_sel:
++			col = Color(1.0, 0.9, 0.2, 0.75)
++		for c in root.get_children():
++			if c is MeshInstance3D:
++				var mat = (c as MeshInstance3D).material_override
++				if mat is StandardMaterial3D:
++					(mat as StandardMaterial3D).albedo_color = col
++
++
++func _mp8_edit_check_keys() -> void :
++
++	var mine: Dictionary = {
++		KEY_Q: "previous point", KEY_E: "next point",
++		KEY_I: "away", KEY_K: "near", KEY_J: "left", KEY_L: "right",
++		KEY_U: "turn left", KEY_O: "turn right",
++		KEY_N: "add", KEY_X: "delete", KEY_T: "try out",
++		KEY_5: "step", KEY_0: "save", KEY_9: "reset", KEY_8: "report",
++	}
++	var clash := PackedStringArray()
++
++	for action in InputMap.get_actions():
++		for ev in InputMap.action_get_events(action):
++			var k := ev as InputEventKey
++			if k == null:
++				continue
++			for code in [k.keycode, k.physical_keycode]:
++				if code != 0 and mine.has(code):
++					clash.append("%s(%s) <-> action %s" % [
++						OS.get_keycode_string(code), mine[code], String(action)
++					])
++
++	if clash.is_empty():
++		print("[MP8] Spine Breaker: spawn editor keys do not clash with the game's InputMap (%d actions checked)" % InputMap.get_actions().size())
++	else:
++		push_warning("[MP8] Spine Breaker: spawn editor keys clash with game actions - %s" % ", ".join(clash))
++		print("[MP8] Spine Breaker: ⚠️ key clash - %s" % ", ".join(clash))
++
++
++func _unhandled_key_input(event: InputEvent) -> void :
++	if not multiplayer.is_server() or not NetworkManager.mp8_development_tools_allowed():
++		return
++	if not _mp8_edit_on or _mp8_pool.is_empty():
++		return
++	var key := event as InputEventKey
++	if key == null or not key.pressed or key.echo:
++		return
++
++	var step: float = MP8_EDIT_STEPS[_mp8_edit_step_i]
++	_mp8_edit_sel = clampi(_mp8_edit_sel, 0, _mp8_pool.size() - 1)
++
++	match key.keycode:
++
++		KEY_Q, KEY_E:
++			var d: int = (-1 if key.keycode == KEY_Q else 1)
++			_mp8_edit_sel = posmod(_mp8_edit_sel + d, _mp8_pool.size())
++			_mp8_sync_markers()
++			_mp8_edit_refresh()
++
++		KEY_I, KEY_K, KEY_J, KEY_L:
++			# Screen directions, from the current camera basis, not world axes.
++			var dir: Vector2 = _mp8_screen_axis(key.keycode)
++			if dir == Vector2.ZERO:
++				return
++			var cur: Vector3 = _mp8_pool[_mp8_edit_sel][0]
++			_mp8_pool[_mp8_edit_sel][0] = Vector3(cur.x + dir.y * step, cur.y, cur.z + dir.x * step)
++			_mp8_sync_markers()
++			_mp8_edit_refresh()
++
++		KEY_U, KEY_O:
++			var dy: float = (- MP8_EDIT_YAW_STEP if key.keycode == KEY_U else MP8_EDIT_YAW_STEP)
++			_mp8_pool[_mp8_edit_sel][1] = fposmod(float(_mp8_pool[_mp8_edit_sel][1]) + dy, 360.0)
++			_mp8_sync_markers()
++			_mp8_edit_refresh()
++
++		KEY_N:
++			# 2 m to the right of the selected point, same yaw, appended (order = priority).
++			var base: Vector3 = _mp8_pool[_mp8_edit_sel][0]
++			var right: Vector2 = _mp8_screen_axis(KEY_L)
++			var np := Vector3(base.x + right.y * 2.0, base.y, base.z + right.x * 2.0)
++			_mp8_pool.append([np, float(_mp8_pool[_mp8_edit_sel][1])])
++			_mp8_edit_sel = _mp8_pool.size() - 1
++			_mp8_rebuild_markers()
++			_mp8_edit_refresh()
++			print("[MP8] Spine Breaker: added point %d (%.2f, %.2f)" % [_mp8_pool.size(), np.x, np.z])
++
++		KEY_X:
++			if _mp8_pool.size() <= 1:
++				return
++			_mp8_pool.remove_at(_mp8_edit_sel)
++			_mp8_edit_sel = clampi(_mp8_edit_sel, 0, _mp8_pool.size() - 1)
++			_mp8_rebuild_markers()
++			_mp8_edit_refresh()
++			print("[MP8] Spine Breaker: deleted a point, %d left" % _mp8_pool.size())
++
++		KEY_T:
++			NetworkManager.mp8_rpc(self, &"mp8_spine_tryout_rpc")
++
++		KEY_5:
++			_mp8_edit_step_i = (_mp8_edit_step_i + 1) % MP8_EDIT_STEPS.size()
++			_mp8_edit_refresh()
++
++		KEY_0:
++			var ok: bool = _mp8_save_layout_file()
++			_mp8_edit_refresh()
++			if _mp8_edit_panel != null:
++				_mp8_edit_panel.text = ("[SAVED] the next match uses this pool\n" if ok
++					else "[SAVE FAILED] see the log\n") + _mp8_edit_panel.text
++
++		KEY_9:
++			_mp8_init_pool(true)
++			_mp8_edit_sel = 0
++			_mp8_rebuild_markers()
++			_mp8_edit_refresh()
++			print("[MP8] Spine Breaker: spawn pool reset to the built-in layout (the saved file remains; delete it to revert fully)")
++
++		KEY_8:
++			_mp8_edit_report()
++
++		_:
++			return
++
++	get_viewport().set_input_as_handled()
++
++
++# Screen direction -> horizontal world direction, as Vector2(dz, dx): x is world z, y is world x.
++func _mp8_screen_axis(code: int) -> Vector2 :
++
++	var cam: Camera3D = get_viewport().get_camera_3d()
++	if cam == null:
++		return Vector2.ZERO
++
++	# Flattened to the ground plane: the camera looks down at a steep angle.
++	var right: Vector3 = cam.global_transform.basis.x
++	var fwd: Vector3 = - cam.global_transform.basis.z
++	var r2 := Vector2(right.z, right.x)
++	var f2 := Vector2(fwd.z, fwd.x)
++	if r2.length() < 0.001 or f2.length() < 0.001:
++		return Vector2.ZERO
++	r2 = r2.normalized()
++	f2 = f2.normalized()
++
++	match code:
++		KEY_L: return r2
++		KEY_J: return - r2
++		KEY_I: return f2
++		KEY_K: return - f2
++	return Vector2.ZERO
++
++
++# Try out: puts the players on the pool's first points in order. An RPC, since it moves every player.
++func mp8_spine_tryout_rpc() -> void :
++	if not multiplayer.is_server() or not _mp8_server_command():
++		return
++	if not _mp8_edit_on or not NetworkManager.mp8_development_tools_allowed():
++		return
++
++	var list: Array = players.values()
++	for i in list.size():
++		if i >= _mp8_pool.size():
++			break
++		var pl = list[i]
++		if not is_instance_valid(pl):
++			continue
++		pl.setup_rpc.rpc(
++			_mp8_pool[i][0],
++			device.get_path(),
++			Vector3(0.0, float(_mp8_pool[i][1]), 0.0)
++		)
++	print("[MP8] Spine Breaker: try out - %d players placed on the pool's first %d points" % [
++		list.size(), mini(list.size(), _mp8_pool.size())
++	])
++
++
++func _mp8_edit_refresh() -> void :
++
++	if _mp8_edit_panel == null:
++		return
++
++	var i: int = clampi(_mp8_edit_sel, 0, _mp8_pool.size() - 1)
++	var p: Vector3 = _mp8_pool[i][0]
++	var n: int = PlayerManager.player_presences.size()
++	var need: int = int(MP8_POOL_BY_COUNT.get(n, _mp8_pool.size()))
++	var gap: float = _mp8_nearest_gap(i)
++
++	var lines := PackedStringArray()
++	lines.append("[Spine Breaker spawn editor] point %d/%d   step %.1f m   source: %s" % [
++		i + 1, _mp8_pool.size(), MP8_EDIT_STEPS[_mp8_edit_step_i], _mp8_pool_src
++	])
++	lines.append("position (%.2f, %.2f)   yaw %.0f°   nearest point %.1f m" % [
++		p.x, p.z, float(_mp8_pool[i][1]), gap
++	])
++	lines.append("navmesh %s     camera frame %s" % [
++		("✅on the mesh" if _mp8_on_navmesh(p) else "❌off the mesh, devices cannot reach it"),
++		("✅in frame" if _mp8_in_frame(p) else "❌out of frame, the player cannot see themselves"),
++	])
++	lines.append("%d players enable the first %d points, the pool has %d%s" % [
++		n, need, _mp8_pool.size(),
++		("" if _mp8_pool.size() >= need else "  ⚠️ %d short" % (need - _mp8_pool.size()))
++	])
++	lines.append("Q/E select  IKJL move  U/O turn  N add  X delete  T try out  5 step  0 save  9 reset  8 report")
++
++	_mp8_edit_panel.text = "\n".join(lines)
++
++
++func _mp8_edit_report() -> void :
++
++	print("[MP8] ========== Spine Breaker spawn pool report (%d) ==========" % _mp8_pool.size())
++	var bad: int = 0
++	for i in _mp8_pool.size():
++		var p: Vector3 = _mp8_pool[i][0]
++		var nav: bool = _mp8_on_navmesh(p)
++		var frm: bool = _mp8_in_frame(p)
++		if not nav or not frm:
++			bad += 1
++		print("  %2d. (%7.2f, %7.2f) yaw %3.0f°  nearest point %5.2f m  navmesh %s  frame %s" % [
++			i + 1, p.x, p.z, float(_mp8_pool[i][1]), _mp8_nearest_gap(i),
++			("in" if nav else "❌out"), ("in" if frm else "❌out")
++		])
++	print("[MP8] Enabled per player count: %s" % _mp8_enable_desc())
++	var maxn: int = int(MP8_POOL_BY_COUNT.get(8, 0))
++	if _mp8_pool.size() > maxn:
++		print("[MP8] ⚠️ the pool has %d points but 8 players enable only the first %d - points %d-%d are never picked. Change MP8_POOL_BY_COUNT" % [
++			_mp8_pool.size(), maxn, maxn + 1, _mp8_pool.size()
++		])
++	if bad > 0:
++		print("[MP8] ⚠️ %d points are invalid (off the navmesh or out of frame), fix them before saving" % bad)
++	else:
++		print("[MP8] ✅ all %d points are on the navmesh and in frame" % _mp8_pool.size())

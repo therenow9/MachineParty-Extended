@@ -1,0 +1,66 @@
+diff --git a/minigames/escalator_pit/components/player/scripts/escalator_pit_player.gd b/minigames/escalator_pit/components/player/scripts/escalator_pit_player.gd
+--- a/minigames/escalator_pit/components/player/scripts/escalator_pit_player.gd
++++ b/minigames/escalator_pit/components/player/scripts/escalator_pit_player.gd
+@@ -232,13 +232,22 @@ func _physics_process(delta: float) -> void :
+ 
+ 
+ func show_death_indicator():
++	# [MP8] Read before the await, which can outlast this minigame's latch.
++	var mp8_sends: bool = NetworkManager.mp8_sends_broadcast(multiplayer.is_server())
+ 	await get_tree().create_timer(1.2, false).timeout
+-	SoundManager.play_omni_rpc.rpc(
+-		"escalator_pit_fail_alert", 
+-		"SFX", 
+-		4, 
+-		randf_range(0.95, 1.05), 
+-	)
++
++	# [MP8] Only the server starts the alert: `kill_rpc` is call_local, so every peer runs this, and
++	# each broadcasting it would play it once per peer from the omni pool, stacking voices. A mixed
++	# room sends from every peer (D116). The guard wraps only the sound; the indicator lines below
++	# must run on every peer.
++	if mp8_sends:
++		SoundManager.play_omni_rpc.rpc(
++			"escalator_pit_fail_alert", 
++			"SFX", 
++			4, 
++			randf_range(0.95, 1.05), 
++		)
++
+ 	input_indicator.visible = false
+ 	win_indicator.visible = false
+ 	lose_indicator.visible = true
+@@ -308,13 +317,15 @@ func kill_rpc():
+ 	tween.tween_property(ik_torso, "influence", 0, blend_time)
+ 	tween.tween_property(character_animation_tree, "parameters/death_blend/blend_amount", 1, blend_time)
+ 
+-	SoundManager.play_positional_rpc.rpc(
+-		"escalator_pit_death", 
+-		global_position, 
+-		"SFX", 
+-		1, 
+-		randf_range(0.95, 1), 
+-	)
++	# [MP8] Only the server starts the death sound (same reason as in show_death_indicator).
++	if NetworkManager.mp8_sends_broadcast(multiplayer.is_server()):
++		SoundManager.play_positional_rpc.rpc(
++			"escalator_pit_death", 
++			global_position, 
++			"SFX", 
++			1, 
++			randf_range(0.95, 1), 
++		)
+ 
+ 	show_death_indicator()
+ 
+@@ -374,3 +385,10 @@ func teleport_rpc(_position: Vector3):
+ @rpc("any_peer", "call_local", "reliable")
+ func set_manager_from_path_rpc(node_path: String):
+ 	game_instance = get_node(node_path)
++
++	# [MP8] The eight-strip build hides the handrails these two IKs pull the hands onto, so the arms
++	# play the run clip's own swing instead. call_local: every peer, where each built its own strips.
++	# A mixed room keeps the game's IKs (D120).
++	if NetworkManager.mp8_room_extended() and game_instance.player_spawn_positions.size() > EscalatorPitMinigame.MP8V_VANILLA_LANES:
++		ik_left_hand.influence = 0.0
++		ik_right_hand.influence = 0.0

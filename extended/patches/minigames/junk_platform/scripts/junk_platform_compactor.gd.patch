@@ -1,0 +1,93 @@
+diff --git a/minigames/junk_platform/scripts/junk_platform_compactor.gd b/minigames/junk_platform/scripts/junk_platform_compactor.gd
+--- a/minigames/junk_platform/scripts/junk_platform_compactor.gd
++++ b/minigames/junk_platform/scripts/junk_platform_compactor.gd
+@@ -11,6 +11,24 @@ func _ready() -> void :
+ 	area.body_entered.connect(on_body_entered)
+ 
+ func slam():
++
++	# [MP8] A mixed room runs the game's slam (D120).
++	if not NetworkManager.mp8_room_extended():
++		await _mp8_game_slam()
++		return
++
++	var t = create_tween()
++	t.tween_property(visual, "position", Vector3(visual.position.x, 1.355, visual.position.z), 0.1)
++	speaker_slam.pitch_scale = randf_range(0.97, 1.03)
++	speaker_slam.play()
++	await get_tree().create_timer(0.1, false).timeout
++	particle.emitting = true
++	cam_shaker.force_stop_shake()
++	cam_shaker.play_shake()
++	_mp8_fade()
++
++# The game's slam, for a mixed room (D120).
++func _mp8_game_slam():
+ 	var t = create_tween()
+ 	t.tween_property(visual, "position", Vector3(visual.position.x, 1.355, visual.position.z), 0.1)
+ 	speaker_slam.pitch_scale = randf_range(0.97, 1.03)
+@@ -20,7 +38,64 @@ func slam():
+ 	cam_shaker.force_stop_shake()
+ 	cam_shaker.play_shake()
+ 
++# [MP8] A slammed compactor stays on its deck for the round and hides the decks behind it from a shared
++# camera. In local games, and online at 5-8, it fades on each peer once the slam has landed; its collider
++# stays, so rocks and players still meet it.
++const MP8_FADE_DELAY: float = 0.5
++const MP8_FADE_TIME: float = 0.3
++# The opacity it fades to; `mp8junkfade=<0..1>` overrides it, and 1 keeps it solid.
++const MP8_FADE_OPACITY: float = 0.3
++
++func _mp8_fade() -> void :
++	if not (GameManager.local_game or PlayerManager.player_presences.size() > 4):
++		return
++	var opacity: float = MP8_FADE_OPACITY
++	for a in NetworkManager.mp8_dev_args():
++		var s: String = String(a)
++		if s.begins_with("mp8junkfade=") and s.substr(12).is_valid_float():
++			opacity = clampf(float(s.substr(12)), 0.0, 1.0)
++	if opacity >= 1.0:
++		return
++	await get_tree().create_timer(MP8_FADE_DELAY, false).timeout
++	if not is_inside_tree():
++		return
++	# compactor1 and compactor4 draw nothing themselves (layers 0): their child `compactor flipped` is the
++	# press on screen. The sparks keep their full strength.
++	var geo: Array = find_children("*", "GeometryInstance3D", true, false)
++	geo.append(self)
++	var t := create_tween().set_parallel(true)
++	for g in geo:
++		if not g is GPUParticles3D:
++			t.tween_property(g, "transparency", 1.0 - opacity, MP8_FADE_TIME)
++	print("[MP8] Debris Platforms: %s fades to opacity %.2f" % [name, opacity])
++
++# [MP8] Only the server decides a compactor kill. `emit_died` is a local signal, connected only on
++# the server (`spawn_players`); a kill on a client never leaves `active_players`, so the round never ends.
++# In view mode a the stock `assign_flipped_compactor()` swaps compactors by camera rotation, so on a
++# client a compactor may cover a different player than on the server.
+ func on_body_entered(body):
++
++	# [MP8] A mixed room runs the game's on_body_entered (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_on_body_entered(body)
++		return
++
++	if body is JunkPlatformPlayer:
++
++		if not multiplayer.is_server():
++			return
++
++		# [MP8] One kill per life: while `slam()` drives the visual down, the same body re-enters the
++		# kill area. `kill_rpc()` always clears `active`.
++		if not body.active:
++			return
++
++		body.kill_rpc.rpc()
++		body.emit_died.emit(body.player_presence.network_id)
++		manager.junk_handler.remove_spawn_point(body.player_presence.network_id)
++
++# The game's on_body_entered, for a mixed room (D120).
++func _mp8_game_on_body_entered(body):
+ 	if body is JunkPlatformPlayer:
+ 		body.kill_rpc.rpc()
+ 		body.emit_died.emit(body.player_presence.network_id)

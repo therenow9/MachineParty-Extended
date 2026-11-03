@@ -1,0 +1,321 @@
+diff --git a/minigames/intermission_new/components/intermission_score_screen.gd b/minigames/intermission_new/components/intermission_score_screen.gd
+--- a/minigames/intermission_new/components/intermission_score_screen.gd
++++ b/minigames/intermission_new/components/intermission_score_screen.gd
+@@ -1,6 +1,8 @@
+ class_name Intermission_ScoreScreen extends Node
+ 
+-const rank_y_positions: Array[float] = [0.84, 0.325, -0.19, -0.705]
++# [MP8] A const in the game. A const array is read-only in Godot 4 and 8 players need 8 positions;
++# every reader (this file, user_container_order_manager.gd) reads it as a property.
++var rank_y_positions: Array[float] = [0.84, 0.325, -0.19, -0.705]
+ 
+ @export_category("components")
+ @export var intermission_manager: IntermissionManager
+@@ -51,6 +53,239 @@ func _ready() -> void :
+ 	for child in binary_cells_parent.get_children():
+ 		binary_cells.append(child)
+ 
++	_mp8_shot_armed = NetworkManager.mp8_dev_args().has("mp8shot")
++
++	# [MP8] Score board extension; must be deferred, see _mp8_extend().
++	if not NetworkManager.mp8_dev_args().has("mp8noscore"):
++		_mp8_extend.call_deferred()
++
++
++# [MP8] The 3D score board has 4 rows; players 5-8 would never show.
++# Deferred: each Intermission_UserContainer._ready() collects its siblings for the swap animation, and this
++# node is an earlier sibling of `users list`, so it readies first. Rows are copied after they collect, and
++# every row's list is overwritten with all 8. The rows are shrunk into the 4 rows' space (y 0.84 to -0.705).
++func _mp8_extend() -> void :
++
++	var target: int = NetworkManager.MAX_PLAYERS
++	var n: int = user_container_array.size()
++	if n == 0 or n >= target:
++		return
++
++	var src: Intermission_UserContainer = user_container_array[0]
++	if not is_instance_valid(src):
++		return
++	var parent: Node = src.get_parent()
++	if parent == null:
++		return
++
++	var vanilla: Dictionary = _mp8_snapshot()
++	var s: float = MP8_ROW_SCALE
++	var step: float = MP8_ROW_STEP
++	for a in NetworkManager.mp8_dev_args():
++		var t: String = String(a)
++		if t.begins_with("mp8srow="):
++			var parts: PackedStringArray = t.substr(8).split(",")
++			if parts.size() >= 1 and parts[0] != "":
++				s = float(parts[0])
++			if parts.size() >= 2 and parts[1] != "":
++				step = float(parts[1])
++
++	# The game's score roll durations rise 2.0/2.5/3.0/3.5; continuing +0.5 would double the screen's length
++	# (total = longest x1.5x1.5). The 8 rows are spread over the original first..last range instead.
++	var lerp_first: float = src.lerp_duration_score
++	var lerp_last: float = user_container_array[n - 1].lerp_duration_score
++
++	for i in range(n, target):
++		var dup: Intermission_UserContainer = src.duplicate()
++		dup.name = "MP8UserInfo%d" % (i + 1)
++		_mp8_reresolve_children(src, dup)
++		dup.container_id = i
++		dup.visible = false
++		parent.add_child(dup)
++		user_container_array.append(dup)
++
++	# Columns (mp8scols=<count>,<gap>): 1 = all 8 stacked; 2 = ranks 1-4 left, 5-8 right.
++	var cols: int = MP8_COLS
++	var col_gap: float = MP8_COL_GAP
++	for a in NetworkManager.mp8_dev_args():
++		var t: String = String(a)
++		if t.begins_with("mp8scols="):
++			var cp: PackedStringArray = t.substr(9).split(",")
++			if cp.size() >= 1 and cp[0] != "":
++				cols = maxi(int(cp[0]), 1)
++			if cp.size() >= 2 and cp[1] != "":
++				col_gap = float(cp[1])
++	var per_col: int = int(ceil(float(target) / float(cols)))
++
++	# y table: the first row stays put, the rest step down; each column starts from the top.
++	var base_y: float = rank_y_positions[0] if rank_y_positions.size() > 0 else 0.84
++	rank_y_positions.clear()
++	_mp8_rank_x_offsets.clear()
++	for i in target:
++		rank_y_positions.append(base_y - float(i % per_col) * step)
++		_mp8_rank_x_offsets.append(float(i / per_col) * col_gap)
++
++	# Scaling shrinks toward each row's origin, which sits between score and name, so the left part moves
++	# right and opens a gap beside the large total score. Shift back by what the leftmost child lost.
++	var left_x: float = 0.0
++	for child in src.get_children():
++		if child is Node3D:
++			left_x = minf(left_x, (child as Node3D).position.x)
++	var x_shift: float = left_x * (1.0 - s)
++
++	_mp8_base_x = src.position.x + x_shift
++
++	# Absolute slot x per rank, read by the swap animation (user_container_order_manager.gd).
++	mp8_rank_x_positions.clear()
++	for i in target:
++		mp8_rank_x_positions.append(_mp8_base_x + _mp8_rank_x_offsets[i])
++
++	for i in target:
++		var uc: Intermission_UserContainer = user_container_array[i]
++		uc.scale = Vector3.ONE * s
++		uc.position.x = _mp8_base_x + _mp8_rank_x_offsets[i]
++		uc.position.y = rank_y_positions[i]
++		uc.lerp_duration_score = lerpf(lerp_first, lerp_last, float(i) / float(target - 1))
++
++	# Arrays written by index must hold 8 entries, or the write goes out of bounds and crashes:
++	#   sort_user_containers_by_score():  score_container_nodes[rank_position_counter] = uc
++	score_container_nodes = user_container_array.duplicate()
++
++	# Each row gets its own copy of the full 8-row sibling list (not one shared Array).
++	for uc in user_container_array:
++		uc.user_container_array = user_container_array.duplicate()
++
++	print("[MP8] 3D score board: rows %d->%d, scale %.2f, step %.4f, %d cols (gap %.2f)\n        y table %s\n        x table %s" % [
++		n, user_container_array.size(), s, step, cols, col_gap,
++		str(rank_y_positions), str(mp8_rank_x_positions)
++	])
++	_mp8_layouts = {false: vanilla, true: _mp8_snapshot()}
++
++
++# [MP8] Mixed rooms (D116): the game's 4-row board, chosen at each show by setup(). The host's pace
++# depends on it too (lerp_duration_score). Arrays are replaced, never changed in place, since a show or
++# hide coroutine iterates the old one.
++var mp8_extended_layout: bool = true
++var _mp8_layouts: Dictionary = {}
++
++
++func _mp8_snapshot() -> Dictionary:
++	var lists: Array = []
++	var scales: Array = []
++	var xs: Array = []
++	var lerps: Array = []
++	for uc in user_container_array:
++		lists.append(uc.user_container_array.duplicate())
++		scales.append(uc.scale)
++		xs.append(uc.position.x)
++		lerps.append(uc.lerp_duration_score)
++	return {
++		"rows": user_container_array.duplicate(), "lists": lists, "scales": scales, "xs": xs,
++		"lerps": lerps, "y": rank_y_positions.duplicate(), "rank_x": mp8_rank_x_positions.duplicate(),
++		"x_offsets": _mp8_rank_x_offsets.duplicate(), "base_x": _mp8_base_x,
++	}
++
++
++func mp8_apply_layout(extended: bool) -> void:
++	if not _mp8_layouts.has(extended):
++		return
++	var snap: Dictionary = _mp8_layouts[extended]
++	mp8_extended_layout = extended
++	user_container_array = snap["rows"].duplicate()
++	score_container_nodes = snap["rows"].duplicate()
++	rank_y_positions = snap["y"].duplicate()
++	mp8_rank_x_positions = snap["rank_x"].duplicate()
++	_mp8_rank_x_offsets = snap["x_offsets"].duplicate()
++	_mp8_base_x = snap["base_x"]
++	for i in user_container_array.size():
++		var uc: Intermission_UserContainer = user_container_array[i]
++		uc.user_container_array = snap["lists"][i].duplicate()
++		uc.scale = snap["scales"][i]
++		uc.position.x = snap["xs"][i]
++		uc.lerp_duration_score = snap["lerps"][i]
++	for uc in _mp8_layouts[true]["rows"]:
++		uc.mp8_set_extended(extended)
++		if not user_container_array.has(uc):
++			uc.visible = false
++
++
++# [MP8] duplicate() does not remap @export references to the node's own children: a copy keeps pointing
++# at the original's Label3D. Re-resolve each through src.get_path_to() on the copy, as
++# network_manager.gd's _mp8_extend_lobby() does.
++func _mp8_reresolve_children(src: Intermission_UserContainer, dup: Intermission_UserContainer) -> void :
++
++	if is_instance_valid(src.anim_connector):
++		dup.anim_connector = dup.get_node(src.get_path_to(src.anim_connector))
++	if is_instance_valid(src.label_rank):
++		dup.label_rank = dup.get_node(src.get_path_to(src.label_rank))
++	if is_instance_valid(src.label_score):
++		dup.label_score = dup.get_node(src.get_path_to(src.label_score))
++	if is_instance_valid(src.label_name):
++		dup.label_name = dup.get_node(src.get_path_to(src.label_name))
++	if is_instance_valid(src.speaker_connector):
++		dup.speaker_connector = dup.get_node(src.get_path_to(src.speaker_connector))
++
++	var ops: Array[GeometryInstance3D] = []
++	for op in src.opacity_visuals:
++		if is_instance_valid(op):
++			var re = dup.get_node_or_null(src.get_path_to(op))
++			if re != null:
++				ops.append(re)
++	dup.opacity_visuals = ops
++
++	# score_screen / container_order_swapper point at shared external nodes; the copied references are right.
++
++
++# [MP8] Debug screenshots (`mp8shot`). The board is a 3D object in the intermission room, so the whole window
++# is captured. Several fixed times, because the board hides as soon as score_screen_finished fires.
++# Timeline: rows 0.6s, binary panel 2.2s, score roll 2.7s to about 8s, board closes about 10.6s.
++const MP8_SHOT_TIMES: Array[float] = [4.0, 7.0, 10.0]
++
++var _mp8_shot_armed: bool = false
++
++# [MP8] Row layout; mp8srow=<scale>,<step> / mp8scols=<count>,<gap> override it on the command line.
++# Two columns of 4 keep the game's row step of 0.515. Width is the limit: a row (7-character name) is about
++# 420px at scale 1.0 on a board about 490px wide, so two columns and the gap need a scale around 0.55 or less.
++const MP8_ROW_SCALE: float = 0.48
++const MP8_ROW_STEP: float = 0.515
++const MP8_COLS: int = 2
++const MP8_COL_GAP: float = 3.5
++
++# Absolute slot x per rank (not an offset); public because user_container_order_manager.gd reads it.
++var mp8_rank_x_positions: Array[float] = []
++
++var _mp8_rank_x_offsets: Array[float] = []
++var _mp8_base_x: float = 0.0
++
++
++# [MP8] Places a row by rank. The game sets only y; with columns x depends on the rank too, or a row
++# that changes column stays at its old column's x.
++func _mp8_place(uc: Node3D, i: int) -> void :
++	if i < rank_y_positions.size():
++		uc.position.y = rank_y_positions[i]
++	if i < _mp8_rank_x_offsets.size():
++		uc.position.x = _mp8_base_x + _mp8_rank_x_offsets[i]
++
++
++func _mp8_shot_timeline() -> void :
++
++	if not _mp8_shot_armed:
++		return
++
++	var tag: int = multiplayer.get_unique_id() if multiplayer.has_multiplayer_peer() else 0
++	var waited: float = 0.0
++
++	for t in MP8_SHOT_TIMES:
++		await get_tree().create_timer(t - waited, false).timeout
++		waited = t
++		if not is_inside_tree():
++			return
++		await RenderingServer.frame_post_draw
++		var img: Image = get_viewport().get_texture().get_image()
++		if img != null:
++			img.save_png("user://mp8_score_%d_t%d.png" % [tag, int(t)])
++			print("[MP8] mp8shot: saved user://mp8_score_%d_t%d.png" % [tag, int(t)])
++
+ func _physics_process(delta: float) -> void :
+ 
+ 	lerp_total_score(delta)
+@@ -60,6 +295,54 @@ func reset_user_containers(
+ 	_game_score_by_network_id: Dictionary
+ ):
+ 
++	# [MP8] The game's 4-row show places its rows as the game does (D120).
++	if not mp8_extended_layout:
++		_mp8_game_reset_user_containers(_total_score_by_network_id, _game_score_by_network_id)
++		return
++
++
++	for i in user_container_array.size():
++		var user_container = user_container_array[i]
++		user_container.set_user_container_as_empty()
++		user_container.user_network_id = -2
++		user_container.user_rank_value = -1
++		_mp8_place(user_container, i)  # [MP8] the game sets only y
++		user_container.container_active = false
++
++	var player_by_score_array: Array
++	for network_id in _total_score_by_network_id.keys():
++		var subtract = _game_score_by_network_id.get(network_id, 0)
++		player_by_score_array.append({
++			"network_id": network_id, 
++			"score": _total_score_by_network_id[network_id] - subtract
++		})
++
++	player_by_score_array.sort_custom( func(a, b):
++		return a["score"] > b["score"]
++	)
++
++	for i in user_container_array.size():
++		var user_container = user_container_array[i]
++		_mp8_place(user_container, i)  # [MP8] the game sets only y
++		if i < player_by_score_array.size():
++			var user_score = player_by_score_array[i]["score"]
++			var user_name = intermission_manager.get_user_name_from_network_id(player_by_score_array[i]["network_id"])
++			user_container.set_user_container_data(user_score, user_name)
++			user_container.user_score_value_for_sorting = user_score
++			user_container.user_network_id = player_by_score_array[i]["network_id"]
++			user_container.container_active = true
++			user_container.set_user_rank_label(i + 1)
++
++	score_container_nodes.clear()
++	for i in user_container_array.size():
++		score_container_nodes.append(user_container_array[i])
++
++# The game's reset_user_containers, for the game's layout (D120).
++func _mp8_game_reset_user_containers(
++	_total_score_by_network_id: Dictionary, 
++	_game_score_by_network_id: Dictionary
++):
++
+ 
+ 	for i in user_container_array.size():
+ 		var user_container = user_container_array[i]
+@@ -156,9 +439,12 @@ func setup(
+ 	_no_score: bool = false, 
+ 	_stopping_music: bool = false
+ ):
++	mp8_apply_layout(NetworkManager.mp8_room_extended())  # [MP8] live: the minigame's latch is cleared
+ 	reset_user_containers(_total_score_by_network_id, _game_score_by_network_id)
+ 	stopping_music = _stopping_music
+ 
++	_mp8_shot_timeline()  # [MP8]
++
+ 	active_total_score_by_network_id = _total_score_by_network_id
+ 	active_game_score_by_network_id = _game_score_by_network_id
+ 

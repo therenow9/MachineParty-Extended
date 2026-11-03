@@ -1,0 +1,100 @@
+diff --git a/minigames/manufacture_gun/components/player/scripts/manufacture_gun_player.gd b/minigames/manufacture_gun/components/player/scripts/manufacture_gun_player.gd
+--- a/minigames/manufacture_gun/components/player/scripts/manufacture_gun_player.gd
++++ b/minigames/manufacture_gun/components/player/scripts/manufacture_gun_player.gd
+@@ -164,8 +164,13 @@ func handle_interaction(_delta: float):
+ 			for i in interacts_in_range:
+ 				if i is ManufactureGunWorkstation:
+ 
++					# [MP8] continue, not vanilla's return: with 8 benches set closer than about 4.9 m,
++					# another player's bench in range would lock out yours and the parts on the floor.
++					# A mixed room keeps the game's return: a player at another's bench drops nothing (D116).
+ 					if i.player_presence.network_id != player_presence.network_id:
+-						return
++						if not NetworkManager.mp8_room_extended():
++							return
++						continue
+ 
+ 					if i.can_interact:
+ 						if held_item_variation == i.item_sequence[i.current_item_sequence_index]:
+@@ -184,7 +189,11 @@ func handle_interaction(_delta: float):
+ 
+ 					return
+ 
+-		try_drop_item()
++		# [MP8] Past another player's bench (the continue above) the drop lands where the dropcast hits,
++		# which can be that bench's top; vanilla's return refused it there. The press does nothing then,
++		# and the floor beside the bench still takes the part. A death's drop (kill_rpc) is not gated.
++		if not mp8_drop_refused(dropcast.get_collider() if dropcast.is_colliding() else null, player_presence.network_id):
++			try_drop_item()
+ 
+ 	if DynamicInput.is_action_just_pressed(player_presence.device_id, "action_1"):
+ 		for i in interacts_in_range:
+@@ -192,8 +201,12 @@ func handle_interaction(_delta: float):
+ 
+ 			if i is ManufactureGunWorkstation:
+ 
++				# [MP8] continue, as above: pickup is an elif in this same loop, so a return here
++				# would stop a player beside another's bench picking up parts. A mixed room returns, as the game does.
+ 				if i.player_presence.network_id != player_presence.network_id:
+-					return
++					if not NetworkManager.mp8_room_extended():
++						return
++					continue
+ 
+ 				if i.has_gun and held_item_variation == ManufactureGunItem.Variation.None:
+ 
+@@ -257,6 +270,15 @@ func try_drop_item():
+ 
+ 			held_item_reference = null
+ 
++# [MP8] A bench's solid body (`Collision`) is a direct child of its ManufactureGunWorkstation.
++static func mp8_lands_on_other_bench(collider: Object, network_id: int) -> bool:
++	var bench = (collider as Node).get_parent() if collider is Node else null
++	return bench is ManufactureGunWorkstation and (bench.player_presence == null or bench.player_presence.network_id != network_id)
++
++# [MP8] A mixed room drops wherever the dropcast hits, another player's bench top included, as the game does (D116).
++static func mp8_drop_refused(collider: Object, network_id: int) -> bool:
++	return NetworkManager.mp8_room_extended() and mp8_lands_on_other_bench(collider, network_id)
++
+ func play_footstep_sound(delta):
+ 	if velocity.length() > 0.01:
+ 		footstep_counter += delta
+@@ -377,6 +399,13 @@ func loose_hat_rpc():
+ @rpc("any_peer", "call_local", "reliable")
+ func gun_reloaded_rpc():
+ 	anim_indicator.play("reloaded")
++
++	# [MP8] Only the server sends the sound: this handler runs on every peer, and
++	# play_positional_rpc takes a free slot from a pool, so each peer's send would stack another voice.
++	# Same in set_has_gun_rpc and kill_rpc. A mixed room sends from every peer, as the game does (D116).
++	if not NetworkManager.mp8_sends_broadcast(multiplayer.is_server()):
++		return
++
+ 	SoundManager.play_positional_rpc.rpc(
+ 		"manufacture_gun_reload", 
+ 		global_position, 
+@@ -392,7 +421,10 @@ func set_has_gun_rpc(_has_gun: bool):
+ 	has_gun = _has_gun
+ 
+ 	gun_picked_up.emit()
+-	play_pickup_gun_sound()
++
++	# [MP8] Only the server plays it: play_pickup_gun_sound() broadcasts (see gun_reloaded_rpc).
++	if NetworkManager.mp8_sends_broadcast(multiplayer.is_server()):
++		play_pickup_gun_sound()
+ 
+ @rpc("any_peer", "call_local", "reliable")
+ func gun_shot_rpc():
+@@ -451,7 +483,11 @@ func kill_rpc(_killer_network_id: int):
+ 		try_drop_item()
+ 
+ 	anim_handler.got_shot()
+-	play_death_sound()
++
++	# [MP8] Only the server plays it (see gun_reloaded_rpc).
++	if NetworkManager.mp8_sends_broadcast(multiplayer.is_server()):
++		play_death_sound()
++
+ 	loose_hat_rpc()
+ 
+ 	var blood_decal: Node3D = blood_decal_instance.instantiate()

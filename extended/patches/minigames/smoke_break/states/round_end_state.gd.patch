@@ -1,0 +1,79 @@
+diff --git a/minigames/smoke_break/states/round_end_state.gd b/minigames/smoke_break/states/round_end_state.gd
+--- a/minigames/smoke_break/states/round_end_state.gd
++++ b/minigames/smoke_break/states/round_end_state.gd
+@@ -15,6 +15,75 @@ func can_enter() -> bool:
+ 
+ func enter(_msg: Dictionary = {}) -> void :
+ 
++	# [MP8] A mixed room ends the round as the game does, its scoring included (D116, D120).
++	if not NetworkManager.mp8_room_extended():
++		await _mp8_game_enter(_msg)
++		return
++
++	state_time = 0.0
++
++	if not multiplayer.is_server():
++		return
++
++	await get_tree().create_timer(1, false).timeout
++	var losers = owner.active_players.duplicate()
++
++	_mp8_score_finishers(losers)
++
++	owner.player_scores_finalized.emit(owner.player_scores)
++
++	if not losers.is_empty():
++
++		var seats_to_eliminate = []
++		for i in losers:
++			seats_to_eliminate.append(i.active_player_seat_index)
++			seats_to_eliminate.shuffle()
++
++		trolley_gun.eliminate_players_routine_rpc.rpc(seats_to_eliminate)
++		return
++
++	else:
++
++		await get_tree().create_timer(3.0).timeout
++
++	state_machine.transition_to(&"Finish")
++
++# [MP8] Extended's round-end scores; a mixed room runs the game's enter() instead.
++func _mp8_score_finishers(losers: Array) -> void :
++
++	# [MP8] Placing points from finished_players' order: the j-th to finish (from 0) scores N - j
++	# (N = players) and the first gets 1 more; anyone who did not finish is shot and scores 0.
++	# The scores are overwritten, not added to, or smoke_break.gd's running +1 for the first finisher
++	# would count twice. Who gets shot is unchanged: finishers have already left active_players.
++	var mp8_total: int = owner.player_scores.size()
++	for id in owner.player_scores.keys():
++		owner.player_scores[id] = 0
++
++	var mp8_rows := PackedStringArray()
++	for j in owner.finished_players.size():
++		var p = owner.finished_players[j]
++		if p == null or not is_instance_valid(p):
++			continue
++		var pid: int = p.player_presence.network_id
++		if not owner.player_scores.has(pid):
++			continue
++		var s: int = mp8_total - j
++		if j == 0:
++			s += 1
++		owner.player_scores[pid] = s
++		mp8_rows.append("finished #%d %s %d pts%s" % [
++			j + 1, String(p.player_presence.network_name), s,
++			(", incl. +1 first-finisher bonus" if j == 0 else "")
++		])
++
++	print("[MP8] Smoke Break scores (%d players / %d finished / %d shot): %s" % [
++		mp8_total, owner.finished_players.size(), losers.size(),
++		(" | ".join(mp8_rows) if mp8_rows.size() > 0 else "nobody finished, everyone scores 0")
++	])
++
++# The game's enter, for a mixed room (D120).
++func _mp8_game_enter(_msg: Dictionary = {}) -> void :
++
+ 	state_time = 0.0
+ 
+ 	if not multiplayer.is_server():

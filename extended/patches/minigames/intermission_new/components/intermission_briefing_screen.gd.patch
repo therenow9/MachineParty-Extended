@@ -1,0 +1,513 @@
+diff --git a/minigames/intermission_new/components/intermission_briefing_screen.gd b/minigames/intermission_new/components/intermission_briefing_screen.gd
+--- a/minigames/intermission_new/components/intermission_briefing_screen.gd
++++ b/minigames/intermission_new/components/intermission_briefing_screen.gd
+@@ -124,6 +124,363 @@ func _ready() -> void :
+ 
+ 	Globals.locale_changed.connect(debug_update)
+ 
++	# [MP8] Auto-ready has its own switch, mp8ready, besides mp8fast: debugging needs auto-ready without fast-forward.
++	var _mp8_args := NetworkManager.mp8_dev_args()
++	# mp8hold: turns auto-ready off but keeps mp8fast's fast-forward, so the briefing screen stays up for screenshots.
++	_mp8_auto_ready_armed = (
++		(_mp8_args.has("mp8fast") or _mp8_args.has("mp8ready"))
++		and not _mp8_args.has("mp8hold")
++	)
++	if not _mp8_args.has("mp8noscore"):
++		_mp8_extend_score_slots()
++	else:
++		print("[MP8] mp8noscore: skipping the score row extension")
++
++
++# [MP8] The briefing screen has 4 player rows (user_container_array, an @export filled with 4, and
++# rank_y_positions, 4 fixed y values), so players 5-8 would get no score row. Rows are copied and the
++# y table continued; reset_briefing_rpc() places each by rank_y_positions[i] and the game's code fills them.
++func _mp8_extend_score_slots() -> void :
++
++	var target: int = NetworkManager.MAX_PLAYERS
++	var n: int = user_container_array.size()
++
++	if n == 0 or n >= target:
++		return
++
++	var src = user_container_array[0]
++	if not is_instance_valid(src):
++		return
++
++	var parent: Node = src.get_parent()
++	if parent == null:
++		return
++
++	var vanilla: Dictionary = _mp8_snapshot()
++	for i in range(n, target):
++		var dup = src.duplicate()
++		dup.name = "MP8UserContainer%d" % i
++		parent.add_child(dup)
++		user_container_array.append(dup)
++
++	# ---- Layout: 8 rows fit only when shrunk ----
++	# Panel geometry, measured from the stock PCK (panel units; the UI is drawn at scale 4 into a 1920x1080
++	# SubViewport): rows start y = 69.25, step 19, text about 14.8 high; ready button y = 149.5.
++	# 8 rows at full size need 7x19+14.8 = 148 against about 79.5 available, so rows scale by s, step 19xs
++	# (s <= 0.538). s = 0.5, step 9.5 fills 73.9 inside the 4 rows' space and no other element moves.
++	var s: float = MP8_ROW_SCALE
++	var step: float = MP8_ROW_STEP
++	for a in NetworkManager.mp8_dev_args():
++		var t: String = String(a)
++		if t.begins_with("mp8row="):
++			var parts: PackedStringArray = t.substr(7).split(",")
++			if parts.size() >= 1 and parts[0] != "":
++				s = float(parts[0])
++			if parts.size() >= 2 and parts[1] != "":
++				step = float(parts[1])
++
++	var base_y: float = rank_y_positions[0] if rank_y_positions.size() > 0 else 0.0
++	rank_y_positions.clear()
++	for i in target:
++		rank_y_positions.append(base_y + float(i) * step)
++
++	for uc in user_container_array:
++		uc.scale = Vector2(s, s)
++
++	# Invite buttons: extend to 8 sets and bind each row to its own before placing, so placing covers all 8.
++	_mp8_extend_invite_buttons(target)
++	_mp8_align_invite_buttons(s, step)
++
++	# Two more fixed-size arrays are indexed by player and must reach 8 too, or the release template
++	# (no bounds checks) crashes with an access violation:
++	#   sort_user_containers_by_score():  score_container_nodes[i] = ...   <- out-of-bounds write
++	#   show_score_nodes() / update_players():  speakers_show_player_card[i].play()  <- out-of-bounds read
++	while score_container_nodes.size() < target:
++		score_container_nodes.append(user_container_array[score_container_nodes.size()])
++
++	# Speakers only need the array long enough; adding AudioStreamPlayer nodes to the tree stalls the flow
++	# at SessionIntro. Cards 5-8 reuse the first 4 speakers, losing only a layer of overlapping sound.
++	var spk_n: int = speakers_show_player_card.size()
++	if spk_n > 0:
++		while speakers_show_player_card.size() < target:
++			speakers_show_player_card.append(
++				speakers_show_player_card[speakers_show_player_card.size() % spk_n]
++			)
++
++	print("[MP8] score board: rows %d->%d, score_container %d, speakers %d, scale %.2f, step %.2f, y table %s" % [
++		n, user_container_array.size(), score_container_nodes.size(),
++		speakers_show_player_card.size(), s, step, str(rank_y_positions)
++	])
++	_mp8_layouts = {false: vanilla, true: _mp8_snapshot()}
++
++
++# [MP8] Mixed rooms (D116): the game's 4 rows, chosen at each briefing's reset. A briefing in progress only
++# grows to 8: update_players() indexes the rows across awaits, so shrinking under it would read past the end.
++var mp8_extended_layout: bool = true
++var _mp8_layouts: Dictionary = {}
++
++
++func _mp8_rect(c: Control) -> Array:
++	return [c.anchor_left, c.anchor_top, c.anchor_right, c.anchor_bottom,
++		c.offset_left, c.offset_top, c.offset_right, c.offset_bottom, c.scale]
++
++
++func _mp8_set_rect(c: Control, r: Array) -> void :
++	c.anchor_left = r[0]
++	c.anchor_top = r[1]
++	c.anchor_right = r[2]
++	c.anchor_bottom = r[3]
++	c.offset_left = r[4]
++	c.offset_top = r[5]
++	c.offset_right = r[6]
++	c.offset_bottom = r[7]
++	c.scale = r[8]
++
++
++func _mp8_snapshot() -> Dictionary:
++	var scales: Array = []
++	for uc in user_container_array:
++		scales.append(uc.scale)
++	var rects: Dictionary = {}
++	for b in invite_buttons_visuals + invite_buttons_interacts:
++		if is_instance_valid(b):
++			rects[b] = _mp8_rect(b)
++	return {
++		"rows": user_container_array.duplicate(), "scores": score_container_nodes.duplicate(),
++		"speakers": speakers_show_player_card.duplicate(), "visuals": invite_buttons_visuals.duplicate(),
++		"interacts": invite_buttons_interacts.duplicate(), "y": rank_y_positions.duplicate(),
++		"scales": scales, "rects": rects,
++	}
++
++
++func mp8_apply_layout(extended: bool) -> void:
++	if not _mp8_layouts.has(extended):
++		return
++	var snap: Dictionary = _mp8_layouts[extended]
++	mp8_extended_layout = extended
++	user_container_array = snap["rows"].duplicate()
++	score_container_nodes = snap["scores"].duplicate()
++	speakers_show_player_card = snap["speakers"].duplicate()
++	invite_buttons_visuals = snap["visuals"].duplicate()
++	invite_buttons_interacts = snap["interacts"].duplicate()
++	rank_y_positions = snap["y"].duplicate()
++	for i in user_container_array.size():
++		user_container_array[i].scale = snap["scales"][i]
++	for b in snap["rects"]:
++		_mp8_set_rect(b, snap["rects"][b])
++	for uc in _mp8_layouts[true]["rows"]:
++		uc.mp8_set_extended(extended)
++		if not user_container_array.has(uc):
++			uc.hide_container()
++
++
++# [MP8] Player row layout; mp8row=<scale>,<step> on the command line overrides it.
++const MP8_ROW_SCALE: float = 0.5
++const MP8_ROW_STEP: float = 9.5
++
++
++# [MP8] Debug screenshot (`mp8shot`): saves the laid-out briefing screen as PNG. The screen is drawn into a
++# 1920x1080 SubViewport shown on a 3D monitor, so capturing that SubViewport gives the raw UI without
++# perspective or glare. ui = the SubViewport, win = the whole game window.
++func _mp8_shot() -> void :
++
++	if not NetworkManager.mp8_dev_args().has("mp8shot"):
++		return
++
++	await get_tree().create_timer(1.0, false).timeout
++	if not is_inside_tree():
++		return
++	await RenderingServer.frame_post_draw
++
++	var tag: int = multiplayer.get_unique_id() if multiplayer.has_multiplayer_peer() else 0
++
++	var vp: Viewport = null
++	var node: Node = user_data_container_parent
++	while node != null:
++		if node is SubViewport:
++			vp = node
++			break
++		node = node.get_parent()
++
++	if vp != null:
++		var img: Image = vp.get_texture().get_image()
++		if img != null:
++			img.save_png("user://mp8_shot_ui_%d.png" % tag)
++
++	var win_img: Image = get_viewport().get_texture().get_image()
++	if win_img != null:
++		win_img.save_png("user://mp8_shot_win_%d.png" % tag)
++
++	print("[MP8] mp8shot: saved user://mp8_shot_{ui,win}_%d.png" % tag)
++
++
++# [MP8] Invite buttons: the "invite a friend" areas on empty rows, 4 sets in the game, one per row.
++# The two arrays use different coordinates: invite_buttons_visuals are InviteButton0..3 in the SubViewport
++# (panel units, even step 18.75); invite_buttons_interacts are the overlay's InviteOverlayButton0..3 (screen
++# pixels, uneven steps 48/38/38). Only the overlay is clickable; a visual is its ButtonClass's custom_ui_target.
++var _mp8_inv_fit_ok: bool = false
++var _mp8_inv_k: float = 0.0        # panel y -> screen y slope
++var _mp8_inv_b: float = 0.0        # intercept
++var _mp8_inv_act_scale: Vector2 = Vector2.ONE
++
++
++# Least-squares fit of the 4 original (panel y, screen y) pairs. All points, not the first two: the game's
++# first step is an outlier that would push the later buttons further off.
++func _mp8_fit_invite_mapping() -> void :
++
++	var vis: Array[Button] = invite_buttons_visuals
++	var act: Array[Button] = invite_buttons_interacts
++	var n: int = mini(vis.size(), act.size())
++	if n < 2:
++		return
++
++	var xs: Array[float] = []
++	var ys: Array[float] = []
++	for i in n:
++		if is_instance_valid(vis[i]) and is_instance_valid(act[i]):
++			xs.append(vis[i].position.y)
++			ys.append(act[i].position.y)
++	if xs.size() < 2:
++		return
++
++	var mx: float = 0.0
++	var my: float = 0.0
++	for i in xs.size():
++		mx += xs[i]
++		my += ys[i]
++	mx /= float(xs.size())
++	my /= float(xs.size())
++
++	var num: float = 0.0
++	var den: float = 0.0
++	for i in xs.size():
++		num += (xs[i] - mx) * (ys[i] - my)
++		den += (xs[i] - mx) * (xs[i] - mx)
++	if absf(den) < 0.0001:
++		return
++
++	_mp8_inv_k = num / den
++	_mp8_inv_b = my - _mp8_inv_k * mx
++	_mp8_inv_act_scale = act[0].scale if is_instance_valid(act[0]) else Vector2.ONE
++	_mp8_inv_fit_ok = true
++
++	print("[MP8] invite button mapping: screen y = %.4f x panel y + %.2f (fit from %d original points)" % [
++		_mp8_inv_k, _mp8_inv_b, xs.size()])
++
++
++# [MP8] Extends the invite buttons from 4 to 8 sets and binds each row to its own set: rows are copies, and
++# duplicate() does not remap @export references, so rows 4-7 would all light InviteButton0. Rewired by hand:
++# the overlay's ButtonClass.custom_ui_target, the row's two @exports, and `pressed` (setup_invite_buttons()
++# ran earlier in _ready). ButtonClass's speaker_press / speaker_hover are relative paths and stay valid.
++func _mp8_extend_invite_buttons(target: int) -> void :
++
++	var vis: Array[Button] = invite_buttons_visuals
++	var act: Array[Button] = invite_buttons_interacts
++	if vis.size() == 0 or not is_instance_valid(vis[0]):
++		print("[MP8] invite buttons: none in the scene, skipping")
++		return
++
++	# Fit the mapping before anything moves: the placement below overwrites the original geometry.
++	_mp8_fit_invite_mapping()
++
++	var n0: int = vis.size()
++	if n0 >= target:
++		return
++
++	var vis_parent: Node = vis[0].get_parent()
++	var act_parent: Node = act[0].get_parent() if (act.size() > 0 and is_instance_valid(act[0])) else null
++
++	for i in range(n0, target):
++		# ---- visual ----------------------------------------------------
++		var v: Button = vis[0].duplicate()
++		v.name = "MP8InviteButton%d" % i
++		v.visible = false
++		vis_parent.add_child(v)
++		vis.append(v)
++
++		# ---- click area ------------------------------------------------
++		if act_parent != null:
++			var a: Button = act[0].duplicate()
++			a.name = "MP8InviteOverlayButton%d" % i
++			a.visible = false
++			act_parent.add_child(a)
++			act.append(a)
++
++			# The hover highlight must target the new visual, or it flashes button 0's
++			var bc: Node = a.get_node_or_null("ButtonClass")
++			if bc != null:
++				bc.set("custom_ui_target", v)
++
++			# setup_invite_buttons() already ran in _ready; the new button is connected here
++			if not GameManager.local_game:
++				a.pressed.connect(func():
++					Steam.activateGameOverlayInviteDialog(
++						NetworkManager.active_backend.lobby_id
++					)
++				)
++
++	# ---- Bind each row to its own set (rows 0-3 already are; 4-7 are fixed here) ----
++	var fixed: int = 0
++	for i in user_container_array.size():
++		var uc = user_container_array[i]
++		if not is_instance_valid(uc):
++			continue
++		if i < vis.size() and is_instance_valid(vis[i]):
++			if uc.get("invite_visual_button") != vis[i]:
++				uc.set("invite_visual_button", vis[i])
++				fixed += 1
++		if i < act.size() and is_instance_valid(act[i]):
++			uc.set("invite_interact_button", act[i])
++
++	# Local games show no invites: _ready hid the game's 4, hide the added ones too
++	if GameManager.local_game:
++		for b in vis:
++			if is_instance_valid(b):
++				b.visible = false
++		for b in act:
++			if is_instance_valid(b):
++				b.visible = false
++
++	print("[MP8] invite buttons: %d -> %d sets (visual %d / click %d), rebound %d rows' stale references" % [
++		n0, target, vis.size(), act.size(), fixed])
++
++
++# [MP8] Invite box height as a fraction of the row step. The height is anchor-driven (about one row step
++# at runtime); at 8 rows, step 9.5, neighbouring boxes touch and read as one table. 0.78 leaves a gap.
++# Only the box shrinks, not the font (a theme_override, already 12x0.5).
++const MP8_INVITE_H_RATIO: float = 0.78
++
++var _mp8_invite_h_done: bool = false
++
++
++func _mp8_align_invite_buttons(s: float, step: float) -> void :
++
++	var vis: Array[Button] = invite_buttons_visuals
++	if vis.size() == 0:
++		return
++	var act: Array[Button] = invite_buttons_interacts
++
++	for i in vis.size():
++		# The game's y = 3.5 + i x 18.75, 3.5 below the row; kept under scaling
++		var new_y: float = float(i) * step + 3.5 * s
++
++		if is_instance_valid(vis[i]):
++			# Shrink the height before placing: changing an anchor recomputes the rect and would undo the position.
++			# _mp8_invite_h_done stops a second call from applying the ratio twice.
++			if not _mp8_invite_h_done:
++				var span: float = vis[i].anchor_bottom - vis[i].anchor_top
++				vis[i].anchor_bottom = vis[i].anchor_top + span * MP8_INVITE_H_RATIO
++			vis[i].scale = Vector2(s, s)
++			vis[i].position.y = new_y
++
++		# Click area: placed by the fitted mapping and scaled with the rows, or at 8 rows neighbouring areas
++		# overlap (about 36 screen px tall against a mapped row step of about 21).
++		if _mp8_inv_fit_ok and i < act.size() and is_instance_valid(act[i]):
++			act[i].position.y = _mp8_inv_k * new_y + _mp8_inv_b
++			act[i].scale = _mp8_inv_act_scale * s
++
++	_mp8_invite_h_done = true
++
+ func debug_update():
+ 	update_page_number_visuals()
+ 	update_page_content()
+@@ -147,6 +504,7 @@ func reset_briefing_rpc(
+ 	_total_game_count: int, 
+ ):
+ 
++	mp8_apply_layout(NetworkManager.mp8_room_extended())  # [MP8] live, between minigames
+ 	games_played = _current_game_count
+ 	total_games = _total_game_count
+ 
+@@ -212,6 +570,14 @@ func set_user_container_info():
+ 
+ func _physics_process(_delta: float) -> void :
+ 
++	# [MP8] Auto-ready runs before the game_focused gate: with 8 windows on one PC only one has focus and the
++	# rest return below, so all-ready never happens. Armed only by mp8fast / mp8ready (test bench).
++	_mp8_tick_auto_ready()
++
++	# [MP8] The ready cooldown is ticked before the gate too, or clients cannot ready from the second
++	# intermission on. See _mp8_tick_cooldown_offscreen().
++	_mp8_tick_cooldown_offscreen()
++
+ 	if not GameManager.game_focused:
+ 		return
+ 
+@@ -352,6 +718,8 @@ func show_briefing_screen():
+ 	show_score_nodes()
+ 	set_briefing_screen_button_disabled(false)
+ 
++	_mp8_shot()  # [MP8] mp8shot: the screen saves itself as PNG (no screen-recording permission needed)
++
+ 	update_progess_elements()
+ 
+ 	if multiplayer.is_server():
+@@ -391,6 +759,15 @@ func show_briefing_screen():
+ 	ready_button_parent.modulate.a = 1
+ 	is_ready = false
+ 
++	_mp8_auto_ready_done = false  # [MP8] re-arm auto-ready for this showing
++
++	# [MP8] Clear the ready cooldown too; the game never resets it here. Unfocused test windows never reach
++	# check_ready_button_cooldown(), so each showing starts clean instead of depending on the last timer.
++	if _mp8_auto_ready_armed:
++		ready_button_on_cooldown = false
++		ready_button_cooldown_counting = false
++		ready_button_cooldown_counter = 0
++
+ 	if not Globals.settings.get("original_finished", false) && not GameManager.pagination_highlight_shown:
+ 		if GameManager.local_game:
+ 			return
+@@ -697,6 +1074,8 @@ func synchronize_scores_rpc(_active_total_score_by_network_id: Dictionary[int, i
+ 
+ @rpc("any_peer", "call_local", "reliable")
+ func update_player_data_rpc(player_scores: Dictionary):
++	if not mp8_extended_layout and NetworkManager.mp8_room_extended():
++		mp8_apply_layout(true)  # [MP8] grows only; see mp8_extended_layout
+ 	var player_presences = PlayerManager.player_presences.values()
+ 
+ 	active_total_score_by_network_id = player_scores
+@@ -872,6 +1251,88 @@ func _on_unpaused():
+ 		CursorManager.set_mouse_mode(Input.MouseMode.MOUSE_MODE_VISIBLE)
+ 		CursorManager.set_cursor(true, true)
+ 
++# [MP8] Test bench (mp8fast / mp8ready): 3 seconds after the briefing screen appears, presses Ready once.
++# Pressing the button, not Globals.debug_skip_brief: skipping the brief compresses the round's timing and
++# exposes a game bug in disco_dodge (shown symbol out of step with symbol_index). The countdown is shown
++# after the button's scene text, which nothing else writes, so restoring it afterwards is safe.
++const MP8_AUTO_READY_SECONDS: int = 3
++
++var _mp8_auto_ready_armed: bool = false     # command-line switch, cached once in _ready()
++var _mp8_auto_ready_running: bool = false   # this showing's countdown is running
++var _mp8_auto_ready_done: bool = false      # this showing has already auto-pressed
++
++# [MP8] Unfocused windows tick the ready cooldown too, or clients cannot ready from the second round on.
++# check_ready_button_cooldown() is the only thing that clears ready_button_on_cooldown and runs after the
++# game_focused gate; _on_ready_button_pressed() returns while on cooldown; show_briefing_screen() never
++# resets it. Every real player's window has focus; only the test bench (_mp8_auto_ready_armed) needs this.
++func _mp8_tick_cooldown_offscreen() -> void :
++
++	if not _mp8_auto_ready_armed:
++		return
++	# A focused window runs the game's own call below; don't tick twice
++	if GameManager.game_focused:
++		return
++
++	check_ready_button_cooldown()
++
++
++# Polled each frame rather than started from show_briefing_screen(): its two near-duplicate call paths
++# (intermission_game_picker.gd) each return early outside the tree, so a countdown started there runs
++# only in the first round. Polling "button pressable and not ready" does not depend on the path.
++func _mp8_tick_auto_ready() -> void :
++
++	if not _mp8_auto_ready_armed:
++		return
++	if _mp8_auto_ready_running or _mp8_auto_ready_done:
++		return
++	if not ready_button_press_allowed:
++		return
++	if button_ready == null or not button_ready.visible:
++		return
++	if is_ready:
++		return
++
++	_mp8_auto_ready_running = true
++	_mp8_auto_ready_countdown()
++
++
++func _mp8_auto_ready_countdown() -> void :
++
++	var base_text: String = ""
++	if label_ready_button:
++		base_text = label_ready_button.text
++
++	for remaining in range(MP8_AUTO_READY_SECONDS, 0, -1):
++
++		if not is_inside_tree():
++			_mp8_auto_ready_running = false
++			return
++		# A player who pressed by hand decides; don't press again and un-ready them
++		if is_ready:
++			break
++
++		if label_ready_button:
++			label_ready_button.text = "%s (%d)" % [base_text, remaining]
++
++		await get_tree().create_timer(1.0, false).timeout
++
++	if label_ready_button:
++		label_ready_button.text = base_text
++
++	_mp8_auto_ready_running = false
++
++	if not is_inside_tree():
++		return
++	if is_ready:
++		return
++	if not ready_button_press_allowed:
++		return
++
++	_mp8_auto_ready_done = true
++	print("[MP8] briefing: countdown done, auto-ready")
++	_on_ready_button_pressed()
++
++
+ func _on_ready_button_pressed():
+ 
+ 	if ready_button_on_cooldown:

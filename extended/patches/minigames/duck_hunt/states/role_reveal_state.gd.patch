@@ -1,0 +1,45 @@
+diff --git a/minigames/duck_hunt/states/role_reveal_state.gd b/minigames/duck_hunt/states/role_reveal_state.gd
+--- a/minigames/duck_hunt/states/role_reveal_state.gd
++++ b/minigames/duck_hunt/states/role_reveal_state.gd
+@@ -65,6 +65,41 @@ func hide_role_ui_local():
+ 
+ func reveal_online():
+ 
++	# [MP8] A mixed room runs the game's reveal_online (D120).
++	if not NetworkManager.mp8_room_extended():
++		await _mp8_game_reveal_online()
++		return
++
++	owner.ui_role_label.text = owner.mp8_hunters_line()  # [MP8] one or two hunters
++
++	var t: = create_tween()
++	t.tween_property(owner.ui_role_label, "modulate:a", 1.0, 1.0)
++	await t.finished
++	owner.mp8_shot("role")  # [MP8] once the text is fully shown
++	await get_tree().create_timer(1.0).timeout
++
++	t = create_tween()
++	t.tween_property(owner.ui_role_label, "modulate:a", 0.0, 0.5)
++	t.tween_property(owner.ui_overlay, "modulate:a", 0.0, 0.5).set_delay(0.5)
++	await t.finished
++
++	if not multiplayer.is_server():
++		return
++
++	# [MP8] Release every hunter's aim, not only the game's single hunter
++	for h in owner.hunter_players:
++		if is_instance_valid(h):
++			h.set_can_aim_rpc.rpc(true)
++
++	if Globals.debug_skip_brief:
++		state_machine.transition_to_rpc.rpc(&"Countdown")
++		return
++
++	state_machine.transition_to_rpc.rpc(&"PlayerMarker")
++
++# The game's reveal_online, for a mixed room (D120).
++func _mp8_game_reveal_online():
++
+ 	owner.ui_role_label.text = tr("LOC_CONTROL_HUNTER_NAME") % owner.hunter_name.to_upper()
+ 
+ 	var t: = create_tween()

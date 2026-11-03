@@ -1,0 +1,38 @@
+diff --git a/minigames/smoke_break/components/player/scripts/smoke_break_player_anim_handler.gd b/minigames/smoke_break/components/player/scripts/smoke_break_player_anim_handler.gd
+--- a/minigames/smoke_break/components/player/scripts/smoke_break_player_anim_handler.gd
++++ b/minigames/smoke_break/components/player/scripts/smoke_break_player_anim_handler.gd
+@@ -153,6 +153,15 @@ func cigarette_finished(on_seat_index: int):
+ 			finish_animation = "finish_look_right"
+ 		3:
+ 			finish_animation = "finish_look_left"
++
++	# [MP8] The butt toss is in the finish looks, and the match covers seats 0-3; seats 4-7 would play
++	# "" and keep the butt. They take the nearest original seat's look: the game pairs the seats as its
++	# deaths do (window seats look left, fan seats right), so it follows the death animation setup_rpc sent.
++	# A mixed room plays the game's match alone (D120).
++	if NetworkManager.mp8_room_extended() and finish_animation == "":
++		finish_animation = "finish_look_right" if String(player.mp8_death_anim) == "death_fan" else "finish_look_left"
++		if String(player.mp8_death_anim) == "":
++			push_warning("[MP8] Smoke Break: seat %d has no death animation, its finish falls back to finish_look_left" % on_seat_index)
+ 	anim_player.play(finish_animation)
+ 	await get_tree().create_timer(2.8, false).timeout
+ 	anim_player.play("finish_idle", 0.5)
+@@ -173,6 +182,18 @@ func get_eliminated():
+ 			death_anim_active = "death_fan"
+ 		3:
+ 			death_anim_active = "death_window"
++
++	# [MP8] Death animations are made per seat and the match covers seats 0-3; seats 4-7 would play ""
++	# and the shot player would not fall. They use the animation of the nearest original seat, sent
++	# with setup_rpc. With 4 players or fewer the match always hits and this does nothing. A mixed room
++	# plays the game's match alone (D120).
++	if NetworkManager.mp8_room_extended():
++		if death_anim_active == "":
++			death_anim_active = String(player.mp8_death_anim)
++		if death_anim_active == "":
++			death_anim_active = "death_window"
++			push_warning("[MP8] Smoke Break: seat %d has no death animation, falling back to death_window" % player.active_player_seat_index)
++
+ 	ik_right.stop()
+ 	anim_player.play(death_anim_active, 0.2)
+ 

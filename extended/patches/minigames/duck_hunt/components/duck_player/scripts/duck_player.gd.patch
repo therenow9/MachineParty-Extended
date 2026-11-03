@@ -1,0 +1,193 @@
+diff --git a/minigames/duck_hunt/components/duck_player/scripts/duck_player.gd b/minigames/duck_hunt/components/duck_player/scripts/duck_player.gd
+--- a/minigames/duck_hunt/components/duck_player/scripts/duck_player.gd
++++ b/minigames/duck_hunt/components/duck_player/scripts/duck_player.gd
+@@ -45,6 +45,19 @@ var health: int = 0
+ 
+ var movement_input: Vector3
+ 
++# [MP8] Stuck rescue: a duck can wedge in the map geometry, out of every hunter's line of fire,
++# and stall the round. Direction held but no movement for MP8_STUCK_SECONDS -> teleport back to
++# the breadcrumb, about a metre back along its path. Runs only on the duck's own peer (its movement
++# authority); pushing into a wall also triggers it, at the cost of one metre.
++const MP8_STUCK_SECONDS: float = 3.0    # how long without movement counts as stuck
++const MP8_STUCK_EPSILON: float = 0.05   # per-frame displacement below this counts as not moving
++const MP8_CRUMB_DISTANCE: float = 1.0   # breadcrumb spacing, metres
++
++var _mp8_stuck_t: float = 0.0
++var _mp8_prev_pos: Vector3 = Vector3.ZERO
++var _mp8_crumb: Vector3 = Vector3.ZERO
++var _mp8_crumb_set: bool = false
++
+ 
+ var run_blend: float = 0.0
+ 
+@@ -145,6 +158,57 @@ func update_crouch(delta: float):
+ 
+ func _physics_process(delta: float) -> void :
+ 
++	# [MP8] A mixed room runs the game's _physics_process (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_physics_process(delta)
++		return
++
++	if not active:
++		return
++
++	var vertical_velocity = velocity.y
++
++	var other_velocity: Vector3 = Vector3.ZERO
++	if bump_velocity.length() > Globals.Epsilon:
++		other_velocity = bump_velocity
++		bump_velocity = bump_velocity.move_toward(
++			Vector3.ZERO, delta * bump_decay_multiplier
++		)
++
++	var move_speed = speed
++	move_speed -= move_speed * (crouch_progress * crouch_penalty_max)
++	if health != max_health:
++		move_speed *= injured_move_speed_penalty
++
++	velocity = movement_input.normalized() * (move_speed)
++	velocity += other_velocity
++
++	if not is_on_floor():
++		vertical_velocity -= gravity * delta
++
++	velocity.y = vertical_velocity
++
++	if movement_input.length() > Globals.Epsilon:
++
++		visuals.rotation.y = rotate_toward(
++			visuals.rotation.y, 
++			atan2(
++				- movement_input.x, - movement_input.z
++			), 
++			delta * 9
++		)
++
++	move_and_slide()
++	update_bump()
++
++	_mp8_check_stuck(delta)
++
++	update_animations(delta)
++	play_footstep_sound(delta)
++
++# The game's _physics_process, for a mixed room (D120).
++func _mp8_game_physics_process(delta: float) -> void :
++
+ 	if not active:
+ 		return
+ 
+@@ -186,6 +250,47 @@ func _physics_process(delta: float) -> void :
+ 	update_animations(delta)
+ 	play_footstep_sound(delta)
+ 
++# [MP8] Stuck rescue; see the comment above MP8_STUCK_SECONDS.
++func _mp8_check_stuck(delta: float) -> void :
++
++	if not _mp8_crumb_set:
++		_mp8_crumb = global_position
++		_mp8_prev_pos = global_position
++		_mp8_crumb_set = true
++		return
++
++	var moved: float = global_position.distance_to(_mp8_prev_pos)
++	_mp8_prev_pos = global_position
++
++	# The breadcrumb moves only once the duck is a metre away, so it trails about a metre behind
++	if global_position.distance_to(_mp8_crumb) > MP8_CRUMB_DISTANCE:
++		_mp8_crumb = global_position
++
++	# Standing still with no direction held is the player's choice, not being stuck
++	if movement_input.length() <= Globals.Epsilon:
++		_mp8_stuck_t = 0.0
++		return
++
++	if moved > MP8_STUCK_EPSILON:
++		_mp8_stuck_t = 0.0
++		return
++
++	_mp8_stuck_t += delta
++	if _mp8_stuck_t < MP8_STUCK_SECONDS:
++		return
++
++	# The position is logged: players' logs are the only way to find where ducks get stuck
++	print("[MP8] 🩸 Duck Hunt stuck rescue: %s at (%.1f, %.1f, %.1f) held a direction %.1f s without moving, moved back to (%.1f, %.1f, %.1f)" % [
++		player_presence.network_name if player_presence else "?",
++		global_position.x, global_position.y, global_position.z,
++		_mp8_stuck_t,
++		_mp8_crumb.x, _mp8_crumb.y, _mp8_crumb.z,
++	])
++
++	_mp8_stuck_t = 0.0
++	teleport_rpc.rpc(_mp8_crumb)
++
++
+ func play_footstep_sound(delta):
+ 	if velocity.length() > 0.01:
+ 		footstep_counter += delta
+@@ -280,6 +385,40 @@ func set_crouching_rpc(_crouching: bool):
+ @rpc("any_peer", "call_local", "reliable")
+ func shot_rpc(_damage: int):
+ 
++	# [MP8] A mixed room runs the game's shot_rpc (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_shot_rpc(_damage)
++		return
++
++	# [MP8] Re-entry guard: with two hunters (6+ players) both can hit one duck at the same moment,
++	# and each shot_rpc would run the death path. Scoring guards itself in duck_hunt.gd; this stops
++	# the doubled effects and further health loss. `active` is false after death and before the
++	# round starts, so it covers both.
++	if not active:
++		return
++
++	health -= _damage
++
++	if health > 0:
++		shot_not_dead.emit()
++		return
++
++	active = false
++
++	set_collision_layer_value(1, false)
++	set_collision_layer_value(9, false)
++
++	set_collision_mask_value(1, false)
++	set_collision_mask_value(9, false)
++
++	set_collision_mask_value(10, true)
++	set_collision_mask_value(10, true)
++
++	got_shot.emit(player_presence.network_id)
++
++# The game's shot_rpc, for a mixed room (D120).
++func _mp8_game_shot_rpc(_damage: int):
++
+ 	health -= _damage
+ 
+ 	if health > 0:
+@@ -341,6 +480,22 @@ func set_player_presence(network_id: int) -> void :
+ @rpc("any_peer", "call_local", "reliable")
+ func teleport_rpc(_position: Vector3):
+ 
++	# [MP8] A mixed room runs the game's teleport_rpc (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_teleport_rpc(_position)
++		return
++
++	global_position = _position
++
++	# [MP8] Reset the stuck rescue so it cannot send the duck back to where it was before
++	_mp8_crumb = _position
++	_mp8_prev_pos = _position
++	_mp8_crumb_set = true
++	_mp8_stuck_t = 0.0
++
++# The game's teleport_rpc, for a mixed room (D120).
++func _mp8_game_teleport_rpc(_position: Vector3):
++
+ 	global_position = _position
+ 
+ 

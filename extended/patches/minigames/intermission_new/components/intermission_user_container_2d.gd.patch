@@ -1,0 +1,101 @@
+diff --git a/minigames/intermission_new/components/intermission_user_container_2d.gd b/minigames/intermission_new/components/intermission_user_container_2d.gd
+--- a/minigames/intermission_new/components/intermission_user_container_2d.gd
++++ b/minigames/intermission_new/components/intermission_user_container_2d.gd
+@@ -25,6 +25,75 @@ var state: ContainerState = Intermission_UserContainer_2D.ContainerState.None
+ 
+ func _ready() -> void :
+ 	hide_invite_button()
++	_mp8_apply_bold()
++
++
++# [MP8] Name length cap and boldness. The game cuts names past 8 characters, most of a Steam name.
++# Bold is synthesised with FontVariation.variation_embolden (any font, no bold font file). It widens
++# the text, so it competes with the longer name for width: check a render when changing either.
++# Duplicated in intermission_user_container.gd: a shared .gd needs a class_name, kept in project.binary.
++const MP8_NAME_MAX: int = 7
++const MP8_BOLD: float = 0.12  # 0.3 fills in the digits' counters
++
++
++static func _mp8_arg_int(prefix: String, fallback: int) -> int:
++	for a in NetworkManager.mp8_dev_args():
++		var t: String = String(a)
++		if t.begins_with(prefix):
++			return int(t.substr(prefix.length()))
++	return fallback
++
++
++static func _mp8_arg_float(prefix: String, fallback: float) -> float:
++	for a in NetworkManager.mp8_dev_args():
++		var t: String = String(a)
++		if t.begins_with(prefix):
++			return float(t.substr(prefix.length()))
++	return fallback
++
++
++static func _mp8_format_name(_name: String) -> String:
++	var limit: int = maxi(_mp8_arg_int("mp8name=", MP8_NAME_MAX), 2)
++	if _name.length() > limit:
++		return _name.left(limit - 1) + "-"
++	return _name
++
++
++func _mp8_apply_bold() -> void :
++
++	var amount: float = _mp8_arg_float("mp8bold=", MP8_BOLD)
++	if is_equal_approx(amount, 0.0):
++		return
++
++	for label: Label in [label_rank, label_score, label_name]:
++		if not is_instance_valid(label):
++			continue
++		var base: Font = label.get_theme_font("font")
++		if base == null:
++			continue
++		var fv := FontVariation.new()
++		fv.base_font = base
++		fv.variation_embolden = amount
++		var own: Font = label.get_theme_font("font") if label.has_theme_font_override("font") else null
++		_mp8_fonts[label] = [own, fv]
++		label.add_theme_font_override("font", fv)
++
++
++# [MP8] Mixed rooms (D116): the game's name cut and font, set by the briefing screen at each reset.
++var mp8_extended: bool = true
++var _mp8_fonts: Dictionary = {}  # Label -> [its own font override or null, the bold one]
++
++
++func mp8_set_extended(extended: bool) -> void :
++	mp8_extended = extended
++	for label in _mp8_fonts:
++		if not is_instance_valid(label):
++			continue
++		var font: Font = _mp8_fonts[label][1 if extended else 0]
++		if font != null:
++			label.add_theme_font_override("font", font)
++		else:
++			label.remove_theme_font_override("font")
+ 
+ func _physics_process(_delta: float) -> void :
+ 	set_ready_visuals()
+@@ -37,6 +106,21 @@ func set_ready_visuals():
+ 	ready_indicator.visible = user_ready
+ 
+ func set_user_data(_score: int, _name: String):
++
++	# [MP8] The game's layout fills the row as the game does, its 9-character cut included (D120).
++	if not mp8_extended:
++		_mp8_game_set_user_data(_score, _name)
++		return
++	state = ContainerState.Normal
++
++	user_score_value = _score
++	var formatted_name = _mp8_format_name(_name)  # [MP8] MP8_NAME_MAX, not the game's 8-character cut
++
++	label_score.text = "%04d" % _score
++	label_name.text = formatted_name
++
++# The game's set_user_data, for the game's layout (D120).
++func _mp8_game_set_user_data(_score: int, _name: String):
+ 	state = ContainerState.Normal
+ 
+ 	user_score_value = _score

@@ -1,0 +1,19 @@
+diff --git a/minigames/duck_hunt/states/play_state.gd b/minigames/duck_hunt/states/play_state.gd
+--- a/minigames/duck_hunt/states/play_state.gd
++++ b/minigames/duck_hunt/states/play_state.gd
+@@ -21,6 +21,15 @@ func enter(_msg: Dictionary = {}) -> void :
+ 		for player in owner.players:
+ 			player.set_active_rpc.rpc(true)
+ 
++	owner.mp8_shot("go", 0.3)    # [MP8] just after GO, for the countdown shout
++	owner.mp8_shot("play", 3.0)  # [MP8] 3 s into play, for the two hunters' positions
++
++	# [MP8] Roll call at the moment play starts, when who should move and who is active are both known.
++	# Both the server and each peer check: a missing character on the server and one that never
++	# reached its peer look the same on screen.
++	owner.mp8_roll_call()
++	owner.mp8_self_check()
++
+ func exit(_msg: Dictionary = {}) -> void :
+ 	pass
+ 

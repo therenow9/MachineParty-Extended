@@ -1,0 +1,70 @@
+diff --git a/minigames/junk_platform/components/junk_cube_rigidbody/junk_platform_cube_rigidbody.gd b/minigames/junk_platform/components/junk_cube_rigidbody/junk_platform_cube_rigidbody.gd
+--- a/minigames/junk_platform/components/junk_cube_rigidbody/junk_platform_cube_rigidbody.gd
++++ b/minigames/junk_platform/components/junk_cube_rigidbody/junk_platform_cube_rigidbody.gd
+@@ -111,6 +111,36 @@ func throw_rpc(_position: Vector3, _direction: Vector3, _strength: float, _throw
+ 
+ @rpc("any_peer", "call_local", "reliable")
+ func set_held_rpc(held: bool, _held_by: NodePath):
++
++	# [MP8] A mixed room runs the game's set_held_rpc (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_set_held_rpc(held, _held_by)
++		return
++
++	# [MP8] On a hand-over, drop the previous holder's collision exception first: `throw_rpc`
++	# removes only the current holder's, so a loser of a same-frame grab would pass through this cube forever.
++	# Not first-come-wins: peers broadcast this RPC and may receive it in different orders, so the
++	# last one takes over. The player's grab loop already skips cubes someone else holds.
++	var claimer: Node = get_node_or_null(_held_by)
++	if claimer == null:
++		push_warning("[MP8] Debris Platforms: set_held_rpc got a path that does not resolve: %s, ignored" % String(_held_by))
++		return
++
++	if held_by_player != null and is_instance_valid(held_by_player) and held_by_player != claimer:
++		remove_collision_exception_with(held_by_player)
++		if multiplayer.is_server():
++			print("[MP8] Debris Platforms: cube changed hands %s -> %s (same-frame grab, old collision exception removed)" % [
++				String(held_by_player.name), String(claimer.name)
++			])
++
++	visible = false
++	held_by_player = claimer
++	add_collision_exception_with(held_by_player)
++	held_by = held_by_player.grab_position
++	freeze = held
++
++# The game's set_held_rpc, for a mixed room (D120).
++func _mp8_game_set_held_rpc(held: bool, _held_by: NodePath):
+ 	visible = false
+ 	held_by_player = get_node(_held_by)
+ 	add_collision_exception_with(held_by_player)
+@@ -120,6 +150,29 @@ func set_held_rpc(held: bool, _held_by: NodePath):
+ @rpc("any_peer", "call_local", "reliable")
+ func reset_rpc():
+ 
++	# [MP8] A mixed room runs the game's reset_rpc (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_reset_rpc()
++		return
++
++	visible = false
++	active = false
++	freeze = true
++
++	# [MP8] `_physics_process` stops updating the shadow once inactive, so it must be hidden here:
++	# `junk_handler._mp8_recycle_stuck_junk` recycles cubes resting on the platform, whose shadow
++	# would otherwise stay frozen on the floor.
++	drop_shadow.visible = false
++
++	global_position = Vector3.UP * 999
++	global_rotation = Vector3.ZERO
++
++	linear_velocity = Vector3.ZERO
++	angular_velocity = Vector3.ZERO
++
++# The game's reset_rpc, for a mixed room (D120).
++func _mp8_game_reset_rpc():
++
+ 	visible = false
+ 	active = false
+ 	freeze = true

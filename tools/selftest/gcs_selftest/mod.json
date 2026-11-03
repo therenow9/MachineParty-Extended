@@ -1,0 +1,1 @@
+{ "id": "gcs_selftest", "name": "GCS selftest", "version": "0.0.1", "entry": "main.gd", "priority": 1000, "requires": [] }

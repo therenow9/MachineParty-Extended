@@ -1,0 +1,1064 @@
+diff --git a/modules/multiplayer/network_manager.gd b/modules/multiplayer/network_manager.gd
+--- a/modules/multiplayer/network_manager.gd
++++ b/modules/multiplayer/network_manager.gd
+@@ -1,14 +1,36 @@
+ extends Node
+ 
+-const MAX_PLAYERS: int = 4
++const MAX_PLAYERS: int = 8  # [MP8] stock: 4
+ const MAX_DEBUG_PLAYERS: int = 5
++# [MP8] A room holds this many while anyone in it lacks our key (mp8_join_refusal).
++const MP8_MIXED_CAP: int = 4
++
++# [MP8] The mod's tag. It travels as "mp8" in each player's join data (multiplayer_backend.gd), never in
++# Globals.game_version, which stays vanilla's so vanilla players can join. Keep it short: the main menu
++# corner shows mp8_full_version().
++const MP8_VERSION_TAG: String = "mp8-1.0"
++# [MP8] build_mpml_mod.ps1 -TestBuild compiles this line as true (D119); the shipped build reads no dev switch.
++const MP8_TEST_BUILD: bool = false
++
++
++func mp8_development_tools_allowed() -> bool :
++	return MP8_TEST_BUILD or OS.has_feature("editor")
++
++
++# [MP8] Every switch of ours is read from this list, never from OS.get_cmdline_args(): the command line
++# in a test build or the editor, empty otherwise, so a shipped build takes each switch's default (D116).
++func mp8_dev_args() -> PackedStringArray:
++	return OS.get_cmdline_args() if mp8_development_tools_allowed() else PackedStringArray()
++
+ 
+ enum NetworkBackendType{
+ 	Enet, Steam
+ }
+ 
++# [MP8] MP8RoomFull is ours, at the end: a vanilla joiner's lobby_scene.gd matches only 0-3 and shows
++# "Something went wrong." for it (D117).
+ enum RefuseReason{
+-	None, VersionMismatch, SessionEnded, HostLeft
++	None, VersionMismatch, SessionEnded, HostLeft, MP8RoomFull
+ }
+ 
+ var active_backend: MultiplayerBackend
+@@ -18,7 +40,49 @@ var game_scene: PackedScene
+ 
+ var players: Dictionary
+ var players_loaded: Array
+-var max_player_count: int = MAX_PLAYERS
++# [MP8] Capacity guard, locked at the end of _ready(). Another mod can write max_player_count at
++# runtime (MachineParty+'s "Make Lobby Public" caps it at 4), and this autoload outlives the lobby, so
++# the next lobby would silently hold 4. Once locked, other values are refused with a warning.
++var _mp8_cap_locked: bool = false
++
++# The capacity the lock holds, in both directions: allowing increases would ratchet (after a write of 9,
++# 8 is refused), and a mod with more players must replace this script anyway, MAX_PLAYERS being a const.
++var _mp8_cap_want: int = MAX_PLAYERS
++
++# push_warning rate limit: a value is reported once, then at most every 5 s with the suppressed count,
++# so a mod writing every frame cannot flood godot.log.
++var _mp8_cap_warn_at: float = -1.0
++var _mp8_cap_warn_val: int = -0x7FFFFFFF
++var _mp8_cap_warn_skipped: int = 0
++
++var max_player_count: int = MAX_PLAYERS:
++	set(v):
++		if _mp8_cap_locked and v != _mp8_cap_want:
++			_mp8_cap_warn(v)
++			return
++		max_player_count = v
++
++
++func _mp8_cap_warn(v: int) -> void :
++
++	var now: float = float(Time.get_ticks_msec()) / 1000.0
++
++	# Same value within 5 s: count only.
++	if v == _mp8_cap_warn_val and _mp8_cap_warn_at >= 0.0 and now - _mp8_cap_warn_at < 5.0:
++		_mp8_cap_warn_skipped += 1
++		return
++
++	var tail: String = ""
++	if _mp8_cap_warn_skipped > 0:
++		tail = "(in the last %.0f s, %d more identical writes suppressed)" % [now - _mp8_cap_warn_at, _mp8_cap_warn_skipped]
++
++	push_warning("[MP8] external code tried to change lobby capacity from %d to %d; ignored%s (see _mp8_cap_locked)" % [
++		_mp8_cap_want, v, tail
++	])
++
++	_mp8_cap_warn_at = now
++	_mp8_cap_warn_val = v
++	_mp8_cap_warn_skipped = 0
+ 
+ signal backend_ready()
+ signal on_server_created()
+@@ -43,13 +107,610 @@ signal player_removed_from_join_queue(network_id)
+ func _ready() -> void :
+ 
+ 	var args = Array(OS.get_cmdline_args())
+-	if args.has("-trailer"):
++	var mp8_args := mp8_dev_args()
++	if mp8_args.has("-trailer"):
+ 		max_player_count = MAX_DEBUG_PLAYERS
+ 
+-	if not OS.has_feature("editor"):
++	# [MP8] With -debug-tools in a test build, keep the default Enet backend for local multi-instance tests.
++	if not OS.has_feature("editor") and not mp8_args.has("-debug-tools"):
+ 		active_backend_type = NetworkBackendType.Steam
+ 		create_backend()
+ 
++	# [MP8] UID resolution self-test (mp8uidtest, one instance, no match needed), for crash triage:
++	# whether the uid:// paths some minigames preload still resolve in this build.
++	if mp8_args.has("mp8uidtest"):
++		_mp8_uid_selftest()
++
++	# [MP8] Spawn top-up, off with mp8notopup in a test build.
++	_mp8_no_topup = mp8_args.has("mp8notopup")
++	# [MP8] Audit logging is opt-in (editor, or -debug-tools or mp8audit in a test build); a normal launch stays quiet.
++	var _mp8_dbg: bool = OS.has_feature("editor") or mp8_args.has("-debug-tools") or mp8_args.has("mp8audit")
++	_mp8_audit_on = _mp8_dbg and not mp8_args.has("mp8noaudit")
++	if _mp8_no_topup or _mp8_audit_on:
++		print("[MP8] diagnostic switches: notopup=%s audit=%s" % [str(_mp8_no_topup), str(_mp8_audit_on)])
++	get_tree().node_added.connect(_mp8_on_node_added)
++
++	_mp8_perf_start()
++	_mp8_version_hooks()
++	_mp8_lobby_guard_start()  # [MP8] re-asserts the Steam lobby member limit
++
++	# [MP8] Locking the capacity guard must be the last thing in _ready(). Pull the capacity back first:
++	# MPML, the first autoload, runs mods' _mod_ready from its own _ready, when NetworkManager is
++	# already reachable but unlocked, and a write there would otherwise last into the next lobby.
++	_mp8_cap_want = MAX_DEBUG_PLAYERS if mp8_args.has("-trailer") else MAX_PLAYERS
++	if max_player_count != _mp8_cap_want:
++		push_warning("[MP8] capacity was %d before locking (likely a mod's _mod_ready), reset to %d" % [max_player_count, _mp8_cap_want])
++	max_player_count = _mp8_cap_want
++	_mp8_cap_locked = true
++
++	# [MP8] Boot banner, printed unconditionally (unlike the opt-in audit logs): the mod tag, install
++	# route and other mods head every log, which is what bug triage asks first.
++	_mp8_boot_banner()
++
++
++func _mp8_boot_banner() -> void :
++
++	var loader: Node = get_tree().root.get_node_or_null("ModLoader")
++	var mods: Array = []
++	# Only a ModLoader with both methods is MPML; other loaders may name their autoload ModLoader too.
++	var is_mpml: bool = loader != null \
++		and loader.has_method("mod_list") and loader.has_method("loader_version")
++
++	if is_mpml:
++		mods = loader.call("mod_list")
++
++	# MPML route: our id is in the mod list. A ModLoader without it means
++	# the PCK was repacked and some loader was installed on top.
++	var via: String = "PCK repack"
++	if loader != null and not is_mpml:
++		via = "PCK repack + a loader other than MPML"
++	if is_mpml:
++		var has_ours: bool = false
++		for m in mods:
++			if str(m).begins_with("mp8_support"):
++				has_ours = true
++		via = "MPML overlay" if has_ours else "PCK repack + MPML"
++
++	print("[MP8] ======== Machine Party: Extended ========")
++	print("[MP8] mod tag     : %s" % MP8_VERSION_TAG)
++	print("[MP8] join key    : mp8=%s, game_version %s (vanilla's)" % [MP8_VERSION_TAG, Globals.game_version])
++	print("[MP8] max players : %d (vanilla 4)" % MAX_PLAYERS)
++	if MP8_TEST_BUILD:
++		print("[MP8] test build  : dev switches on (never ship this build)")
++	print("[MP8] install     : %s" % via)
++	if is_mpml:
++		print("[MP8] mods        : %s" % (", ".join(PackedStringArray(mods)) if not mods.is_empty() else "(loader only)"))
++	print("[MP8] log         : %s/logs/godot.log" % OS.get_user_data_dir())
++	print("[MP8] Attach this block to any bug report.")
++	print("[MP8] =========================================")
++
++# [MP8] Checks each uid:// used by the minigames that crashed: registered, and loadable. The control is
++# Stable Footing's res:// path, a minigame known to run.
++func _mp8_uid_selftest() -> void :
++
++	var cases := [
++		["uid://cav2dhye17owt", "Duck Hunt - duck player"],
++		["uid://bg7h0g6d2m2xu", "Duck Hunt - hunter player"],
++		["uid://badl26ts540cw", "Lethal Rebound - roomba"],
++		["uid://w6wpt3kvl74p",  "Lethal Rebound - player"],
++		["uid://cyhptkj072mxh", "Table Manners - player"],
++		["uid://bwixccr50fbc2", "briefing - input label (script patched by this mod)"],
++	]
++
++	print("[MP8-UID] ========== UID resolution self-test ==========")
++
++	for c in cases:
++		var txt: String = c[0]
++		var who: String = c[1]
++
++		var id: int = ResourceUID.text_to_id(txt)
++		var known: bool = ResourceUID.has_id(id)
++		var path: String = ""
++		if known:
++			path = ResourceUID.get_id_path(id)
++
++		var loaded: String = "not tried"
++		if known:
++			var r = ResourceLoader.load(path)
++			loaded = "OK" if r != null else "load returned null"
++		else:
++			var r2 = ResourceLoader.load(txt)
++			loaded = "OK(via uid)" if r2 != null else "failed"
++
++		print("[MP8-UID] %-14s registered=%s path=%s load=%s  <- %s" % [
++			txt, str(known), path, loaded, who
++		])
++
++	# Control: Stable Footing's plain res:// path.
++	var ref := "res://minigames/disco_dodge/components/player/disco_dodge_player.tscn"
++	print("[MP8-UID] control res:// exists=%s load=%s" % [
++		str(ResourceLoader.exists(ref)), str(ResourceLoader.load(ref) != null)
++	])
++	print("[MP8-UID] ========== self-test done ==========")
++
++
++# [MP8] ================ Runtime spawn top-up ================
++# Spawn containers hold 4 markers, and spawn_players() indexes positions[counter] unchecked, so
++# players 5-8 get null and stay put. Containers named here are topped up to MAX_PLAYERS as they
++# enter the tree, new points between neighbouring originals; no .tscn changes.
++
++const MP8_SPAWN_CONTAINERS: Array[String] = [
++	"playerspawnpositions",
++	"player spawn positions",
++	"spawnpositions",
++	"playerpositions",
++	"playerspawn",
++	"playerspawnparent",
++	# [MP8] Left out, each placed by its own minigame: "duckplayerspawnpositions" (midpoints of its 3
++	# points coincide with markers; duck_hunt.gd's _mp8_ensure_duck_spawns()) and "workstationspawns"
++	# (edge midpoints land inside walls and desks; manufacture_gun.gd's _mp8v_expand_for_roster(),
++	# after machine-party-8p's mid-edge desks).
++	"spectatepositions",
++]
++
++# [MP8] Diagnostic switches, read once in _ready(): mp8notopup skips the spawn top-up, mp8audit turns
++# on audit logging (_mp8_audit_on).
++var _mp8_no_topup: bool = false
++
++# [MP8] Audit logging, opt-in (pure diagnostics): editor, -debug-tools or mp8audit; mp8noaudit forces it off.
++var _mp8_audit_on: bool = false
++
++# [MP8] The main menu dialog's label wraps with AUTOWRAP_WORD, at spaces only, so unspaced Chinese
++# overflows and its clipping ScrollContainer cuts both ends. WORD_SMART fixes that; a very long ASCII
++# string may break mid-word. Only wrapping changes, not the 512x192 box the texts are written for.
++func _mp8_fix_dialog_label(handler) -> void :
++
++	if handler == null or not is_instance_valid(handler):
++		return
++	var lbl = handler.get("message_label")
++	if lbl == null or not is_instance_valid(lbl) or not (lbl is Label):
++		print("[MP8] dialog Label not found, skipping the wrap fix (harmless)")
++		return
++	(lbl as Label).autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
++
++
++func _mp8_on_node_added(node: Node) -> void :
++
++	if node is MultiplayerMenuLobbyHandler:
++		_mp8_extend_lobby.call_deferred(node)
++		return
++
++	# [MP8] The main menu dialog's wrapping (see _mp8_fix_dialog_label).
++	if node is DialogMessageHandler:
++		_mp8_fix_dialog_label.call_deferred(node)
++		return
++
++	# [MP8] One unconditional line per minigame start (as with _mp8_boot_banner): which minigame, how
++	# many players, host or client, so a report of a stuck round can be placed.
++	if node is Minigame:
++		print("[MP8] start: %s | %d players | this peer=%s" % [
++			String(node.name),
++			PlayerManager.player_presences.size(),
++			("host" if multiplayer.is_server() else "client"),
++		])
++
++	# [MP8-AUDIT] Read-only: logs a minigame's spawn-related nodes and arrays as it enters the tree.
++	if node is Minigame and _mp8_audit_on:
++		_mp8_audit.call_deferred(node)
++
++	if _mp8_no_topup:
++		return
++
++	# [MP8] Spawn points held in arrays (see MP8_SPAWN_ARRAY_PROPS).
++	if node is Minigame:
++		_mp8_topup_spawn_arrays.call_deferred(node)
++
++	if not MP8_SPAWN_CONTAINERS.has(String(node.name).to_lower()):
++		return
++
++	_mp8_topup.call_deferred(node)
++
++# The lobby's player slots (model, name tag, customization assigner) are @export arrays of 4, and
++# update_player_list() indexes them by counter, so player 5 has no slot. Slots are copied up to MAX_PLAYERS.
++func _mp8_extend_lobby(h) -> void :
++
++	if not is_instance_valid(h):
++		return
++
++	var n: int = h.players.size()
++
++	print("[MP8] extend_lobby hit handler=%s players=%d models=%s" % [
++		str(h.get_path()), n, str(h.get("player_models"))
++	])
++
++	if n < 2 or n >= MAX_PLAYERS:
++		print("[MP8]   skipped (n=%d not in 2..%d)" % [n, MAX_PLAYERS])
++		return
++
++	if h.customization_assigners.size() < n or h.nametags.size() < n:
++		return
++
++	var parent = h.players[0].get_parent()
++	var cam = parent.get_parent().get_node_or_null("Camera3D")
++	var game_side := {"players": h.players.duplicate(), "assigners": h.customization_assigners.duplicate(),
++		"nametags": h.nametags.duplicate(), "cam": cam.position if cam else Vector3.ZERO}
++
++	# The stock slots' poses are baked into each Armature with different offsets, so none moves: all 4
++	# are copied and shifted as a second row, which inherits the same offsets.
++	for j in range(MAX_PLAYERS - n):
++
++		var src_slot = h.players[j % n]
++		var src_assigner = h.customization_assigners[j % n]
++		var src_nametag = h.nametags[j % n]
++
++		if not src_slot.is_ancestor_of(src_assigner) or not src_slot.is_ancestor_of(src_nametag):
++			print("[MP8] slot %d has an unexpected structure, skipped" % (j % n))
++			continue
++
++		var rel_a: NodePath = src_slot.get_path_to(src_assigner)
++		var rel_t: NodePath = src_slot.get_path_to(src_nametag)
++
++		var dup = src_slot.duplicate()
++		dup.name = "MP8Slot%d" % (n + j)
++		parent.add_child(dup)
++		dup.position = src_slot.position + MP8_ROW2_OFFSET
++		dup.visible = false
++
++		h.players.append(dup)
++		h.customization_assigners.append(dup.get_node(rel_a))
++		h.nametags.append(dup.get_node(rel_t))
++
++	# The chairs are copied with the same shift, so the second row sits as the first does.
++	_mp8_clone_chairs(parent, MP8_ROW2_OFFSET)
++
++	# The second row is nearer the camera; pull it back a little.
++	if cam:
++		var before = cam.position
++		cam.position = Vector3(before.x, before.y * 1.08, before.z * 1.22)
++		print("[MP8] camera %s -> %s" % [str(before), str(cam.position)])
++
++	print("[MP8] lobby slots: %d -> %d (second row offset %s)" % [n, h.players.size(), str(MP8_ROW2_OFFSET)])
++	h.set_meta("mp8_lobby", {"extended": true, "game": game_side, "cam_node": cam,
++		"chairs": parent.get_parent().get_node_or_null("lobby environment1/MP8ChairRow"),
++		"ext": {"players": h.players.duplicate(), "assigners": h.customization_assigners.duplicate(),
++			"nametags": h.nametags.duplicate(), "cam": cam.position if cam else Vector3.ZERO}})
++
++	# Dumped now and again 4 s later: a difference means other code moved the slots.
++	_mp8_dump_slots(h, "just placed")
++	await get_tree().create_timer(4.0).timeout
++	if is_instance_valid(h):
++		_mp8_dump_slots(h, "after 4 s")
++
++
++# The second row's offset from the stock slots: larger z is nearer the camera (lower on screen),
++# larger x further right.
++const MP8_ROW2_OFFSET := Vector3(0.6, 0.0, 5.2)
++
++
++# Copies the scene's visible decorative chairs, shifted by offset, so each second-row seat has its chair.
++func _mp8_clone_chairs(parent, offset: Vector3) -> void :
++
++	var env = parent.get_parent().get_node_or_null("lobby environment1")
++	if env == null:
++		print("[MP8] lobby environment1 not found, skipping chairs")
++		return
++
++	if env.has_node("MP8ChairRow"):
++		return
++
++	var holder := Node3D.new()
++	holder.name = "MP8ChairRow"
++	env.add_child(holder)
++
++	var cloned: int = 0
++	for c in env.get_children():
++		if c == holder:
++			continue
++		if not (c is Node3D) or not c.visible:
++			continue
++		if not String(c.name).to_lower().begins_with("chair"):
++			continue
++		var d = c.duplicate()
++		d.name = "MP8" + String(c.name)
++		holder.add_child(d)
++		d.transform = c.transform
++		d.position = c.position + offset
++		d.visible = true
++		cloned += 1
++
++	print("[MP8] copied %d chairs, offset %s" % [cloned, str(offset)])
++
++
++# D121: the seat map a lobby's host sends. An Extended room has 8 seats; a mixed room the game's 4, anyone
++# seated at 5-8 moved to a free seat of 1-4 in seat order (a mixed room holds 4 at most, D117). Run before the
++# game's seat loop, which takes the first free seat. Static, for mp8_selftest.
++static func mp8_fit_seats(seats: Dictionary, extended: bool) -> Dictionary[int, int]:
++	var out: Dictionary[int, int] = {}
++	if extended:
++		for i in MAX_PLAYERS:
++			out[i] = int(seats.get(i, -1))
++		return out
++	var moved: Array[int] = []
++	for i in range(MP8_MIXED_CAP, MAX_PLAYERS):
++		if int(seats.get(i, -1)) >= 0:
++			moved.append(int(seats[i]))
++	for i in MP8_MIXED_CAP:
++		out[i] = int(seats.get(i, -1))
++		if out[i] < 0 and not moved.is_empty():
++			out[i] = moved.pop_front()
++	return out
++
++
++# D121: a lobby shows the game's 4 slots while its seat map has the game's 4 seats (a mixed room), and the
++# second row otherwise. Every peer follows the map the host sent, so all agree. The handler gets the game's
++# arrays back, since its update_player_list() indexes them by seat.
++func mp8_lobby_layout(h, extended: bool) -> void:
++	if not is_instance_valid(h) or not h.has_meta("mp8_lobby"):
++		return
++	var m: Dictionary = h.get_meta("mp8_lobby")
++	if m["extended"] == extended:
++		return
++	m["extended"] = extended
++	var side: Dictionary = m["ext" if extended else "game"]
++	h.players = side["players"].duplicate()
++	h.customization_assigners = side["assigners"].duplicate()
++	h.nametags = side["nametags"].duplicate()
++	for slot in m["ext"]["players"]:
++		if not side["players"].has(slot):
++			slot.visible = false
++	if is_instance_valid(m["chairs"]):
++		m["chairs"].visible = extended
++	if is_instance_valid(m["cam_node"]):
++		m["cam_node"].position = side["cam"]
++	print("[MP8] lobby layout: %s" % ("the second row" if extended else "the game's 4 slots, a mixed room"))
++
++
++func _mp8_dump_slots(h, tag: String) -> void :
++
++	# [MP8] Opt-in, like _mp8_audit.
++	if not _mp8_audit_on:
++		return
++
++	print("[MP8] ---- slot positions (%s) ----" % tag)
++	for i in h.players.size():
++		var s = h.players[i]
++		if not is_instance_valid(s):
++			print("[MP8]   slot %d <invalid>" % i)
++			continue
++		print("[MP8]   slot %d '%s' pos=%s gpos=%s vis=%s chair=%s" % [
++			i, str(s.name), str(s.position), str(s.global_position),
++			str(s.visible), str(_mp8_find_chair(s))
++		])
++
++
++# A chair mesh in a slot's subtree, if any: found means the chair moves with the slot.
++func _mp8_find_chair(node: Node) -> String :
++
++	for c in node.get_children():
++		if String(c.name).to_lower().contains("chair"):
++			return String(c.name)
++		var deeper: String = _mp8_find_chair(c)
++		if deeper != "":
++			return deeper
++	return ""
++
++# [MP8-AUDIT] Read-only, logs only: where each minigame keeps its spawn points, and what
++# MP8_SPAWN_CONTAINERS misses. Spawns live in a container node or an @export Array[Node3D]; both are logged.
++func _mp8_audit(mg: Node) -> void :
++
++	if not is_instance_valid(mg):
++		return
++
++	var script_path: String = "?"
++	if mg.get_script():
++		script_path = String(mg.get_script().resource_path)
++
++	print("[MP8-AUDIT] ========== minigame '%s' ==========" % str(mg.name))
++	print("[MP8-AUDIT] script=%s is_server=%s players=%d" % [
++		script_path, str(multiplayer.is_server()), PlayerManager.player_presences.size()
++	])
++
++	print("[MP8-AUDIT] -- script properties --")
++	for p in mg.get_property_list():
++
++		if not (int(p.get("usage", 0)) & PROPERTY_USAGE_SCRIPT_VARIABLE):
++			continue
++
++		var pname: String = String(p.get("name", ""))
++		var v = mg.get(pname)
++
++		if v is Array:
++			if v.size() > 0 and v.size() < MAX_PLAYERS:
++				print("[MP8-AUDIT]   [array] %s size=%d" % [pname, v.size()])
++			continue
++
++		if v is Node3D:
++			var ln: String = pname.to_lower()
++			if ln.contains("spawn") or ln.contains("position"):
++				print("[MP8-AUDIT]   [container] %s -> '%s' children=%d" % [
++					pname, str(v.name), v.get_child_count()
++				])
++
++	print("[MP8-AUDIT] -- subtree nodes named spawn/position --")
++	_mp8_audit_walk(mg, mg, 0)
++	print("[MP8-AUDIT] ========== audit done ==========")
++
++
++func _mp8_audit_walk(root: Node, node: Node, depth: int) -> void :
++
++	if depth > 8:
++		return
++
++	for c in node.get_children():
++
++		var ln: String = String(c.name).to_lower()
++		if ln.contains("spawn") or ln.contains("position"):
++
++			print("[MP8-AUDIT]   %s [%s] children=%d" % [
++				str(root.get_path_to(c)), c.get_class(), c.get_child_count()
++			])
++
++			# Point positions too: world coordinates at runtime, which the binary .scn cannot give statically.
++			if c.get_child_count() > 0 and c.get_child_count() <= 12:
++				for gc in c.get_children():
++					if gc is Node3D:
++						print("[MP8-AUDIT]       %-22s pos=%s gpos=%s rot=%s" % [
++							str(gc.name), str(gc.position),
++							str(gc.global_position), str(gc.rotation_degrees)
++						])
++
++			if c is Node3D:
++				print("[MP8-AUDIT]       (container itself) gpos=%s" % str(c.global_position))
++
++		_mp8_audit_walk(root, c, depth + 1)
++
++
++# [MP8] ============ Spawn top-up for arrays ============
++# Some minigames hold spawns in an `@export var x: Array[Node3D]` that spawn_players() indexes
++# directly, so the array itself is extended. green_pea's property of the same name holds a container
++# node, so only a real Array takes this path; containers go through MP8_SPAWN_CONTAINERS.
++const MP8_SPAWN_ARRAY_PROPS: Array[String] = [
++	"player_spawn_positions",
++]
++
++
++func _mp8_topup_spawn_arrays(mg: Node) -> void :
++
++	if not is_instance_valid(mg):
++		return
++
++	# Minigames that place their own spawns set mp8_owns_spawns; Object.get() returns null when absent.
++	if mg.get("mp8_owns_spawns") == true:
++		return
++	# Deferred from add_child, so inside the minigame's latch. A mixed room keeps the game's markers (D116).
++	if not mp8_room_extended():
++		return
++
++	for pname in MP8_SPAWN_ARRAY_PROPS:
++
++		var arr = mg.get(pname)
++		if not (arr is Array):
++			continue
++		if arr.size() == 0 or arr.size() >= MAX_PLAYERS:
++			continue
++
++		var originals: Array = []
++		for e in arr:
++			if not (e is Node3D):
++				originals.clear()
++				break
++			originals.append(e)
++		if originals.is_empty():
++			continue
++
++		var pts: Array[Vector3] = []
++		for o in originals:
++			pts.append(o.global_position)
++
++		var extra: Array[Vector3] = _mp8_spread_inside(pts, MAX_PLAYERS)
++
++		var holder: Node = originals[0].get_parent()
++		var added := PackedStringArray()
++
++		for p in extra:
++			# Each new point copies its nearest original, so rotation and other properties fit (Smoke Break
++			# reads global_rotation).
++			var tmpl: Node3D = originals[0]
++			var best: float = INF
++			for o in originals:
++				var d: float = o.global_position.distance_to(p)
++				if d < best:
++					best = d
++					tmpl = o
++
++			var dup: Node3D = tmpl.duplicate()
++			dup.name = "MP8Spawn%d" % arr.size()
++			holder.add_child(dup)
++			dup.global_position = p
++			arr.append(dup)
++			added.append("(%.2f, %.2f, %.2f)" % [p.x, p.y, p.z])
++
++		# Log the minimum spacing: coinciding points are this top-up's typical failure.
++		var min_d: float = INF
++		for i in arr.size():
++			for j in range(i + 1, arr.size()):
++				min_d = minf(min_d, arr[i].global_position.distance_to(arr[j].global_position))
++
++		print("[MP8] spawn array '%s' (%s): %d -> %d, added %s, min spacing %.2f m%s" % [
++			pname, str(mg.name), originals.size(), arr.size(),
++			", ".join(added), min_d,
++			"  ⚠️ too close!" if min_d < 0.8 else ""
++		])
++
++
++# Picks want-n more points inside the originals' convex hull, maximising the minimum spacing. Originals
++# never move and new points are convex combinations of them, so all stay in bounds. Farthest-point
++# insertion over the 1/8..7/8 points of every pair: plain midpoints coincide for evenly spaced points.
++func _mp8_spread_inside(originals: Array[Vector3], want: int) -> Array[Vector3] :
++
++	var chosen: Array[Vector3] = originals.duplicate()
++	var result: Array[Vector3] = []
++
++	if originals.size() < 2 or want <= originals.size():
++		return result
++
++	var pool: Array[Vector3] = []
++	for i in originals.size():
++		for j in range(i + 1, originals.size()):
++			for k in range(1, 8):
++				pool.append(originals[i].lerp(originals[j], float(k) / 8.0))
++
++	while chosen.size() < want:
++
++		var best: Vector3 = pool[0]
++		var best_d: float = -1.0
++
++		for c in pool:
++			var d: float = INF
++			for ch in chosen:
++				d = minf(d, c.distance_to(ch))
++			if d > best_d:
++				best_d = d
++				best = c
++
++		chosen.append(best)
++		result.append(best)
++
++	return result
++
++
++func _mp8_topup(container: Node) -> void :
++
++	if not is_instance_valid(container):
++		return
++
++	# Minigames that own their spawns are skipped here too, or unread markers would be added and logged.
++	var up: Node = container
++	while up != null:
++		if up is Minigame:
++			if up.get("mp8_owns_spawns") == true:
++				return
++			break
++		up = up.get_parent()
++	if not mp8_room_extended():
++		return
++
++	var originals = container.get_children()
++	var n: int = originals.size()
++
++	if n == 0 or n >= MAX_PLAYERS:
++		return
++
++	for j in range(MAX_PLAYERS - n):
++
++		var a = originals[j % n]
++		var b = originals[(j + 1) % n]
++
++		if not (a is Node3D) or not (b is Node3D):
++			return
++
++		var extra = a.duplicate()
++		extra.name = "MP8Extra%d" % j
++		container.add_child(extra)
++		extra.position = a.position.lerp(b.position, 0.5 if j < n else 0.25)
++
++	print("[MP8] spawn container '%s': %d -> %d" % [container.name, n, container.get_child_count()])
++
+ func is_active() -> bool:
+ 
+ 	if not multiplayer:
+@@ -81,6 +742,14 @@ func set_game_scene(_game_scene: PackedScene):
+ 
+ func create_backend():
+ 
++	# [MP8] A new backend voids the last session's connections: clear the version records, or a stale
++	# network_id would misreport a refused joiner (see _mp8_on_raw_peer_disconnected).
++	_mp8_peers_accepted.clear()
++	_mp8_refused.clear()
++	_mp8_host_version = ""
++	_mp8_room_latch = -1
++	_mp8_lobby_set = -1
++
+ 	if active_backend:
+ 
+ 		active_backend.free()
+@@ -269,3 +938,342 @@ func remove_player_rpc(_network_id: int):
+ 		var player_info = active_backend.connected_players[_network_id]
+ 		active_backend.disconnected_players[_network_id] = player_info
+ 		active_backend.connected_players.erase(_network_id)
++
++
++# [MP8] ======== Frame-time probe (mp8perf) ========
++# Every 2 s, a frame's script, physics and render cost, to find which layer grows with player count.
++# A Timer drives it (this script has no _process); each instance writes user://mp8_perf_<pid>.log,
++# flushed per line, since 8 instances share godot.log and test runs end with a kill.
++var _mp8_perf_on: bool = false
++var _mp8_perf_timer: Timer = null
++var _mp8_perf_f: FileAccess = null
++
++func _mp8_perf_start() -> void :
++
++	_mp8_perf_on = mp8_dev_args().has("mp8perf")
++	if not _mp8_perf_on:
++		return
++
++	_mp8_perf_f = FileAccess.open("user://mp8_perf_%d.log" % OS.get_process_id(), FileAccess.WRITE)
++	print("[MP8-PERF] frame-time probe on (one line per 2 s) -> user://mp8_perf_%d.log" % OS.get_process_id())
++
++	_mp8_perf_timer = Timer.new()
++	_mp8_perf_timer.wait_time = 2.0
++	_mp8_perf_timer.autostart = true
++	_mp8_perf_timer.timeout.connect(_mp8_perf_tick)
++	add_child(_mp8_perf_timer)
++
++
++func _mp8_perf_tick() -> void :
++
++	if not _mp8_perf_on:
++		return
++
++	# The current minigame, so lines compare across minigames.
++	var where: String = "?"
++	if Globals != null:
++		var mg = Globals.get("current_minigame_identifier")
++		if mg != null:
++			where = str(mg)
++
++	var line: String = "[MP8-PERF] %-14s fps=%5.1f | script %6.2f ms | physics %6.2f ms | draw calls %5d | draw objects %5d | nodes %5d | players %d" % [
++		where,
++		Performance.get_monitor(Performance.TIME_FPS),
++		Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0,
++		Performance.get_monitor(Performance.TIME_PHYSICS_PROCESS) * 1000.0,
++		int(Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME)),
++		int(Performance.get_monitor(Performance.RENDER_TOTAL_OBJECTS_IN_FRAME)),
++		int(Performance.get_monitor(Performance.OBJECT_NODE_COUNT)),
++		PlayerManager.player_presences.size() if PlayerManager != null else -1,
++	]
++	print(line)
++	if _mp8_perf_f != null:
++		_mp8_perf_f.store_line(line)
++		_mp8_perf_f.flush()
++
++
++# [MP8] ======== Mixed rooms: who runs Extended, and Extended's own calls ========
++# Godot sends an RPC as its index in the node's sorted RPC table, so the game's scripts keep exactly the
++# game's @rpc methods and Extended's calls go through the relay at /root/MP8Net (the wrapper's
++# mp8_net.gd), which reaches only peers whose join data carries our tag (multiplayer_backend.gd).
++
++# Whether this player's join data carries our tag. The value comes from another peer, so its type is checked.
++func mp8_peer_extended(network_id: int) -> bool:
++	if active_backend == null:
++		return false
++	var data = active_backend.connected_players.get(network_id)
++	if not data is Dictionary:
++		return false
++	var tag = data.get("mp8")
++	return tag is String and tag == MP8_VERSION_TAG
++
++
++# True on the couch, and online while every player among the connected peers runs this Extended.
++# Peers, since Offline Bots adds its bots to connected_players online without our key; and only peers
++# with a player entry, since a peer mid-handshake or being refused has none yet.
++# Held from each minigame's load to its clear (game.gd, D118): a mid-match joiner gets its entry at once
++# and waits in the join queue, and the minigame was set up for the room at its load.
++func mp8_room_extended() -> bool:
++	if GameManager.local_game or active_backend == null:
++		return true
++	if _mp8_room_latch >= 0:
++		return _mp8_room_latch == 1
++	return _mp8_room_live()
++
++
++# Whether this peer sends a broadcast that Extended sends from the server only (a sound, a cleanup): in a
++# mixed room every peer sends it, as the game does (D116). is_server is an argument for mp8_selftest.
++func mp8_sends_broadcast(is_server: bool) -> bool:
++	return is_server or not mp8_room_extended()
++
++
++var _mp8_room_latch: int = -1   # -1 live, 0 mixed, 1 Extended
++
++func mp8_latch_room() -> void:
++	var extended: bool = _mp8_room_live()
++	_mp8_room_latch = 1 if extended else 0
++	if not GameManager.local_game:
++		print("[MP8] room latched for this minigame: extended=%s" % extended)
++
++
++func mp8_unlatch_room() -> void:
++	_mp8_room_latch = -1
++
++
++# Who is in the room now, whatever the latch holds: the join rules and the Steam member limit.
++func _mp8_room_live() -> bool:
++	if GameManager.local_game or active_backend == null:
++		return true
++	return mp8_peers_extended(Array(multiplayer.get_peers()))
++
++
++# [MP8] The join rules, asked by both backends after the game's own version check. -1 accepts; otherwise
++# the RefuseReason to send. Above the cap, vanilla's own spectator rule at MAX_PLAYERS still applies.
++func mp8_join_refusal(network_id: int, client_data: Dictionary) -> int:
++	return mp8_join_refusal_in(network_id, client_data, _mp8_room_live())
++
++
++# The rule with the room given, so mp8_selftest can play a mixed room without real peers.
++func mp8_join_refusal_in(network_id: int, client_data: Dictionary, room_extended: bool) -> int:
++	if active_backend == null:
++		return -1
++	var tag = client_data.get("mp8")
++	if tag is String and tag != MP8_VERSION_TAG:
++		return RefuseReason.VersionMismatch
++	# The size counts Offline Bots' bots, as vanilla's spectator check does; never the joiner itself.
++	var players: int = active_backend.connected_players.size()
++	if active_backend.connected_players.has(network_id):
++		players -= 1
++	if (not (tag is String) or not room_extended) and players + 1 > MP8_MIXED_CAP:
++		return RefuseReason.MP8RoomFull
++	return -1
++
++
++func mp8_peers_extended(peers: Array) -> bool:
++	if active_backend == null:
++		return true
++	for network_id in peers:
++		if active_backend.connected_players.has(network_id) and not mp8_peer_extended(network_id):
++			return false
++	return true
++
++
++# Extended's stand-in for x.rpc(...): the method's mode is in the relay's list.
++func mp8_rpc(node: Node, method: StringName, args: Array = []) -> void:
++	var relay := get_tree().root.get_node_or_null("MP8Net")
++	if relay == null:
++		push_error("[MP8] relay: /root/MP8Net is missing; %s not sent" % method)
++		return
++	relay.send(0, node, method, args)
++
++
++# Extended's stand-in for x.rpc_id(peer, ...).
++func mp8_rpc_id(peer: int, node: Node, method: StringName, args: Array = []) -> void:
++	var relay := get_tree().root.get_node_or_null("MP8Net")
++	if relay == null:
++		push_error("[MP8] relay: /root/MP8Net is missing; %s not sent" % method)
++		return
++	relay.send(peer, node, method, args)
++
++
++# [MP8] ======== Refusal texts players can act on ========
++# A joiner is refused by the game's own version check or by the join rules (mp8_join_refusal). A vanilla
++# joiner runs stock code, so only the host can be told why, via mp8_join_blocked.
++
++signal mp8_join_blocked(text: String)   # host side: someone was refused; text for the host
++
++const MP8_ROOM_FULL_TEXT: String = "Room full: a player without Extended\nis in, so it holds 4."
++
++var _mp8_host_version: String = ""              # client side: the host's full version (Steam lobby data), when known
++var _mp8_peers_accepted: Dictionary = {}        # host side: peers that passed the version check
++var _mp8_refused: Dictionary = {}               # host side: peers a backend refused, already told
++
++
++# "v2.1.2+mp8-1.0": what this build shows and compares; the wire carries only vanilla's version.
++func mp8_full_version() -> String:
++	return Globals.game_version + "+" + MP8_VERSION_TAG
++
++
++# Host: called by both backends as they send a refusal, while the joiner's data is still at hand.
++func mp8_note_refusal(network_id: int, reason: int, client_data: Dictionary) -> void:
++	_mp8_refused[network_id] = true
++	var text: String
++	if reason == RefuseReason.MP8RoomFull and client_data.get("mp8") is String:
++		text = "Room full: with a player without Extended here, it holds 4."
++	elif reason == RefuseReason.MP8RoomFull:
++		text = "A player without Extended tried to join; rooms over 4 need it."
++	else:
++		text = _mp8_blocked_text_for_host(_mp8_joiner_version(client_data))
++	print("[MP8-VERSION] refused peer=%d reason=%d key=%s version=%s" % [network_id, reason, str(client_data.get("mp8")), str(client_data.get("game_version"))])
++	mp8_join_blocked.emit(text)
++
++
++# The joiner's full version: its key on its game version, or an older Extended's "+mp8-" game version.
++func _mp8_joiner_version(client_data: Dictionary) -> String:
++	var version: String = str(client_data.get("game_version", ""))
++	var tag = client_data.get("mp8")
++	return version + "+" + tag if tag is String and _mp8_tag_of(version).is_empty() else version
++
++
++func _mp8_version_hooks() -> void :
++
++	multiplayer.peer_disconnected.connect(_mp8_on_raw_peer_disconnected)
++	on_peer_connected.connect(func(nid): _mp8_peers_accepted[nid] = true)
++
++
++# Host: a peer that leaves without ever being accepted, and that no backend refused (refusals are told as
++# they are sent), was turned away some other way: the game's SessionEnded, or it gave up mid-handshake.
++func _mp8_on_raw_peer_disconnected(network_id: int) -> void :
++
++	if not multiplayer.is_server():
++		return
++
++	# Accepted earlier: a normal leave.
++	if _mp8_peers_accepted.has(network_id):
++		_mp8_peers_accepted.erase(network_id)
++		return
++
++	if _mp8_refused.has(network_id):
++		_mp8_refused.erase(network_id)
++		return
++
++	mp8_join_blocked.emit("A player could not join.")
++
++
++# The mod tag in a full version string, "" for vanilla: "v2.1.2+mp8-0.1" -> "mp8-0.1".
++func _mp8_tag_of(full_version: String) -> String:
++	var i: int = maxi(full_version.find("+mp8-"), full_version.find("+overtime-"))
++	return "" if i < 0 else full_version.substr(i + 1)
++
++
++# ── Client side: the refusal text (lobby_scene.gd's _on_join_refused) ──
++# The main menu dialog shows about 105 px of it with no scroll bar: 3 lines; a 4th English line is cut.
++# Re-measure after a change: set Globals.splash_screen_viewed = true and
++# GameManager.main_menu_dialog_message, then call check_for_message().
++
++# "v2.1.2+mp8-0.1" -> "mp8-0.1" ("" without a tag); the prefix tells mp8 and Overtime apart.
++func _mp8_tag_num(full_version: String) -> String:
++	return _mp8_tag_of(full_version)
++
++
++# "v2.1.2+mp8-0.1" -> "v2.1.2"
++func _mp8_base_of(full_version: String) -> String:
++	var i: int = maxi(full_version.find("+mp8-"), full_version.find("+overtime-"))
++	return full_version if i < 0 else full_version.substr(0, i)
++
++
++func mp8_mismatch_text() -> String:
++	var mine: String = mp8_full_version()
++	var theirs: String = _mp8_host_version
++	print("[MP8-VERSION] mismatch self=%s host=%s" % [mine, theirs])
++	# A host without Extended publishes no version, nor does any host in the ENet debug lobby.
++	if theirs.is_empty():
++		return "Versions differ.\nYou %s / Host unknown" % _mp8_version_brief(mine)
++	if mine == theirs:
++		return "Refused, though versions match.\nDetails in the game log."
++	if not _mp8_tag_of(mine).is_empty() and _mp8_tag_of(mine) == _mp8_tag_of(theirs) and _mp8_base_of(mine) != _mp8_base_of(theirs):
++		return "Same mod tag; game versions differ.\nYou %s / Host %s" % [_mp8_version_brief(_mp8_base_of(mine)), _mp8_version_brief(_mp8_base_of(theirs))]
++	return "Versions differ.\nYou %s / Host %s" % [_mp8_version_brief(mine), _mp8_version_brief(theirs)]
++
++
++func _mp8_version_brief(value: String) -> String :
++	var tag: String = _mp8_tag_num(value)
++	var shown: String = tag if not tag.is_empty() else value
++	return shown if shown.length() <= 18 else shown.left(17) + "…"
++
++
++# ── Host side: the notice when someone cannot join ──
++# The only place a joiner without the mod can be explained.
++func _mp8_blocked_text_for_host(their_version: String) -> String:
++	print("[MP8-VERSION] unaccepted peer=%s lobby=%s" % [their_version, mp8_full_version()])
++	if their_version.is_empty():
++		return "A player on a different version tried to join."
++	return "A player on %s tried to join this %s lobby." % [_mp8_version_brief(their_version), MP8_VERSION_TAG]
++
++
++# [MP8] ======== The Steam lobby member limit follows the cap ========
++# The capacity guard covers max_player_count, not Steam's member limit: MachineParty+'s "Make Lobby
++# Public" sets that to at most 4, and Steam refuses player 5 with nothing in our log. The limit is the
++# mixed cap while anyone in the room lacks our key, so Steam itself turns a 5th away ("The room is
++# full."), and max_player_count otherwise. The host checks every 2 s and on each join and leave. Every
++# Steam call is behind has_method, so a missing one is skipped.
++var _mp8_lobby_timer: Timer = null
++var _mp8_lobby_last_fix: int = -1
++var _mp8_lobby_set: int = -1   # the limit this script last set, so its own 4 isn't taken for another mod's
++
++
++func _mp8_lobby_guard_start() -> void :
++
++	_mp8_lobby_timer = Timer.new()
++	_mp8_lobby_timer.name = "MP8LobbySizeGuard"
++	_mp8_lobby_timer.wait_time = 2.0
++	_mp8_lobby_timer.autostart = true
++	_mp8_lobby_timer.timeout.connect(_mp8_enforce_lobby_size)
++	add_child(_mp8_lobby_timer)
++	on_peer_connected.connect(func(_id): _mp8_enforce_lobby_size.call_deferred())
++	on_peer_disconnected.connect(func(_id): _mp8_enforce_lobby_size.call_deferred())
++
++
++# The member limit for a room: never below the members already in it.
++func mp8_lobby_limit(members: int, room_extended: bool) -> int:
++	return maxi(max_player_count if room_extended else MP8_MIXED_CAP, members)
++
++
++func _mp8_enforce_lobby_size() -> void :
++
++	if active_backend_type != NetworkBackendType.Steam:
++		return
++	if not (multiplayer and multiplayer.has_multiplayer_peer() and multiplayer.is_server()):
++		return
++	if active_backend == null:
++		return
++
++	# lobby_id exists only on the Steam backend, not on MultiplayerBackend: read it duck-typed.
++	var lobby_id: int = int(active_backend.get("lobby_id") if active_backend.get("lobby_id") != null else 0)
++	if lobby_id <= 0:
++		return
++
++	if not (Engine.has_singleton("Steam") or ClassDB.class_exists("Steam")):
++		return
++
++	var members: int = int(Steam.getNumLobbyMembers(lobby_id)) if Steam.has_method("getNumLobbyMembers") else 0
++	var room_extended: bool = _mp8_room_live()
++	var want: int = mp8_lobby_limit(members, room_extended)
++
++	# With a getter, change the limit only when it differs; without one, set it (idempotent).
++	if Steam.has_method("getLobbyMemberLimit"):
++		var cur: int = int(Steam.getLobbyMemberLimit(lobby_id))
++		if cur == want or cur <= 0:
++			return
++		if not Steam.has_method("setLobbyMemberLimit"):
++			return
++		Steam.setLobbyMemberLimit(lobby_id, want)
++		if room_extended and cur < want and cur != _mp8_lobby_set and _mp8_lobby_last_fix != cur:
++			_mp8_lobby_last_fix = cur
++			push_warning("[MP8] another mod lowered the Steam lobby limit to %d (known case: MachineParty+'s 'Make Lobby Public'), restored to %d" % [cur, want])
++		_mp8_lobby_set = want
++		print("[MP8] Steam lobby limit %d -> %d (extended room=%s, members=%d)" % [cur, want, room_extended, members])
++	else:
++		if Steam.has_method("setLobbyMemberLimit"):
++			Steam.setLobbyMemberLimit(lobby_id, want)
++			_mp8_lobby_set = want

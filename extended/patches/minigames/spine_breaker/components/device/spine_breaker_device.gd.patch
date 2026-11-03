@@ -1,0 +1,338 @@
+diff --git a/minigames/spine_breaker/components/device/spine_breaker_device.gd b/minigames/spine_breaker/components/device/spine_breaker_device.gd
+--- a/minigames/spine_breaker/components/device/spine_breaker_device.gd
++++ b/minigames/spine_breaker/components/device/spine_breaker_device.gd
+@@ -74,6 +74,55 @@ var can_proximity_attach: bool = true
+ 
+ var attached: bool = false
+ 
++# [MP8] Retirement: the device that kills the 4th player stays on the corpse and leaves play,
++# so the last two players share one device. break_spine_state.gd skips the reset; this is the flag.
++var mp8_retired: bool = false
++
++# [MP8] 1 = the scene's own device, 2 = the one this mod adds. Picks the device's post-kill wait (MP8_DEVICE_WAIT) and names it in logs.
++var mp8_index: int = 1
++
++# [MP8] Speed base [default_speed, new_target_speed, speed_increase_over_time], recorded at the
++# first scaling; speeds are always base x factor. Devices are reused across rounds and the speed
++# code runs every round, so scaling the current value would compound (1.2 x 1.2 = 1.44).
++var mp8_speed_base: Array = []
++
++# [MP8] A retired device's light colour, on the light the victim carries
++# (`spine_breaker_player.spine_breaker_light`, set to `Color.RED` on attach), not the device's
++# own `status_light`, which is hidden 100 m underground. Green already means "no threat" here.
++const MP8_RETIRE_LIGHT: Color = Color(0.2, 1.0, 0.3)
++
++# [MP8] A retired device's blink speed. Fixed and slow: the normal speed tracks the fuse and is at
++# its fastest when the device retires, which would read as about to strike.
++const MP8_RETIRE_BLINK: float = 0.6
++
++# [MP8] This device's body colour, set by the minigame in mp8_ensure_devices_rpc on every peer.
++# On attach it is copied to the device visual on the victim's back.
++var mp8_tint: Color = Color.WHITE
++
++# [MP8] The body texture name after its last underscore, read from the device's own material.
++# It identifies the device's surfaces among the meshes on the victim's back (copies of one texture).
++var mp8_tex_key: String = ""
++
++# [MP8] Whether this device wears the black-widow hourglass (D103), set by the minigame in
++# mp8_ensure_devices_rpc on every peer. On attach a copy goes on the victim's back.
++var mp8_mark: bool = false
++
++# [MP8] The hourglass: length along the spine (bone space), colour under the scene's light, and a
++# glow kept faint so the head's blinking fuse light stays the loudest red (the owner's widow_d).
++const MP8_MARK_LENGTH: float = 0.5
++const MP8_MARK_ALBEDO: Color = Color(0.4, 0.02, 0.01)
++const MP8_MARK_GLOW: Color = Color(1.0, 0.05, 0.02)
++const MP8_MARK_ENERGY: float = 0.3
++
++# [MP8] The bone the mark rides, on the device and on the victim's skeleton. Not `rotation bone`:
++# that is the head, which set_head_rotation_rpc turns.
++const MP8_MARK_BONE: String = "main body"
++
++# [MP8] The mark's frame in MP8_MARK_BONE's space; measured once (0 not yet, 1 done, -1 failed).
++var _mp8_mark_frame: Transform3D = Transform3D.IDENTITY
++var _mp8_mark_measured: int = 0
++
++
+ func _ready() -> void :
+ 
+ 	set_multiplayer_authority(1, true)
+@@ -114,7 +163,40 @@ func _process(_delta: float) -> void :
+ 			_delta * rotation_speed
+ 		)
+ 
++# [MP8] Diagnostic, logged once: a device above y = 3 with its state and velocity. The state
++# names the cause: Follow -> a nav target on the upper navmesh layer (y up to 6.5); Thrown -> an
++# upward throw velocity; Idle forces y = 0 every frame.
++var _mp8_y_warned: bool = false
++
++func _mp8_check_altitude() -> void :
++
++	if _mp8_y_warned or not multiplayer.is_server():
++		return
++	if global_position.y <= 3.0:
++		return
++
++	_mp8_y_warned = true
++	var sname := "?"
++	if state_machine != null and state_machine.current_state != null:
++		sname = String(state_machine.current_state.name)
++	print("[MP8] Spine Breaker: ⚠️ device %d flew to y=%.2f - state %s, position (%.2f, %.2f), velocity %s" % [
++		mp8_index, global_position.y, sname,
++		global_position.x, global_position.z, str(velocity)
++	])
++
++
+ func _physics_process(delta: float) -> void :
++
++	# [MP8] A mixed room runs the game's _physics_process (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_physics_process(delta)
++		return
++	update_animations(delta)
++	check_target_proximity(delta)
++	_mp8_check_altitude()
++
++# The game's _physics_process, for a mixed room (D120).
++func _mp8_game_physics_process(delta: float) -> void :
+ 	update_animations(delta)
+ 	check_target_proximity(delta)
+ 
+@@ -190,6 +272,43 @@ func set_lights_rpc():
+ 
+ @rpc("any_peer", "call_local", "reliable")
+ func try_throw_rpc(
++	_start_position: Vector3,
++	_direction: Vector3,
++	_strength: float,
++	thrower: NodePath,
++	kick: bool = false
++):
++
++	# [MP8] A mixed room runs the game's try_throw_rpc (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_try_throw_rpc(_start_position, _direction, _strength, thrower, kick)
++		return
++
++	if not multiplayer.is_server():
++		return
++
++	# [MP8] A retired device stays on the corpse: this blocks kicks, which would set it running.
++	if mp8_retired:
++		return
++
++	if kick and not can_kick:
++		return
++
++	if state_machine.current_state.name in [&"BreakSpine"]:
++		return
++
++	var possible_thrower = get_node(thrower)
++	possible_thrower.set_spine_breaker_rpc.rpc(false)
++
++	state_machine.transition_to(&"Thrown", {
++		"thrower": possible_thrower,
++		"start_position": _start_position,
++		"direction": _direction,
++		"strength": _strength
++	})
++
++# The game's try_throw_rpc, for a mixed room (D120).
++func _mp8_game_try_throw_rpc(
+ 	_start_position: Vector3, 
+ 	_direction: Vector3, 
+ 	_strength: float, 
+@@ -265,6 +384,42 @@ func attach_entered_rpc():
+ 	set_collision_layer_value(1, false)
+ 	set_collision_mask_value(1, false)
+ 
++# [MP8] A retired device's light: slow green blink on the corpse's back. Not spine_broken_exited_rpc,
++# which sets `visible = true` and would bring the hidden device back. The blink seen is the
++# corpse's device visual, whose speed every client copies from this device each frame.
++func mp8_retire_quiet_rpc(victim_path: NodePath) -> void :
++
++	activation_timer.stop()
++	light_animation_player.stop()
++	# [MP8] Read by the player, not this device: the player's `_process` copies it into its
++	# `blink_animation_player.speed_scale` every frame. The device's `_process` overwrites it only
++	# while `activation_timer` runs, and it was stopped above.
++	light_animation_player.speed_scale = MP8_RETIRE_BLINK
++	# [MP8] Not seen (the device is hidden underground); the visible green is the victim's light below.
++	status_light.light_color = Color.GREEN
++
++	var v = get_node_or_null(victim_path)
++	if v is SpineBreakerPlayer and v.blink_animation_player != null:
++
++		# [MP8] Replay the blink explicitly. A stopped AnimationPlayer may hold the light at zero
++		# energy, where no `light_color` shows, and `break_spine_state.enter()` stopped it only on the
++		# server; playing it here starts every peer from the same state.
++		var ap: AnimationPlayer = v.blink_animation_player
++		var anim: String = ap.current_animation
++		if anim == "" and ap.get_animation_list().size() > 0:
++			anim = ap.get_animation_list()[0]
++		if anim != "":
++			ap.play(anim)
++		ap.speed_scale = MP8_RETIRE_BLINK
++
++	# [MP8] The corpse's light turns green and is never restored (a retired device skips the
++	# reset): red = fuse burning, slow green = retired, for the rest of the round.
++	if v is SpineBreakerPlayer and v.spine_breaker_light != null:
++		v.spine_breaker_light.light_color = MP8_RETIRE_LIGHT
++		if multiplayer.is_server():
++			print("[MP8] Spine Breaker: device %d retired, the light on %s's back turns green" % [mp8_index, String(v.name)])
++
++
+ @rpc("any_peer", "call_local", "reliable")
+ func spine_broken_exited_rpc():
+ 
+@@ -274,6 +429,150 @@ func spine_broken_exited_rpc():
+ 	visible = true
+ 
+ 
++# [MP8] Tells the player which device is on their back. The player's `spine_breaker_device` is the
++# first device, fixed in setup_rpc(), so throwing would throw the wrong one. call_local on every
++# peer: the player's _process syncs the blink from this device on clients too, where attached_to is null.
++func mp8_bind_rpc(player_path: NodePath) -> void :
++
++	var p = get_node_or_null(player_path)
++	if p == null:
++		# A failed bind makes the carrier throw the other device; it must be visible.
++		push_warning("[MP8] Spine Breaker: device %d cannot bind to the player - node %s not found" % [
++			mp8_index, str(player_path)
++		])
++		if multiplayer.is_server():
++			print("[MP8] Spine Breaker: ⚠️ device %d failed to bind, path %s" % [mp8_index, str(player_path)])
++		return
++
++	p.mp8_current_device = self
++
++	# [MP8] The device is hidden now, so its colour and hourglass show only on the visual on their back
++	# (spine_breaker_player.mp8_set_visual_tint). Set on every attach, so a white device replaces a dark one.
++	var painted: int = p.mp8_set_visual_tint(mp8_tint, mp8_tex_key, mp8_make_mark())
++
++	if multiplayer.is_server():
++		# The surface count shows a bind that tinted nothing.
++		print("[MP8] Spine Breaker: device %d bound to %s (back visual tinted on %d surfaces)" % [
++			mp8_index, String(p.name), painted
++		])
++
++
++# [MP8] A new hourglass at the mark's frame, for a BoneAttachment3D on MP8_MARK_BONE; null when this
++# device has none. Two triangles tip to tip, the long axis along the spine. Built in code: the patch
++# system adds no files.
++func mp8_make_mark() -> Node3D :
++
++	if not mp8_mark or not _mp8_measure_mark():
++		return null
++
++	var l: float = MP8_MARK_LENGTH
++	var w: float = l * 0.55
++	var waist: float = l * 0.06
++	var st := SurfaceTool.new()
++	st.begin(Mesh.PRIMITIVE_TRIANGLES)
++	st.set_normal(Vector3.UP)
++	for t in [[Vector3(-w / 2, 0, -l / 2), Vector3(w / 2, 0, -l / 2), Vector3(0, 0, waist)],
++			[Vector3(0, 0, -waist), Vector3(w / 2, 0, l / 2), Vector3(-w / 2, 0, l / 2)]]:
++		for v in t:
++			st.add_vertex(v)
++
++	var m := StandardMaterial3D.new()
++	m.albedo_color = MP8_MARK_ALBEDO
++	m.cull_mode = BaseMaterial3D.CULL_DISABLED
++	m.emission_enabled = true
++	m.emission = MP8_MARK_GLOW
++	m.emission_energy_multiplier = MP8_MARK_ENERGY
++
++	var mi := MeshInstance3D.new()
++	mi.mesh = st.commit()
++	mi.material_override = m
++	# Just above the body's top surface, so it does not flicker against it.
++	mi.position = Vector3.UP * 0.03
++
++	var root := Node3D.new()
++	root.name = "MP8Hourglass"
++	root.transform = _mp8_mark_frame
++	root.add_child(mi)
++	return root
++
++
++# [MP8] The mark's frame in the body bone's space, on the body's top behind its middle (the head
++# stands over the front). From the vertices that bone carries most, mapped into its space by the
++# skin's bind poses; up and forward from the rest pose relative to `visuals`, so no walk pose tilts it.
++func _mp8_measure_mark() -> bool :
++
++	if _mp8_mark_measured != 0:
++		return _mp8_mark_measured > 0
++	_mp8_mark_measured = -1
++
++	var bone: int = skeleton.find_bone(MP8_MARK_BONE) if skeleton != null else -1
++	var mi: MeshInstance3D = null
++	if bone >= 0:
++		for ch in skeleton.get_children():
++			if ch is MeshInstance3D and ch.visible and ch.mesh != null:
++				mi = ch
++				break
++	if mi == null or not is_inside_tree():
++		push_warning("[MP8] Spine Breaker: device %d has no %s bone or body mesh, no hourglass" % [mp8_index, MP8_MARK_BONE])
++		return false
++
++	var arr: Array = mi.mesh.surface_get_arrays(0)
++	var verts: PackedVector3Array = arr[Mesh.ARRAY_VERTEX]
++	var bones = arr[Mesh.ARRAY_BONES]
++	var weights = arr[Mesh.ARRAY_WEIGHTS]
++	var per: int = bones.size() / verts.size()
++	var skin: Skin = mi.skin
++	var pts := PackedVector3Array()
++
++	for v in verts.size():
++		var best: int = 0
++		var bw: float = -1.0
++		for k in per:
++			if weights[v * per + k] > bw:
++				bw = weights[v * per + k]
++				best = int(bones[v * per + k])
++		var sb: int = best
++		if skin != null:
++			sb = skin.get_bind_bone(best)
++			if sb < 0:
++				sb = skeleton.find_bone(skin.get_bind_name(best))
++		if sb != bone:
++			continue
++		pts.append(skin.get_bind_pose(best) * verts[v] if skin != null else skeleton.get_bone_global_rest(bone).affine_inverse() * verts[v])
++
++	if pts.is_empty():
++		push_warning("[MP8] Spine Breaker: device %d's body mesh has no vertices on %s, no hourglass" % [mp8_index, MP8_MARK_BONE])
++		return false
++
++	var rest: Transform3D = visuals.global_transform.affine_inverse() * skeleton.global_transform * skeleton.get_bone_global_rest(bone)
++	var to_bone: Basis = rest.basis.inverse()
++	var up: Vector3 = (to_bone * Vector3.UP).normalized()
++	var fwd: Vector3 = (to_bone * Vector3.FORWARD).normalized()
++	fwd = (fwd - up * fwd.dot(up)).normalized()
++
++	var lo := Vector3.INF
++	var hi := -Vector3.INF
++	for p in pts:
++		lo = lo.min(p)
++		hi = hi.max(p)
++	var c: Vector3 = (lo + hi) * 0.5 - fwd * 0.18
++	var top: float = -INF
++	for p in pts:
++		var off: Vector3 = p - c
++		if (off - up * off.dot(up)).length() < 0.22:
++			top = maxf(top, p.dot(up))
++	if top == -INF:
++		push_warning("[MP8] Spine Breaker: device %d found no body top for the hourglass" % mp8_index)
++		return false
++
++	var origin: Vector3 = c + up * (top - c.dot(up))
++	_mp8_mark_frame = Transform3D(Basis(up.cross(-fwd).normalized(), up, -fwd), origin)
++	_mp8_mark_measured = 1
++	print("[MP8] Spine Breaker: device %d hourglass on %s at %s, up %s, forward %s (%d vertices)" % [
++		mp8_index, MP8_MARK_BONE, origin, up, fwd, pts.size()
++	])
++	return true
++
+ 
+ func _on_navigation_timer_timeout():
+ 

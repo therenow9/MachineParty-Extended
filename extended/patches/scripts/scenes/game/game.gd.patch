@@ -1,0 +1,418 @@
+diff --git a/scripts/scenes/game/game.gd b/scripts/scenes/game/game.gd
+--- a/scripts/scenes/game/game.gd
++++ b/scripts/scenes/game/game.gd
+@@ -204,6 +204,7 @@ func _process(delta: float) -> void :
+ 
+ func _exit_tree() -> void :
+ 
++	NetworkManager.mp8_unlatch_room()  # [MP8]
+ 	GameManager.game_finished.emit()
+ 	PauseMenu.set_can_activate(false)
+ 	NetworkManager.cancel(multiplayer.get_unique_id())
+@@ -292,6 +293,26 @@ func generate_session_playlist():
+ 
+ 	session_minigame_list = minigames_shuffled
+ 
++	# [MP8] Test switch: mp8game=<n>, a Globals.MinigameIdentifier value, fills the whole playlist with
++	# one minigame, so whatever slot the picker draws, the result is that minigame and the picker itself
++	# is untouched.
++	var mp8_forced: int = -1
++	for a in NetworkManager.mp8_dev_args():
++		var s: String = String(a)
++		if s.begins_with("mp8game="):
++			mp8_forced = int(s.substr(8))
++
++	if NetworkManager.mp8_development_tools_allowed() and mp8_forced >= 0 and Globals.MinigameIdentifier.values().has(mp8_forced):
++
++		for i in session_minigame_list.size():
++			session_minigame_list[i] = mp8_forced
++
++		session_minigame_rounds[mp8_forced] = max(session_minigame_rounds.get(mp8_forced, 1), 1)
++
++		print("[MP8] forced minigame = %s (all %d playlist slots)" % [
++			Globals.MinigameIdentifier.keys()[mp8_forced], session_minigame_list.size()
++		])
++
+ 
+ func check_player_game_state():
+ 
+@@ -437,6 +458,10 @@ func player_ready_rpc(_network_id: int, _reconnect: bool):
+ 
+ func load_minigame(minigame_identifier: Globals.MinigameIdentifier, _is_round: bool, _total_rounds: int = -1, ):
+ 
++	_mp8_load_serial += 1
++	var load_serial: int = _mp8_load_serial
++	var mp8_ext: bool = NetworkManager.mp8_room_extended()  # [MP8] before the cleanup's await
++	_mp8_round_close("load")
+ 	Globals.current_minigame_identifier = minigame_identifier
+ 
+ 	if multiplayer.is_server():
+@@ -455,10 +480,26 @@ func load_minigame(minigame_identifier: Globals.MinigameIdentifier, _is_round: b
+ 
+ 		minigame.cleanup_rpc.rpc()
+ 		await get_tree().create_timer(1.0).timeout
++		# A later load/cleanup has already taken ownership of this handoff. A mixed room goes on, as the game does (D116).
++		if mp8_ext and load_serial != _mp8_load_serial:
++			return
++
++	# [MP8] Crash breadcrumbs (mp8trace): a hard crash loses unflushed stdout, so each line is written
++	# to user://mp8_trace.txt and the file closed.
++	_mp8_trace("load_minigame start id=%d path=%s" % [
++		minigame_identifier, str(Globals.MinigamePaths.get(minigame_identifier, "<no such key>"))
++	])
+ 
+ 	var minigame_scene: PackedScene = load(Globals.MinigamePaths[minigame_identifier])
++	_mp8_trace("scene loaded null=%s" % str(minigame_scene == null))
++
+ 	var minigame_instance = minigame_scene.instantiate()
++	_mp8_trace("instantiated")
++
+ 	minigame = minigame_instance
++	if multiplayer.is_server():
++		# Bind before add_child: ready/finished signals can run synchronously there.
++		_mp8_round_open(int(minigame_identifier))
+ 
+ 	minigame.host_loaded.connect(_on_host_minigame_loaded)
+ 	minigame.minigame_loaded.connect(_on_minigame_loaded)
+@@ -479,10 +520,157 @@ func load_minigame(minigame_identifier: Globals.MinigameIdentifier, _is_round: b
+ 
+ 	GameManager.minigame_loaded.emit(minigame_identifier)
+ 	GameManager.current_minigame_identifier = minigame_identifier
++
++	# [MP8] Mixed rooms: the room is fixed for this minigame before its setup reads it (D118).
++	NetworkManager.mp8_latch_room()
++	_mp8_trace("before add_child")
+ 	minigame_parent.add_child(minigame_instance, true)
++	_mp8_trace("add_child done - minigame in tree")
++
++	# [MP8] Promo shots; not awaited, it waits for its own times.
++	_mp8_promo_shot(minigame_identifier)
++
++
++# [MP8] Promo shots (mp8promo), for every minigame, timed from the moment it enters the tree:
++# game.gd cannot see each minigame's own state machine. mp8promoat=10,16 sets the seconds
++# (default 10,16,22); mp8promoui keeps debug UI. Saved as user://mp8_promo_<id>_t<s>_<peer>.png.
++func _mp8_promo_shot(minigame_identifier: int) -> void :
++
++	if not NetworkManager.mp8_dev_args().has("mp8promo"):
++		return
++
++	var times: Array = []
++	var spec: String = _mp8_arg("mp8promoat=")
++	if spec == "":
++		times = [10.0, 16.0, 22.0]
++	else:
++		for part in spec.split(",", false):
++			var v: float = float(part)
++			if v > 0.0:
++				times.append(v)
++	if times.is_empty():
++		return
++	times.sort()
++
++	var peer: int = multiplayer.get_unique_id() if multiplayer.has_multiplayer_peer() else 0
++	var waited: float = 0.0
++
++	for t in times:
++		# Times are seconds since entering the tree, not gaps between shots.
++		var gap: float = float(t) - waited
++		if gap > 0.0:
++			await get_tree().create_timer(gap, false).timeout
++			waited = float(t)
++
++		# Stop once the minigame is replaced, or the next one's frame is saved under this id.
++		if not is_inside_tree():
++			return
++		if Globals.current_minigame_identifier != minigame_identifier:
++			return
++
++		# Debug UI is hidden for the shot and restored after. Only help_label, not the name tags that
++		# share Globals.GROUP_UI with it: the tags are stock UI and part of what the shot shows.
++		var hidden: Array = []
++		if not NetworkManager.mp8_dev_args().has("mp8promoui"):
++			if debug_player_handler != null and debug_player_handler.help_label != null:
++				if debug_player_handler.help_label.visible:
++					hidden.append(debug_player_handler.help_label)
++					debug_player_handler.help_label.visible = false
++			_mp8_hide_debug_overlays(get_tree().root, hidden)
++
++		await RenderingServer.frame_post_draw
++
++		var img: Image = get_viewport().get_texture().get_image()
++		if img != null:
++			var path: String = "user://mp8_promo_%d_t%d_%d.png" % [minigame_identifier, int(t), peer]
++			img.save_png(path)
++			print("[MP8] mp8promo: saved %s" % path)
++
++		for node in hidden:
++			if is_instance_valid(node):
++				node.visible = true
++
++
++# [MP8] Hides this mod's debug overlays, collecting them in out to restore. All three tests are needed:
++# a CanvasLayer or Control (MP8-named Node3Ds are gameplay), a name starting MP8 (stock UI is never
++# touched), and Panel/Debug/Info in the name (player-facing MP8 UI such as score boards stays).
++func _mp8_hide_debug_overlays(node: Node, out: Array) -> void :
++
++	var n: String = node.name
++	if n.begins_with("MP8") and (node is CanvasLayer or node is Control):
++		if n.contains("Panel") or n.contains("Debug") or n.contains("Info"):
++			if node.visible:
++				out.append(node)
++				node.visible = false
++			return
++
++	for child in node.get_children():
++		_mp8_hide_debug_overlays(child, out)
++
++
++# [MP8] The value of a command-line argument of the form <prefix><value>, or "".
++func _mp8_arg(prefix: String) -> String:
++	for a in NetworkManager.mp8_dev_args():
++		var s: String = str(a)
++		if s.begins_with(prefix):
++			return s.substr(prefix.length())
++	return ""
++
++
++# [MP8] Crash breadcrumbs: open, write, close for every line so it survives a hard crash. Only with mp8trace.
++var _mp8_trace_on: int = -1
++
++func _mp8_trace(msg: String) -> void :
++
++	if _mp8_trace_on == -1:
++		_mp8_trace_on = 1 if NetworkManager.mp8_dev_args().has("mp8trace") else 0
++
++	if _mp8_trace_on == 0:
++		return
++
++	var path := "user://mp8_trace.txt"
++	var f := FileAccess.open(path, FileAccess.READ_WRITE) if FileAccess.file_exists(path) else FileAccess.open(path, FileAccess.WRITE)
++	if f == null:
++		return
++	f.seek_end()
++	f.store_line("[%d] %s" % [multiplayer.get_unique_id() if multiplayer else 0, msg])
++	f.close()
+ 
+ func update_scores(more_rounds: bool):
+ 
++	_mp8_round_close("scores")
++	print("[MP8-HANDOFF] scores round=%d more=%s" % [session_current_minigame_round, more_rounds])
++	# [MP8] A mixed room runs the game's own, its raw read of a missing round entry included (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_update_scores(more_rounds)
++		return
++
++	if is_current_game_cutscene():
++		for key in game_score_by_network_id.keys():
++			game_score_by_network_id[key] = 0
++		for key in round_score_by_network_id.keys():
++			round_score_by_network_id[key] = 0
++
++	# [MP8] get(): a player with no round entry still gets the scores sent.
++	for k in game_score_by_network_id.keys():
++		game_score_by_network_id[k] += round_score_by_network_id.get(k, 0)
++
++	if not more_rounds:
++		for k in game_score_by_network_id.keys():
++			total_score_by_network_id[k] += game_score_by_network_id[k]
++
++	receive_scores_rpc.rpc(
++		total_score_by_network_id, 
++		game_score_by_network_id
++	)
++
++	if more_rounds:
++		for k in game_score_by_network_id.keys():
++			round_score_by_network_id[k] = 0
++
++# The game's update_scores, for a mixed room (D120).
++func _mp8_game_update_scores(more_rounds: bool):
++
+ 	if is_current_game_cutscene():
+ 		for key in game_score_by_network_id.keys():
+ 			game_score_by_network_id[key] = 0
+@@ -514,6 +702,10 @@ func clear_game_scores():
+ @rpc("authority", "call_local", "reliable")
+ func clear_minigame_rpc(was_cutscene_minigame: bool):
+ 
++	_mp8_load_serial += 1 # Cancel any older load waiting for its cleanup timer.
++	_mp8_round_close("cleanup")
++	NetworkManager.mp8_unlatch_room()
++	print("[MP8-HANDOFF] cleanup cutscene=%s" % was_cutscene_minigame)
+ 	MusicManager.filter_controller.begin_shift(MusicManager.filter_controller.effect_low_pass.cutoff_hz, 300, 0)
+ 
+ 	if multiplayer.is_server():
+@@ -643,9 +835,48 @@ func _on_peer_disconnected(_network_id: int):
+ 		)
+ 		intermission_manager.screen_briefing.update_player_data_rpc.rpc(total_score_by_network_id)
+ 
++	# [MP8] The minigame's load gate (players_loaded vs player_presences) is evaluated only when a
++	# player reports in, so a disconnect mid-load would leave it shut: a silent round, then black screens.
++	# After remove_player_rpc (call_local, so player_presences is already smaller) and before
++	# minigame.player_disconnected(), whose handlers call check_game_end() a second later.
++	_mp8_recheck_load_gate(_network_id)
++
+ 	if minigame:
+ 		minigame.player_disconnected(_network_id)
+ 
++# [MP8] Re-evaluates the load gate after a disconnect, server only. The leaver is erased from
++# players_loaded first (they may have reported already), then the gate rechecked.
++# is_all_player_loaded marks a gate already passed (every minigame's all_players_loaded() sets it on
++# the server); without that check a later disconnect would initialize the round again.
++func _mp8_recheck_load_gate(_network_id: int) -> void :
++
++	if not multiplayer.is_server():
++		return
++	# A mixed room leaves the gate as the game does (D116).
++	if not NetworkManager.mp8_room_extended():
++		return
++	if not is_instance_valid(minigame):
++		return
++	if minigame.is_all_player_loaded:
++		return
++
++	var before: int = minigame.players_loaded.size()
++	minigame.players_loaded.erase(_network_id)
++
++	var have: int = minigame.players_loaded.size()
++	var want: int = PlayerManager.player_presences.size()
++	var pass_now: bool = want > 0 and have >= want
++
++	print("[MP8] load gate recheck: %d left -> reported %d (before erase %d) / present %d - %s" % [
++		_network_id, have, before, want, "gate passes" if pass_now else "still waiting for reports"
++	])
++
++	if not pass_now:
++		return
++
++	minigame.all_players_loaded()
++
++
+ func _on_minigame_pick_finished(minigame_index: int):
+ 	if debug_no_shuffle:
+ 		minigame_index = 0
+@@ -707,12 +938,68 @@ func _on_host_overlay_minigame_selected(minigame_identifier: Globals.MinigameIde
+ 
+ 	load_minigame(minigame_identifier, false, 1)
+ 
++# [MP8] Per-minigame score scale (default 1.0), applied where scores are summed so balance changes
++# never touch a minigame's own rules. Duck Hunt: with 8 players and two hunters it plays 4 sub-rounds
++# and reaches 0-42, against 0-16 for a placement minigame.
++const MP8_MINIGAME_SCORE_SCALE: Dictionary = {
++	Globals.MinigameIdentifier.DuckHunt: 0.5,
++	# Placement scoring at 8 players gives 0-24 over 3 rounds (see exploding_collar_race.gd);
++	# x0.75 -> 0-18, a little above a 2-round placement minigame's 0-16.
++	Globals.MinigameIdentifier.ExplodingCollarRace: 0.75,
++}
++
++# Overrides by player count, where sub-round counts change a minigame's weight. Duck Hunt at 6
++# players has 3 sub-rounds and ranges 0-10, below a placement minigame's 0-12 there.
++const MP8_MINIGAME_SCORE_SCALE_BY_COUNT: Dictionary = {
++	Globals.MinigameIdentifier.DuckHunt: {6: 0.8},
++}
++
++
++func _mp8_score_scale() -> float:
++
++	var identifier = Globals.current_minigame_identifier
++	var by_count: Dictionary = MP8_MINIGAME_SCORE_SCALE_BY_COUNT.get(identifier, {})
++	var count: int = PlayerManager.player_presences.size()
++	if by_count.has(count):
++		return by_count[count]
++
++	return MP8_MINIGAME_SCORE_SCALE.get(identifier, 1.0)
++
++
+ func _on_minigame_player_scored(_network_id: int, _score: int):
+ 
+-	round_score_by_network_id[_network_id] += (_score * score_multiplier)
++	# [MP8] A mixed room adds the game's own score, unscaled (D116, D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_on_minigame_player_scored(_network_id, _score)
++		return
++
++	# [MP8] Scale before truncating, so rounding happens once.
++	round_score_by_network_id[_network_id] += int(
++		_score * score_multiplier * _mp8_score_scale()
++	)
+ 
+ func _on_minigame_player_score_finalized(player_scores):
+ 
++	# [MP8] A mixed room adds the game's own scores, unscaled (D116, D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_on_minigame_player_score_finalized(player_scores)
++		return
++
++	var scale: float = _mp8_score_scale()  # [MP8]
++	for network_id in player_scores.keys():
++		if round_score_by_network_id.has(network_id):
++			round_score_by_network_id[network_id] += int(
++				player_scores[network_id] * score_multiplier * scale
++			)
++
++
++# The game's two score handlers, for a mixed room (D120).
++func _mp8_game_on_minigame_player_scored(_network_id: int, _score: int):
++
++	round_score_by_network_id[_network_id] += (_score * score_multiplier)
++
++func _mp8_game_on_minigame_player_score_finalized(player_scores):
++
+ 	for network_id in player_scores.keys():
+ 		if round_score_by_network_id.has(network_id):
+ 			round_score_by_network_id[network_id] += player_scores[network_id] * score_multiplier
+@@ -774,3 +1061,53 @@ func _viewport_size_changed():
+ 	for cr in effect_rects:
+ 		cr.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+ 		cr.set_deferred("size", vp_size)
++
++# =============== [MP8] Round guard ===============
++# The server owns a generation for one concrete scene/playlist slot/round, so a late or repeated
++# finish can't advance the session twice (minigame_playing_state.gd claims it; LocalGame has its own).
++
++var _mp8_load_serial: int = 0
++var _mp8_round_epoch: int = 0
++var _mp8_round_active: bool = false
++var _mp8_round_instance: int = 0
++var _mp8_round_identifier: int = -1
++var _mp8_round_slot: int = -1
++var _mp8_round_number: int = 0
++
++
++func _mp8_round_open(identifier: int) -> void :
++	_mp8_round_epoch += 1
++	_mp8_round_identifier = identifier
++	_mp8_round_slot = session_minigame_index
++	_mp8_round_number = session_current_minigame_round
++	_mp8_round_instance = minigame.get_instance_id()
++	_mp8_round_active = true
++	print("[MP8-HANDOFF] open epoch=%d id=%d slot=%d round=%d" % [
++		_mp8_round_epoch, identifier, _mp8_round_slot, _mp8_round_number])
++
++
++func _mp8_round_close(reason: String) -> void :
++	if multiplayer.is_server():
++		if _mp8_round_active:
++			print("[MP8-HANDOFF] close epoch=%d reason=%s" % [_mp8_round_epoch, reason])
++			_mp8_round_epoch += 1
++		_mp8_round_active = false
++
++
++func _mp8_round_matches() -> bool :
++	return _mp8_round_active \
++		and is_instance_valid(minigame) and not minigame.is_queued_for_deletion() \
++		and minigame.get_instance_id() == _mp8_round_instance \
++		and session_current_minigame_round == _mp8_round_number \
++		and session_minigame_index == _mp8_round_slot \
++		and _mp8_round_slot >= 0 and _mp8_round_slot < session_minigame_list.size() \
++		and int(session_minigame_list[_mp8_round_slot]) == _mp8_round_identifier
++
++
++# Called by the session's Finished handler before it increments rounds or scores.
++func mp8_claim_round_finish(instance_id: int, epoch: int) -> bool :
++	if not multiplayer.is_server() or epoch != _mp8_round_epoch \
++			or instance_id != _mp8_round_instance or not _mp8_round_matches():
++		return false
++	_mp8_round_close("finished")
++	return true

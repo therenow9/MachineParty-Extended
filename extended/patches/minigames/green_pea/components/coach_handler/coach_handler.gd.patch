@@ -1,0 +1,197 @@
+diff --git a/minigames/green_pea/components/coach_handler/coach_handler.gd b/minigames/green_pea/components/coach_handler/coach_handler.gd
+--- a/minigames/green_pea/components/coach_handler/coach_handler.gd
++++ b/minigames/green_pea/components/coach_handler/coach_handler.gd
+@@ -26,6 +26,18 @@ var executing: bool = false
+ var reading: bool = true
+ var active: bool = false
+ 
++# [MP8] A round that starts with this many players catches up to two a glance, to its end. Below it,
++# the game's one catch with an instant shot.
++const MP8_DOUBLE_AT: int = 6
++
++var _mp8_caught: Array[int] = []      # network ids caught in this glance, in order
++var _mp8_limit: int = 1
++
++
++static func mp8_catch_limit(seated: int) -> int :
++
++	return 2 if seated >= MP8_DOUBLE_AT else 1
++
+ func _ready() -> void :
+ 
+ 	if not multiplayer.is_server():
+@@ -44,6 +56,19 @@ func activate():
+ 
+ func set_players(_players):
+ 
++	# [MP8] A mixed room runs the game's set_players (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_set_players(_players)
++		return
++
++	players = _players
++	coach.players = _players.values()
++	# [MP8] Taken once, here at the round's start (`spawn_players` is the only caller), so a leaver never lowers it.
++	_mp8_limit = mp8_catch_limit(_players.size())
++
++# The game's set_players, for a mixed room (D120).
++func _mp8_game_set_players(_players):
++
+ 	players = _players
+ 	coach.players = _players.values()
+ 
+@@ -65,10 +90,28 @@ func stop_reading_fakeout_rpc():
+ func shoot_player_rpc(seat_index: int):
+ 	coach.shoot_player(seat_index)
+ 
++func mp8_shoot_players_rpc(seats: PackedInt32Array):
++	coach.mp8_shoot_players(seats)
++
+ 
+ 
+ func _on_execution_finished():
+ 
++	# [MP8] A mixed room runs the game's _on_execution_finished (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_on_execution_finished()
++		return
++
++	_mp8_caught.clear()
++
++	executing = false
++	reading = true
++
++	timer.start(randf_range(min_read_time, max_read_time))
++
++# The game's _on_execution_finished, for a mixed room (D120).
++func _mp8_game_on_execution_finished():
++
+ 	executing = false
+ 	reading = true
+ 
+@@ -76,6 +119,42 @@ func _on_execution_finished():
+ 
+ func _on_player_acted(_network_id: int, seat_index: int):
+ 
++	# [MP8] A mixed room runs the game's _on_player_acted (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_on_player_acted(_network_id, seat_index)
++		return
++
++	if executing:
++		return
++
++	if not reading:
++
++		# [MP8] A glance that may catch two freezes each catch at its press and keeps watching: the shot
++		# waits for a second catch or the glance's end (`_on_timer_timeout`). The game's pause makes later
++		# presses do nothing; a bite already in flight still lands.
++		if _mp8_caught.has(_network_id):
++			return
++		_mp8_caught.append(_network_id)
++		if _mp8_limit > 1:
++			players[_network_id].pause_eating_rpc.rpc()
++		if _mp8_caught.size() < _mp8_limit:
++			_mp8_log("caught, watching on")
++			return
++
++		executing = true
++		timer.stop()
++		if _mp8_caught.size() == 1:
++			_mp8_log("caught, shot")
++			shoot_player_rpc.rpc(seat_index)
++		elif not _mp8_shoot_caught():
++			executing = false
++			start_reading_rpc.rpc()
++			reading = true
++			timer.start(randf_range(min_read_time, max_read_time))
++
++# The game's _on_player_acted, for a mixed room (D120).
++func _mp8_game_on_player_acted(_network_id: int, seat_index: int):
++
+ 	if executing:
+ 		return
+ 
+@@ -86,6 +165,11 @@ func _on_player_acted(_network_id: int, seat_index: int):
+ 
+ func _on_timer_timeout():
+ 
++	# [MP8] A mixed room runs the game's _on_timer_timeout (D120).
++	if not NetworkManager.mp8_room_extended():
++		await _mp8_game_on_timer_timeout()
++		return
++
+ 	if reading:
+ 
+ 		if randf() < fakeout_chance:
+@@ -99,6 +183,70 @@ func _on_timer_timeout():
+ 
+ 	else:
+ 
++		# [MP8] The glance ends with a catch pending: shoot it now.
++		if not _mp8_caught.is_empty():
++			executing = true
++			if _mp8_shoot_caught():
++				return
++			executing = false
++
+ 		start_reading_rpc.rpc()
+ 		reading = true
+ 		timer.start(randf_range(min_read_time, max_read_time))
++
++# The game's _on_timer_timeout, for a mixed room (D120).
++func _mp8_game_on_timer_timeout():
++
++	if reading:
++
++		if randf() < fakeout_chance:
++			stop_reading_fakeout_rpc.rpc()
++			timer.start(randf_range(min_read_time, max_read_time))
++		else:
++			stop_reading_rpc.rpc()
++			await get_tree().create_timer(react_start_delay).timeout
++			reading = false
++			timer.start(randf_range(min_look_time, max_look_time))
++
++	else:
++
++		start_reading_rpc.rpc()
++		reading = true
++		timer.start(randf_range(min_read_time, max_read_time))
++
++
++# [MP8] Shoots this glance's catches in the order caught: one by the game's own RPC, two by ours. A caught
++# player who has left is skipped; false when nobody is left to shoot.
++func _mp8_shoot_caught() -> bool :
++
++	var seats := PackedInt32Array()
++	for nid in _mp8_caught:
++		var p = players.get(nid)
++		if p != null and is_instance_valid(p):
++			seats.append(p.player_seat_position)
++
++	_mp8_log("shot, seats %s" % str(seats))
++
++	if seats.is_empty():
++		_mp8_caught.clear()
++		return false
++
++	if seats.size() == 1:
++		shoot_player_rpc.rpc(seats[0])
++	else:
++		NetworkManager.mp8_rpc(self, &"mp8_shoot_players_rpc", [seats])
++	return true
++
++
++# Under Movie Maker the clock is the frame count, not the milliseconds.
++func _mp8_log(what: String) -> void :
++
++	var who := PackedStringArray()
++	for nid in _mp8_caught:
++		var p = players.get(nid)
++		if p != null and is_instance_valid(p) and p.player_presence != null:
++			who.append("%s@%d" % [p.player_presence.network_name, p.player_seat_position])
++		else:
++			who.append("id%d" % nid)
++	print("[MP8] Table Manners: %s, limit %d, caught [%s], t=%d ms, frame %d" % [
++		what, _mp8_limit, ", ".join(who), Time.get_ticks_msec(), Engine.get_process_frames()])

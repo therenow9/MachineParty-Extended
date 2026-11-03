@@ -1,0 +1,28 @@
+diff --git a/minigames/intermission_new/components/intermission_manager.gd b/minigames/intermission_new/components/intermission_manager.gd
+--- a/minigames/intermission_new/components/intermission_manager.gd
++++ b/minigames/intermission_new/components/intermission_manager.gd
+@@ -44,6 +44,24 @@ func _ready() -> void :
+ 		screen_score.score_screen_finished.connect(_on_score_screen_finished)
+ 		screen_score.score_screen_hidden.connect(_on_score_screen_hidden)
+ 
++	# [MP8] The terminal screen's SubViewport (UPDATE_ALWAYS) is shown only by a mesh inside this scene, and the
++	# scene is hidden while a minigame plays; it would still draw the shared world, with the minigame's lights
++	# and shadows, every frame. It draws only while the scene is visible.
++	_mp8_screen_viewport = anim_viewport_screen.get_parent().get_node_or_null("SubViewport")
++	if _mp8_screen_viewport != null:
++		_mp8_screen_update_mode = _mp8_screen_viewport.render_target_update_mode
++		intermission_main_parent.visibility_changed.connect(_mp8_sync_screen_viewport)
++		_mp8_sync_screen_viewport()
++
++var _mp8_screen_viewport: SubViewport
++var _mp8_screen_update_mode: SubViewport.UpdateMode
++
++func _mp8_sync_screen_viewport() -> void :
++	# A mixed room keeps the game's update mode (D116).
++	var drawn: bool = intermission_main_parent.is_visible_in_tree() or not NetworkManager.mp8_room_extended()
++	_mp8_screen_viewport.render_target_update_mode = _mp8_screen_update_mode \
++		if drawn else SubViewport.UPDATE_DISABLED
++
+ func _exit_tree() -> void :
+ 	screen_briefing.env_intermission = default_env
+ 

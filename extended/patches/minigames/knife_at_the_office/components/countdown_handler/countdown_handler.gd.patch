@@ -1,0 +1,100 @@
+diff --git a/minigames/knife_at_the_office/components/countdown_handler/countdown_handler.gd b/minigames/knife_at_the_office/components/countdown_handler/countdown_handler.gd
+--- a/minigames/knife_at_the_office/components/countdown_handler/countdown_handler.gd
++++ b/minigames/knife_at_the_office/components/countdown_handler/countdown_handler.gd
+@@ -19,8 +19,16 @@ var active: bool = false
+ 
+ signal expired()
+ 
++# [MP8] Alive indicators 4 -> 8: the scene has 4 icons, indexed by the uninfected count (up to 7).
++# _mp8_extend_alive_indicators() duplicates the first into the same HBoxContainer, which lays them out.
++# The fader and the blinker animate that container's and its parent's modulate, so the copies follow.
++const MP8_ICON_TARGET: int = 8
++
++
+ func _ready() -> void :
+ 
++	_mp8_extend_alive_indicators()
++
+ 	countdown_label.visible = false
+ 	countdown_background.visible = false
+ 	time_remaining = countdown_time
+@@ -31,6 +39,38 @@ func _ready() -> void :
+ 	timer.timeout.connect(_on_timer_tick)
+ 
+ 
++# [MP8] Appends copies after the original icons; the originals are left untouched.
++func _mp8_extend_alive_indicators() -> void :
++
++	# A mixed room keeps the game's 4 (D120); the room is latched before this scene's add_child.
++	if not NetworkManager.mp8_room_extended():
++		return
++
++	var have: int = alive_indicator_icons.size()
++	if have == 0:
++		push_warning("[MP8] Inside Job: alive indicator array is empty, cannot extend it")
++		return
++	if have >= MP8_ICON_TARGET:
++		return
++
++	var src: TextureRect = alive_indicator_icons[0]
++	if src == null or src.get_parent() == null:
++		push_warning("[MP8] Inside Job: alive indicator has no parent container, cannot extend")
++		return
++
++	var parent: Node = src.get_parent()
++
++	for i in range(have, MP8_ICON_TARGET):
++		var dup: TextureRect = src.duplicate()
++		dup.name = "MP8AliveIndicator%d" % i
++		parent.add_child(dup)
++		dup.visible = false
++		alive_indicator_icons.append(dup)
++
++	print("[MP8] Inside Job: alive indicators %d -> %d (parent %s)" % [
++		have, alive_indicator_icons.size(), parent.name])
++
++
+ 
+ @rpc("any_peer", "call_local", "reliable")
+ func set_active_rpc(num_of_players: int = 1):
+@@ -68,8 +108,18 @@ func _on_timer_tick():
+ func setup_alive_indicator(num_of_alive_players: int):
+ 	for i in alive_indicator_icons:
+ 		i.visible = false
+-	for i in num_of_alive_players:
+-		alive_indicator_icons[i].visible = true
++	# A mixed room runs the game's loop (D120).
++	if not NetworkManager.mp8_room_extended():
++		for i in num_of_alive_players:
++			alive_indicator_icons[i].visible = true
++	else:
++		# [MP8] If _mp8_extend_alive_indicators() fell short, the raw index would go out of range:
++		# clamp it, and warn.
++		if num_of_alive_players > alive_indicator_icons.size():
++			push_warning("[MP8] Inside Job: %d alive indicators wanted, only %d exist (extension failed?)" % [
++				num_of_alive_players, alive_indicator_icons.size()])
++		for i in mini(num_of_alive_players, alive_indicator_icons.size()):
++			alive_indicator_icons[i].visible = true
+ 
+ 
+ 	anim_alive_indicator_fader.play("show")
+@@ -83,10 +133,17 @@ func update_timers_rpc(_time: int):
+ 
+ @rpc("authority", "call_local", "reliable")
+ func update_alive_indicator_rpc(num_of_alive_players: int):
++	# Read before the await; a mixed room runs the game's loop (D120).
++	var mp8_ext: bool = NetworkManager.mp8_room_extended()
+ 	anim_alive_indicator_fader.play("hide")
+ 	await get_tree().create_timer(0.16, false).timeout
+ 	for i in alive_indicator_icons:
+ 		i.visible = false
+-	for i in num_of_alive_players:
+-		alive_indicator_icons[i].visible = true
++	if not mp8_ext:
++		for i in num_of_alive_players:
++			alive_indicator_icons[i].visible = true
++	else:
++		# [MP8] Clamped as in setup_alive_indicator().
++		for i in mini(num_of_alive_players, alive_indicator_icons.size()):
++			alive_indicator_icons[i].visible = true
+ 	anim_alive_indicator_fader.play("show")

@@ -1,0 +1,784 @@
+diff --git a/minigames/duck_hunt/scripts/duck_hunt.gd b/minigames/duck_hunt/scripts/duck_hunt.gd
+--- a/minigames/duck_hunt/scripts/duck_hunt.gd
++++ b/minigames/duck_hunt/scripts/duck_hunt.gd
+@@ -45,8 +45,117 @@ var players: Array
+ var players_acknowledged: Array[int]
+ var duck_player_count: int = 0
+ var duck_players: Dictionary[int, DuckHuntDuckPlayer]
++
++# [MP8] Two hunters from 6 players, so the hunters are an array; `hunter_player` keeps pointing at
++# the first one.
++var hunter_players: Array[DuckHuntHunterPlayer] = []
+ var hunter_player: DuckHuntHunterPlayer
+ 
++# [MP8] Ducks : hunters by player count: <=4 3:1, 5 4:1, 6 4:2, 7 5:2, 8 6:2. The magazine and
++# fire-rate tables by player count are in hunter_player.gd.
++const MP8_TWO_HUNTERS_FROM: int = 6
++
++# Two hunters stand side by side, this far either side of the game's spot (0, 16.6, -21; the ducks
++# start about 125 m away at z=104). Their views overlap and the ducks keep flanks to run on;
++# spread wide, they would catch every duck in a crossfire.
++const MP8_HUNTER_SIDE_OFFSET: float = 2.0
++
++# Duck spawns are spread evenly within the span of the game's 3 points, never beyond it: further
++# out lands off the map. Midpoints of neighbours would duplicate a point (-5 and +5 give the existing 0).
++var _mp8_duck_span_set: bool = false
++var _mp8_duck_span_min: float = 0.0
++var _mp8_duck_span_max: float = 0.0
++
++
++# [MP8] Screenshot with the `mp8shot` argument; the file name carries the role (hunter/duck).
++# The game saves the PNG itself, so no screen-recording permission is needed.
++func mp8_shot(tag: String, delay: float = 0.0) -> void :
++
++	if not NetworkManager.mp8_dev_args().has("mp8shot"):
++		return
++
++	if delay > 0.0:
++		await get_tree().create_timer(delay, false).timeout
++	if not is_inside_tree():
++		return
++	await RenderingServer.frame_post_draw
++
++	var role: String = "hunter" if is_hunter else "duck"
++	var peer: int = multiplayer.get_unique_id() if multiplayer.has_multiplayer_peer() else 0
++	var img: Image = get_viewport().get_texture().get_image()
++	if img != null:
++		img.save_png("user://mp8_duck_%s_%s_%d.png" % [tag, role, peer])
++		print("[MP8] mp8shot: saved user://mp8_duck_%s_%s_%d.png" % [tag, role, peer])
++
++
++# [MP8] Hunters this round; at least one duck is left to shoot.
++func _mp8_hunter_count(total_players: int) -> int:
++	# [MP8] The `mp8lone` test switch forces one hunter, so 8 players play a lone hunter round.
++	# It otherwise comes only in the last round of a 7-player game, which idle bots never reach.
++	if NetworkManager.mp8_dev_args().has("mp8lone"):
++		return 1
++	var wanted: int = 2 if total_players >= MP8_TWO_HUNTERS_FROM else 1
++	return clampi(wanted, 1, maxi(total_players - 1, 1))
++
++
++# [MP8] One hunter stands at the game's spot; two stand either side of it.
++func _mp8_hunter_position(index: int, total_hunters: int) -> Vector3:
++	var base: Vector3 = hunter_player_spawn_position.global_position
++	if total_hunters <= 1:
++		return base
++	# index 0 -> left, index 1 -> right
++	var side: float = -1.0 if index == 0 else 1.0
++	return base + Vector3(side * MP8_HUNTER_SIDE_OFFSET, 0.0, 0.0)
++
++
++# [MP8] Adds duck spawns until there are enough, spaced evenly across the span of the game's
++# 3 points (x in [-5, +5]), the only range known to be inside the arena. Ducks start closer
++# together (2 apart with 6) but never off the map.
++func _mp8_ensure_duck_spawns(needed: int) -> void :
++
++	var container: Node3D = duck_player_spawn_positions
++	var kids: Array = container.get_children()
++	if kids.is_empty() or needed <= 0:
++		return
++
++	# The game's span is read once: added points must not widen it round after round
++	if not _mp8_duck_span_set:
++		var xs: Array[float] = []
++		for k in kids:
++			if k is Node3D:
++				xs.append((k as Node3D).position.x)
++		xs.sort()
++		_mp8_duck_span_min = xs[0]
++		_mp8_duck_span_max = xs[xs.size() - 1]
++		_mp8_duck_span_set = true
++
++	if kids.size() >= needed:
++		return
++
++	var template: Node3D = kids[0]
++	while container.get_child_count() < needed:
++		var dup: Node3D = template.duplicate()
++		dup.name = "MP8DuckSpawn%d" % container.get_child_count()
++		container.add_child(dup)
++
++	# Respread all of them, the game's 3 included, across that span
++	var all: Array = container.get_children()
++	var n: int = all.size()
++	for i in n:
++		var node: Node3D = all[i]
++		var t: float = 0.5 if n <= 1 else float(i) / float(n - 1)
++		var pos: Vector3 = node.position
++		pos.x = lerpf(_mp8_duck_span_min, _mp8_duck_span_max, t)
++		node.position = pos
++
++	var final_xs: Array = []
++	for k in all:
++		final_xs.append(snappedf((k as Node3D).position.x, 0.01))
++	print("[MP8] Duck spawns %d -> %d, span [%.1f, %.1f], x = %s" % [
++		kids.size(), n, _mp8_duck_span_min, _mp8_duck_span_max, str(final_xs)
++	])
++
++
+ var spectate_duck_players: Array[DuckHuntDuckPlayer]
+ var spectator_index: int = 0
+ var spectate_player: DuckHuntDuckPlayer
+@@ -63,6 +172,28 @@ var player_scores: Dictionary[int, int]
+ var player_count: int
+ var hunter_name: String = ""
+ 
++# [MP8] This round's hunter names (the online reveal line) and the player count (the lone-round test)
++var mp8_hunter_names: Array = []
++var mp8_total_players: int = 0
++
++
++# [MP8] The online reveal: the game's own line for one hunter. Two hunters get an English plural line:
++# the game's translations are compiled OptimizedTranslation resources and take no new keys.
++func mp8_hunters_line() -> String:
++	var names: Array = mp8_hunter_names.map(func(n): return String(n).to_upper())
++	if names.size() >= 2:
++		return "%s AND %s ARE THE HUNTERS." % [names[0], names[1]]
++	return tr("LOC_CONTROL_HUNTER_NAME") % (names[0] if names.size() == 1 else hunter_name.to_upper())
++
++
++# [MP8] A lone hunter round: two hunters expected but one (the last round of 7 players, where
++# possible_hunters runs out 2/2/2/1, or the `mp8lone` switch). The same test as hunter_player.gd's
++# _mp8_is_lone_hunter(), from data clients have (set_hunter_names_rpc), not the server-only
++# hunter_players. The countdown's shouts use it, so every peer shows the same ones.
++func _mp8_is_lone_round() -> bool :
++	return mp8_hunter_names.size() == 1 and mp8_total_players >= MP8_TWO_HUNTERS_FROM
++
++
+ var last_spectate_camera_transform: Transform3D
+ 
+ var local_duck_players: Dictionary[int, DuckHuntDuckPlayer]
+@@ -108,12 +239,14 @@ func process_local(_delta: float):
+ 	if not GameManager.local_game:
+ 		return
+ 
++	_mp8_follow_idle_hunter_views()
++
+ 	if local_duck_players.is_empty():
+ 		return
+ 
+ 	var duck_player_positions: Array[Vector3]
+ 	for duck_player in local_duck_players.values():
+-		if duck_player.health > 0:
++		if is_instance_valid(duck_player) and duck_player.health > 0:
+ 			duck_player_positions.append(duck_player.global_position)
+ 
+ 	if duck_player_positions.is_empty():
+@@ -132,6 +265,16 @@ func process_local(_delta: float):
+ 		_delta * 64.0
+ 	)
+ 
++# A hunter's split-screen tile is its local_camera, which follows its aim camera only in the hunter's own
++# _process. Offline Bots switches a bot's _process off, so without this a bot hunter's tile stays at the world origin.
++# It also scopes a bot by zoom_fov_index alone (update_zoom's overlay would reach the host's screen online),
++# so the tile takes its zoom from that index.
++func _mp8_follow_idle_hunter_views() -> void:
++	for hunter in hunter_players:
++		if is_instance_valid(hunter) and not hunter.is_processing():
++			hunter.local_camera.global_transform = hunter.camera.global_transform
++			hunter.local_camera.fov = hunter.zoom_fovs[clampi(int(hunter.zoom_fov_index), 0, hunter.zoom_fovs.size() - 1)]
++
+ func process_online(_delta: float):
+ 
+ 	if GameManager.local_game:
+@@ -202,6 +345,153 @@ func all_players_loaded():
+ 
+ func spawn_players():
+ 
++	# [MP8] A mixed room runs the game's spawn_players (D120).
++	if not NetworkManager.mp8_room_extended():
++		await _mp8_game_spawn_players()
++		return
++
++	if GameManager.local_game:
++		local_handler.clear_views()
++	await get_tree().create_timer(1, false).timeout
++
++	players_acknowledged.clear()
++
++	if PlayerManager.player_presences.size() <= 1:
++		force_game_end()
++		return
++
++	local_duck_players.clear()
++	local_game_players_order.clear()
++	for player_presence in PlayerManager.player_presences.keys():
++		local_game_players_order[player_presence] = null
++
++
++	# [MP8] Two hunters a round from 6 players; the game pops one. check_game_end() ends the game once
++	# possible_hunters is empty, so 8 players popping two play 4 rounds, the game's pace for 4 players.
++	possible_hunters.shuffle()
++
++	# [MP8] The `mp8hunterme` test switch makes P1 and P2 the hunters (windows 1 and 2, left and right),
++	# so a tester knows which instance to watch or listen to: first-person sound plays only on the
++	# hunter's own peer.
++	if NetworkManager.mp8_dev_args().has("mp8hunterme"):
++		for wanted_name in ["P2", "P1"]:   # pushed in reverse so P1 ends up first
++			for nid in possible_hunters:
++				var pres = PlayerManager.player_presences.get(nid)
++				if pres != null and pres.network_name == wanted_name:
++					possible_hunters.erase(nid)
++					possible_hunters.push_front(nid)
++					break
++
++	var total_players: int = PlayerManager.player_presences.size()
++	var hunter_count: int = _mp8_hunter_count(total_players)
++
++	var hunter_network_ids: Array[int] = []
++	while hunter_network_ids.size() < hunter_count and not possible_hunters.is_empty():
++		hunter_network_ids.append(possible_hunters.pop_front())
++
++	var hunter_names: Array[String] = []
++	for hid in hunter_network_ids:
++		hunter_names.append(PlayerManager.player_presences[hid].network_name)
++	NetworkManager.mp8_rpc(self, &"set_hunter_names_rpc", [hunter_names, total_players])
++
++	var player_presence: PlayerPresence
++
++	if GameManager.local_game:
++		set_local_lights()
++	else:
++		NetworkManager.mp8_rpc(self, &"mp8_set_ducks_ambient_light_rpc", [hunter_network_ids])
++
++	# [MP8] The game has 3 duck spawns; add enough first
++	_mp8_ensure_duck_spawns(total_players - hunter_network_ids.size())
++
++	var spawn_positions = duck_player_spawn_positions.get_children()
++	spawn_positions.shuffle()
++
++
++	var counter: int = 0
++	for network_id in PlayerManager.player_presences.keys():
++
++		if hunter_network_ids.has(network_id):
++			continue
++
++		player_presence = PlayerManager.player_presences[network_id]
++
++		var player_character: DuckHuntDuckPlayer = duck_player_scene.instantiate()
++		duck_player_spawn_parent.add_child(player_character, true)
++
++		player_character.set_player_presence.rpc(player_presence.network_id)
++		player_character.teleport_rpc.rpc(
++			spawn_positions[counter].global_position
++		)
++		duck_players[player_presence.network_id] = player_character
++		players.append(player_character)
++		player_character.dead.connect(_on_player_died)
++		player_character.finished.connect(_on_player_finished)
++
++		local_game_players_order[player_presence.network_id] = player_character
++
++		if GameManager.local_game:
++			local_duck_players[player_presence.network_id] = player_character
++			player_character.player_name_label.text = "P%d · %s" % [
++				_mp8_local_seat(player_presence) + 1, player_presence.network_name]
++
++		counter += 1
++
++	duck_player_count = duck_players.size()
++	# [MP8] Placing points use the duck count at the round's start; remove_player_rpc changes
++	# duck_player_count when someone leaves, so keep a snapshot.
++	_mp8_round_duck_count = duck_players.size()
++	NetworkManager.mp8_rpc(self, &"set_hunters_rpc", [hunter_network_ids])
++
++
++	var hunter_initialization_delay = 8.0
++	if current_round > 0:
++		hunter_initialization_delay = 5.0
++
++	if GameManager.local_game:
++		hunter_initialization_delay -= 2.0
++
++	# [MP8] Spawn each hunter (the game spawns one)
++	hunter_players.clear()
++	for hunter_index in hunter_network_ids.size():
++		var hunter_network_id: int = hunter_network_ids[hunter_index]
++		player_presence = PlayerManager.player_presences[hunter_network_id]
++
++		var hunter_player_character = hunter_player_scene.instantiate()
++		hunter_player_spawn_parent.add_child(hunter_player_character, true)
++
++		hunter_player_character.set_player_presence.rpc(player_presence.network_id)
++		# [MP8] Extended's setup adds the player count and this hunter's place among the hunters.
++		var hunter_position: Vector3 = _mp8_hunter_position(hunter_index, hunter_network_ids.size())
++		NetworkManager.mp8_rpc(hunter_player_character, &"mp8_setup_rpc", [
++			hunter_position, duck_player_count, total_players, hunter_index, hunter_network_ids.size()
++		])
++
++		hunter_player_character.initialize_hunter_rpc.rpc(hunter_initialization_delay)
++
++		local_game_players_order[player_presence.network_id] = hunter_player_character
++		hunter_players.append(hunter_player_character)
++		players.append(hunter_player_character)
++
++	hunter_player = hunter_players[0] if not hunter_players.is_empty() else null
++
++	print("[MP8] Duck Hunt round start: %d players -> %d ducks %d hunters, hunters %s" % [
++		total_players, duck_player_count, hunter_players.size(),
++		str(hunter_names)
++	])
++
++	for network_id in duck_players.keys():
++		duck_player_added_rpc.rpc(network_id)
++
++	if GameManager.local_game and not hunter_players.is_empty():
++		_mp8_local_setup_views()
++		# Release the role gate only after every actor and its viewport exists.
++		# Local identities include keyboard -1 and controller 0; neither is a peer ID.
++		_mp8_ack_local_roles()
++
++# The game's spawn_players, for a mixed room (D120).
++func _mp8_game_spawn_players():
++
+ 	await get_tree().create_timer(1, false).timeout
+ 
+ 	players_acknowledged.clear()
+@@ -292,6 +582,38 @@ func spawn_players():
+ 
+ 	local_handler.setup(local_multiplayer_camera_viewport, hunter_player.local_viewport)
+ 
++func _mp8_local_seat(presence) -> int:
++	var fallback: int = maxi(0, PlayerManager.player_presences.keys().find(presence.network_id))
++	return int(presence.get_meta("mp8_local_seat", fallback))
++
++func _mp8_local_setup_views() -> void:
++	var views: Array[SubViewport] = []
++	for camera in local_multiplayer_camera_parent.find_children("*", "Camera3D", true, false):
++		_mp8_configure_duck_camera(camera)
++	var labels := PackedStringArray()
++	var duck_seats := PackedStringArray()
++	for id in local_duck_players.keys():
++		duck_seats.append("P%d" % (_mp8_local_seat(PlayerManager.player_presences[id]) + 1))
++	labels.append("Ducks · " + " / ".join(duck_seats))
++	var ordered: Array = hunter_players.duplicate()
++	ordered.sort_custom(func(a, b): return _mp8_local_seat(a.player_presence) < _mp8_local_seat(b.player_presence))
++	for i in ordered.size():
++		var hunter = ordered[i]
++		hunter.mp8_setup_local_view(i)
++		views.append(hunter.local_viewport)
++		labels.append("P%d · %s · %s" % [_mp8_local_seat(hunter.player_presence) + 1,
++			hunter.player_presence.network_name, "Hunter"])
++	local_handler.setup(local_multiplayer_camera_viewport, views, labels, ui_role_label.get_theme_font("font"))
++
++func _mp8_configure_duck_camera(camera: Camera3D) -> void:
++	camera.set_cull_mask_value(11, true) # Aiming beams warn every duck.
++	camera.set_cull_mask_value(12, false)
++	camera.set_cull_mask_value(13, false)
++
++func _mp8_ack_local_roles() -> void:
++	for id in PlayerManager.player_presences.keys():
++		acknowledge_role_rpc(id)
++
+ func force_game_end():
+ 
+ 	player_scores_finalized.emit(player_scores)
+@@ -314,6 +636,37 @@ func fade_camera(set_to_backup: bool = false):
+ 
+ func check_game_end():
+ 
++	# [MP8] A mixed room runs the game's check_game_end (D120).
++	if not NetworkManager.mp8_room_extended():
++		await _mp8_game_check_game_end()
++		return
++
++	if resetting:
++		return
++
++	if not duck_players.is_empty() and not hunter_players.is_empty():  # [MP8] every hunter, not the game's single hunter_player
++		return
++
++	# [MP8] Round summary, to check the placing points against the log
++	print("[MP8] Round end: %d ducks %d hunters, %d escaped, %d shot, scores %s" % [
++		_mp8_round_duck_count, hunter_players.size(),
++		players_finished.size(), players_shot.size(), str(player_scores)
++	])
++
++	if not possible_hunters.is_empty():
++		resetting = true
++		await get_tree().create_timer(3.0).timeout
++		state_machine.transition_to_rpc.rpc(&"Reset")
++	else:
++		player_scores_finalized.emit(player_scores)
++		await get_tree().create_timer(3.0).timeout
++		set_minigame_sfx_linear_volume_rpc.rpc(0.0)
++		state_machine.transition_to_rpc.rpc(&"Finished")
++		set_effects_visibility_rpc.rpc(false)
++
++# The game's check_game_end, for a mixed room (D120).
++func _mp8_game_check_game_end():
++
+ 	if resetting:
+ 		return
+ 
+@@ -337,6 +690,13 @@ func check_game_end():
+ func set_hunter_name_rpc(_hunter_name: String):
+ 	hunter_name = _hunter_name
+ 
++# [MP8] Two-hunter version: an array of names, plus the player count, for the online reveal line
++# and the lone-round test.
++func set_hunter_names_rpc(_hunter_names: Array, _total_players: int):
++	mp8_hunter_names = _hunter_names
++	mp8_total_players = _total_players
++	hunter_name = String(_hunter_names[0]) if not _hunter_names.is_empty() else ""
++
+ @rpc("authority", "call_local", "reliable")
+ func set_ducks_ambient_light_rpc(_hunter_id):
+ 	if multiplayer.get_unique_id() == _hunter_id:
+@@ -344,6 +704,16 @@ func set_ducks_ambient_light_rpc(_hunter_id):
+ 	else:
+ 		light_parent_ducks_only.visible = true
+ 
++# [MP8] Extended's version, sent by the relay: an array of ids (a single id still works), so no hunter
++# sees the ducks-only fill light.
++func mp8_set_ducks_ambient_light_rpc(_hunter_ids):
++	var is_local_hunter: bool = false
++	if _hunter_ids is Array:
++		is_local_hunter = (_hunter_ids as Array).has(multiplayer.get_unique_id())
++	else:
++		is_local_hunter = (multiplayer.get_unique_id() == _hunter_ids)
++	light_parent_ducks_only.visible = not is_local_hunter
++
+ @rpc("authority", "call_local", "reliable")
+ func duck_player_added_rpc(_network_id):
+ 
+@@ -368,8 +738,75 @@ func set_hunter_rpc(_network_id):
+ 
+ 	acknowledge_role_rpc.rpc(multiplayer.get_unique_id())
+ 
++# [MP8] Two-hunter version: an array of ids; this peer checks whether it is among them
++func set_hunters_rpc(_network_ids: Array):
++
++	if GameManager.local_game:
++		is_hunter = false
++		for id in PlayerManager.player_presences.keys():
++			if not PlayerManager.player_presences[id].using_joystick:
++				is_hunter = _network_ids.has(id)
++				break
++		_mp8_setup_countdown()
++		return # Local readiness is acknowledged after all actor/view setup.
++
++	is_hunter = _network_ids.has(multiplayer.get_unique_id())
++	if is_hunter:
++		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
++
++	_mp8_setup_countdown()  # needs the role, which is known only now
++	acknowledge_role_rpc.rpc(multiplayer.get_unique_id())
++
++
++# [MP8] Countdown text: "GO!" becomes a shout for the role (ducks RUN!, hunters HUNT!) and shakes;
++# in the lone hunter round the shouts are stronger and the "1" becomes a red HUNTER GREATLY BUFFED.
++# Each peer renders this itself (the server broadcasts only "3"/"2"/"1"/"GO!"), so no RPC is needed,
++# and the lone round is detected from set_hunter_names_rpc's names, not the server-only hunter_players.
++func _mp8_setup_countdown() -> void :
++
++	if minigame_overlay == null:
++		return
++
++	var lone: bool = _mp8_is_lone_round()
++
++	minigame_overlay.mp8_shake_on_go = true
++
++	if is_hunter:
++		minigame_overlay.mp8_go_text = "HUNT THEM ALL!" if lone else "HUNT!"
++	else:
++		minigame_overlay.mp8_go_text = "RUN FOR YOUR LIFE!" if lone else "RUN!"
++
++	# Only the lone hunter round replaces the "1"; other rounds keep the game's white "1"
++	minigame_overlay.mp8_one_text = ""
++	if lone:
++		minigame_overlay.mp8_one_text = "HUNTER GREATLY BUFFED"
++
+ @rpc("any_peer", "call_local", "reliable")
+ func acknowledge_role_rpc(_network_id: int):
++
++	# [MP8] A mixed room runs the game's acknowledge_role_rpc (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_acknowledge_role_rpc(_network_id)
++		return
++	if not multiplayer.is_server():
++		return
++
++	if GameManager.local_game and (not PlayerManager.player_presences.has(_network_id) or players_acknowledged.has(_network_id)):
++		return
++	players_acknowledged.append(_network_id)
++
++	if players_acknowledged.size() == PlayerManager.player_presences.keys().size():
++		# [MP8] The `mp8rolereveal` test switch: the role reveal normally starts from the second round
++		# (the first shows "ROUND x/y"), which idle test instances never reach; this shows it in the first.
++		if first_round and not NetworkManager.mp8_dev_args().has("mp8rolereveal"):
++			first_round = false
++			state_machine.transition_to_rpc.rpc(&"Round", {"round": round_number, "total": total_rounds})
++		else:
++			first_round = false
++			state_machine.transition_to_rpc.rpc(&"RoleReveal")
++
++# The game's acknowledge_role_rpc, for a mixed room (D120).
++func _mp8_game_acknowledge_role_rpc(_network_id: int):
+ 	if not multiplayer.is_server():
+ 		return
+ 
+@@ -418,6 +855,36 @@ func remove_spectate_player_rpc(_network_id: int) -> void :
+ @rpc("any_peer", "call_local", "reliable")
+ func remove_player_rpc(_network_id: int):
+ 
++	# [MP8] A mixed room runs the game's remove_player_rpc (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_remove_player_rpc(_network_id)
++		return
++
++	var player_instance = null
++	for p in players:
++		if p.player_presence.network_id == _network_id:
++			player_instance = p
++			break
++
++	if player_instance:
++		if player_instance is DuckHuntDuckPlayer:
++			remove_spectate_player_rpc.rpc(_network_id)
++			duck_players.erase(_network_id)
++		if player_instance is DuckHuntHunterPlayer:
++			# [MP8] Remove only the hunter who left; the other stays in play
++			hunter_players.erase(player_instance)
++			hunter_player = hunter_players[0] if not hunter_players.is_empty() else null
++			duck_player_count -= 1
++
++		player_instance.queue_free()
++		players.erase(player_instance)
++
++	possible_hunters.erase(_network_id)
++	players_acknowledged.erase(_network_id)
++
++# The game's remove_player_rpc, for a mixed room (D120).
++func _mp8_game_remove_player_rpc(_network_id: int):
++
+ 	var player_instance = null
+ 	for p in players:
+ 		if p.player_presence.network_id == _network_id:
+@@ -441,6 +908,9 @@ func remove_player_rpc(_network_id: int):
+ 
+ 
+ func player_disconnected(_network_id: int):
++	# [MP8] The room is read before the await, which can outlast this minigame's latch. A mixed room
++	# keeps the game's own end check (D116).
++	var mp8_ext: bool = NetworkManager.mp8_room_extended()
+ 	super.player_disconnected(_network_id)
+ 
+ 	if not multiplayer.is_server():
+@@ -450,6 +920,14 @@ func player_disconnected(_network_id: int):
+ 
+ 	if multiplayer.is_server():
+ 		await get_tree().create_timer(1.0).timeout
++
++		# [MP8] Guard for a round not yet started (someone still loading): check_game_end() returns
++		# only while duck_players and hunter_players are both non-empty, and before the start both are
++		# empty, so it would end the round.
++		if mp8_ext and not is_all_player_loaded:
++			print("[MP8] Duck Hunt: %d left before the round started, skipping the end check" % _network_id)
++			return
++
+ 		check_game_end()
+ 
+ func _on_duck_player_spectate(_network_id):
+@@ -493,6 +971,35 @@ func _on_finish_area_entered(body):
+ 
+ func _on_player_finished(_network_id: int):
+ 
++	# [MP8] A mixed room runs the game's _on_player_finished (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_on_player_finished(_network_id)
++		return
++
++	if GameManager.local_game:
++		if local_duck_players.has(_network_id):
++			local_duck_players.erase(_network_id)
++
++	if duck_players.has(_network_id):
++
++		# [MP8] Hunters score the health they took: this duck escaped, perhaps wounded
++		_mp8_award_hunters(_mp8_damage_taken(duck_players[_network_id]))
++
++		duck_players.erase(_network_id)
++		remove_spectate_player_rpc.rpc(_network_id)
++
++		# [MP8] Placing points: the j-th duck to reach the exit gets 2 x (D-1-j), so earlier scores more
++		var j: int = players_finished.size()
++		players_finished.append(_network_id)
++		player_scores[_network_id] += MP8_DUCK_RANK_STEP * maxi(
++			_mp8_round_duck_count - 1 - j, 0
++		)
++
++	check_game_end()
++
++# The game's _on_player_finished, for a mixed room (D120).
++func _mp8_game_on_player_finished(_network_id: int):
++
+ 	if GameManager.local_game:
+ 		if local_duck_players.has(_network_id):
+ 			local_duck_players.erase(_network_id)
+@@ -510,6 +1017,35 @@ func _on_player_finished(_network_id: int):
+ 
+ func _on_player_died(_network_id: int):
+ 
++	# [MP8] A mixed room runs the game's _on_player_died (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_on_player_died(_network_id)
++		return
++
++	if GameManager.local_game:
++		if local_duck_players.has(_network_id):
++			local_duck_players.erase(_network_id)
++
++	if duck_players.has(_network_id):
++		duck_players.erase(_network_id)
++		remove_spectate_player_rpc.rpc(_network_id)
++		# [MP8] A dead duck lost all its health (a headshot does 2, a body shot 1), so hunters get
++		# the full amount however it died; overkill earns nothing extra.
++		_mp8_award_hunters(MP8_DUCK_MAX_HEALTH)
++
++	# [MP8] Placing points: the i-th duck shot gets 2i, so the first scores 0 and lasting longer scores more
++	var i: int = players_shot.size()
++	players_shot.append(_network_id)
++	if player_scores.has(_network_id):
++		player_scores[_network_id] += MP8_DUCK_RANK_STEP * i
++
++	# No bonus for shooting every duck: a wipe already earns hunters 2D, above any duck's 2(D-1).
++
++	check_game_end()
++
++# The game's _on_player_died, for a mixed room (D120).
++func _mp8_game_on_player_died(_network_id: int):
++
+ 	if GameManager.local_game:
+ 		if local_duck_players.has(_network_id):
+ 			local_duck_players.erase(_network_id)
+@@ -526,6 +1062,42 @@ func _on_player_died(_network_id: int):
+ 
+ 	check_game_end()
+ 
++
++# [MP8] Placing-based scoring from the minigame's own order arrays (players_shot, players_finished):
++#   i-th duck shot -> 2i; j-th duck to escape -> 2(D-1-j); hunters, shared -> 1 per health point taken.
++# The ducks get each of 0, 2, ..., 2(D-1) once. The step is 2 so a wounded escape (1 damage) is
++# worth half a duck; a headshot kill and two body shots both score 2.
++const MP8_DUCK_RANK_STEP: int = 2
++const MP8_DUCK_MAX_HEALTH: int = 2
++
++# Ducks at the start of this round, for the escape points; see spawn_players()
++var _mp8_round_duck_count: int = 0
++
++
++# [MP8] Health this duck has lost, for a wounded escape. Clamped to [0, max_health]: a dead duck's
++# health can be negative after overkill.
++func _mp8_damage_taken(duck) -> int:
++	if duck == null or not is_instance_valid(duck):
++		return 0
++	var max_hp: int = duck.max_health if "max_health" in duck else MP8_DUCK_MAX_HEALTH
++	var hp: int = duck.health if "health" in duck else max_hp
++	return clampi(max_hp - hp, 0, max_hp)
++
++
++# [MP8] Two hunters cooperate rather than compete: every hunter gets the same points, not only
++# the one who fired. One hunter takes the same path.
++func _mp8_award_hunters(amount: int) -> void :
++	for h in hunter_players:
++		if not is_instance_valid(h):
++			continue
++		if h.player_presence == null:
++			continue
++		var hid: int = h.player_presence.network_id
++		if player_scores.has(hid):
++			player_scores[hid] += amount
++		else:
++			player_scores[hid] = amount
++
+ func _on_countdown_expired():
+ 	super._on_countdown_expired()
+ 
+@@ -534,3 +1106,85 @@ func _on_countdown_expired():
+ func _on_unpaused():
+ 
+ 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
++
++
++# [MP8] Roll call for a player who cannot move, logged every round (not behind -debug-tools) so
++# players' logs carry it. A duck moves once play_state's set_active_rpc loop over `players` reaches it;
++# these checks tell apart no character on the server (A), a character missing on its own peer (B) and
++# `active` still false (C). A duck wedged in geometry passes all three: see duck_player.gd's _mp8_check_stuck().
++func _mp8_who(nid: int) -> String:
++	var pres = PlayerManager.player_presences.get(nid)
++	return "%s(%d)" % [pres.network_name if pres != null else "?", nid]
++
++
++# [MP8] Server view: every presence has a character, and the character is active.
++func mp8_roll_call() -> void :
++
++	if not multiplayer.is_server():
++		return
++
++	var owned: Dictionary = {}
++	for p in players:
++		if not is_instance_valid(p) or p.player_presence == null:
++			continue
++		owned[p.player_presence.network_id] = p
++
++	var no_body: Array[String] = []
++	var not_active: Array[String] = []
++	for nid in PlayerManager.player_presences.keys():
++		if not owned.has(nid):
++			no_body.append(_mp8_who(nid))
++		elif not owned[nid].active:
++			not_active.append(_mp8_who(nid))
++
++	if no_body.is_empty() and not_active.is_empty():
++		print("[MP8] Duck Hunt roll call (server): all %d players have an active character" % PlayerManager.player_presences.size())
++		return
++
++	# A or C: log the names, so a player's log shows who was stuck
++	print("[MP8] 🩸 Duck Hunt roll call problem (server): %d players / %d characters - no character %s; not active %s" % [
++		PlayerManager.player_presences.size(), owned.size(),
++		str(no_body) if not no_body.is_empty() else "none",
++		str(not_active) if not not_active.is_empty() else "none",
++	])
++
++
++# [MP8] This peer's view: is its own character here? Catches B, a node that never reached this
++# peer, which the server cannot see.
++func mp8_self_check() -> void :
++
++	# Local split screen runs everyone on one machine; the check does not apply
++	if GameManager.local_game:
++		return
++
++	# Wait two seconds: replication, set_player_presence and set_active_rpc arrive around the
++	# start, and checking at once would report one still on its way as lost.
++	await get_tree().create_timer(2.0, false).timeout
++	if not is_inside_tree():
++		return
++
++	var me: int = multiplayer.get_unique_id()
++	var mine = null
++	for container in [duck_player_spawn_parent, hunter_player_spawn_parent]:
++		if container == null:
++			continue
++		for c in container.get_children():
++			if c.player_presence != null and c.player_presence.network_id == me:
++				mine = c
++				break
++		if mine != null:
++			break
++
++	if mine == null:
++		print("[MP8] 🩸 Duck Hunt self-check (peer %d): 2 s into play and this peer's own character is missing, so the player cannot move" % me)
++		return
++
++	if not mine.active:
++		print("[MP8] 🩸 Duck Hunt self-check (peer %d): character present but active is still false, activation never arrived" % me)
++		return
++
++	# Passing rules out A/B/C only: a duck wedged in geometry looks the same, and _mp8_check_stuck()
++	# handles that. game_focused and PauseMenu are logged to rule out lost focus; hunters cannot walk.
++	print("[MP8] Duck Hunt self-check (peer %d): character present and active, %s; focused=%s paused=%s" % [
++		me, "hunter (cannot walk)" if is_hunter else "duck",
++		str(GameManager.game_focused), str(PauseMenu.active)])

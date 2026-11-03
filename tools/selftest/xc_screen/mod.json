@@ -1,0 +1,1 @@
+{ "id": "xc_screen", "name": "XC screen", "version": "0.0.1", "entry": "main.gd", "priority": 99, "requires": [] }

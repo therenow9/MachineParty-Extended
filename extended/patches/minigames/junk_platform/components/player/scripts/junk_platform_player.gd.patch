@@ -1,0 +1,89 @@
+diff --git a/minigames/junk_platform/components/player/scripts/junk_platform_player.gd b/minigames/junk_platform/components/player/scripts/junk_platform_player.gd
+--- a/minigames/junk_platform/components/player/scripts/junk_platform_player.gd
++++ b/minigames/junk_platform/components/player/scripts/junk_platform_player.gd
+@@ -54,6 +54,10 @@ var network_id: int
+ 
+ var hand_tween: Tween
+ 
++# [MP8] The minigame, found once among this player's ancestors on its own peer: it sets each throw's strength
++# so the rock reaches the opponent faced (D113), or keeps throw_power where aimed throws are off.
++var mp8_aim: Node = null
++
+ signal event_hit()
+ signal event_fallen(last_hit_by_id)
+ signal emit_died(network_id)
+@@ -118,6 +122,74 @@ func play_footstep_sound_rpc():
+ 
+ func update_interaction(_delta: float) -> void :
+ 
++	# [MP8] A mixed room runs the game's update_interaction (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_update_interaction(_delta)
++		return
++
++	if is_hit:
++		return
++
++	if GameManager.local_game and player_presence and not player_presence.local_controller_connected:
++		return
++
++	if held_item:
++
++		if DynamicInput.is_action_just_pressed(player_presence.device_id, "action_1"):
++
++			var horizontal_velocity = velocity * Vector3(1.0, 0.0, 1.0)
++
++			var thrown_by_id = player_presence.network_id
++			if GameManager.local_game:
++				thrown_by_id = 1
++
++			var direction: Vector3 = - visuals.basis.z.rotated(
++				visuals.basis.x, deg_to_rad(20.0)
++			)
++			var power: float = throw_power
++			if mp8_aim == null:
++				mp8_aim = get_parent()
++				while mp8_aim != null and not mp8_aim.has_method("mp8_aimed_throw_power"):
++					mp8_aim = mp8_aim.get_parent()
++			if mp8_aim != null:
++				power = mp8_aim.mp8_aimed_throw_power(self, direction, throw_power)
++
++			held_item.throw_rpc.rpc(
++				grab_position.global_position + (horizontal_velocity * get_physics_process_delta_time()), 
++				direction, 
++				power, 
++				thrown_by_id
++			)
++
++			junk_model.visible = false
++			throw_item_rpc.rpc()
++			grab_area.set_collision_layer_value(grab_layer, true)
++			in_grab_area.erase(held_item)
++			held_item = null
++
++	else:
++
++		if DynamicInput.is_action_just_pressed(player_presence.device_id, "action_1"):
++
++			for item in in_grab_area:
++
++				# [MP8] Skip a cube someone else holds, or both players think they hold it and one
++				# throws nothing. A same-frame grab still gets through (server-decided grabs would cost
++				# a round trip); `set_held_rpc` cleans up its collision exception.
++				if item.held_by_player != null and is_instance_valid(item.held_by_player) \
++						and item.held_by_player != self:
++					continue
++
++				held_item = item
++				grab_area.set_collision_layer_value(grab_layer, false)
++				held_item.set_held_rpc.rpc(true, get_path())
++				junk_model.visible = true
++				grab_item_rpc.rpc()
++				break
++
++# The game's update_interaction, for a mixed room (D120).
++func _mp8_game_update_interaction(_delta: float) -> void :
++
+ 	if is_hit:
+ 		return
+ 

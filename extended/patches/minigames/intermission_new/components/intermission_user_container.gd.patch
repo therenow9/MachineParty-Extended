@@ -1,0 +1,94 @@
+diff --git a/minigames/intermission_new/components/intermission_user_container.gd b/minigames/intermission_new/components/intermission_user_container.gd
+--- a/minigames/intermission_new/components/intermission_user_container.gd
++++ b/minigames/intermission_new/components/intermission_user_container.gd
+@@ -31,11 +31,90 @@ var lerp_score_end_value = 0
+ func _ready() -> void :
+ 	for child in get_parent().get_children():
+ 		user_container_array.append(child)
++	_mp8_apply_bold()
++
++
++# [MP8] Name length cap and boldness, identical to intermission_user_container_2d.gd's copy (which says
++# why it is not shared). Here the label is a Label3D: the font is its `font` property, not a theme override.
++const MP8_NAME_MAX: int = 7
++const MP8_BOLD: float = 0.12  # 0.3 fills in the digits' counters
++
++
++static func _mp8_arg_int(prefix: String, fallback: int) -> int:
++	for a in NetworkManager.mp8_dev_args():
++		var t: String = String(a)
++		if t.begins_with(prefix):
++			return int(t.substr(prefix.length()))
++	return fallback
++
++
++static func _mp8_arg_float(prefix: String, fallback: float) -> float:
++	for a in NetworkManager.mp8_dev_args():
++		var t: String = String(a)
++		if t.begins_with(prefix):
++			return float(t.substr(prefix.length()))
++	return fallback
++
++
++static func _mp8_format_name(_name: String) -> String:
++	var limit: int = maxi(_mp8_arg_int("mp8name=", MP8_NAME_MAX), 2)
++	if _name.length() > limit:
++		return _name.left(limit - 1) + "-"
++	return _name
++
++
++func _mp8_apply_bold() -> void :
++
++	var amount: float = _mp8_arg_float("mp8bold=", MP8_BOLD)
++	if is_equal_approx(amount, 0.0):
++		return
++
++	for label: Label3D in [label_rank, label_score, label_name]:
++		if not is_instance_valid(label):
++			continue
++		if label.font == null:
++			continue
++		var fv := FontVariation.new()
++		fv.base_font = label.font
++		fv.variation_embolden = amount
++		_mp8_fonts[label] = [label.font, fv]
++		label.font = fv
++
++
++# [MP8] Mixed rooms (D116): the game's name cut and font, set by the score screen at each show.
++var mp8_extended: bool = true
++var _mp8_fonts: Dictionary = {}  # Label3D -> [the game's font, the bold one]
++
++
++func mp8_set_extended(extended: bool) -> void :
++	mp8_extended = extended
++	for label in _mp8_fonts:
++		if is_instance_valid(label):
++			label.font = _mp8_fonts[label][1 if extended else 0]
++
+ 
+ func _process(_delta: float) -> void :
+ 	check_to_switch_places_with_upstairs_container()
+ 
+ func set_user_container_data(_score: int, _name: String):
++
++	# [MP8] The game's layout fills the row as the game does, its 9-character cut included (D120).
++	if not mp8_extended:
++		_mp8_game_set_user_container_data(_score, _name)
++		return
++	container_active = true
++	for op in opacity_visuals:
++		op.transparency = 0.0
++
++	user_score_value = _score
++	label_score.text = "%04d" % _score
++
++	var formatted_name = _mp8_format_name(_name)  # [MP8] MP8_NAME_MAX, not the game's 8-character cut
++
++	label_name.text = formatted_name
++
++# The game's set_user_container_data, for the game's layout (D120).
++func _mp8_game_set_user_container_data(_score: int, _name: String):
+ 	container_active = true
+ 	for op in opacity_visuals:
+ 		op.transparency = 0.0

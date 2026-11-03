@@ -1,0 +1,132 @@
+diff --git a/minigames/smoke_break/scripts/smoke_break_trolley.gd b/minigames/smoke_break/scripts/smoke_break_trolley.gd
+--- a/minigames/smoke_break/scripts/smoke_break_trolley.gd
++++ b/minigames/smoke_break/scripts/smoke_break_trolley.gd
+@@ -22,6 +22,65 @@ class_name SmokeBreak_Trolley extends Node
+ 
+ var smoke_particle_active_index = -1
+ 
++# [MP8] Seats whose death shows the fan blood decal. The game hardcodes seats 1 and 2; an added
++# seat counts when its template is seat 1 or 2.
++var _mp8_fan_seats: Array[int] = [1, 2]
++
++
++# [MP8] Called from the minigame's _ready() with the extended seat tables. The trolley cannot extend
++# them in its own _ready(): it is a child of the minigame's root, so it is ready before the new seats exist.
++func mp8_extend_seat_arrays(new_rots: Array, seats: Array) -> void :
++
++	# Revolver angles: the whole table is replaced (the first 4 are the game's)
++	var typed: Array[Vector3] = []
++	for r in new_rots:
++		typed.append(r as Vector3)
++	rot_by_seat_index_array = typed
++
++	# Blood decals: one copied set per added seat, moved to that seat
++	var made := PackedStringArray()
++	while blood_decals_by_seat_index_array.size() < seats.size():
++
++		var idx: int = blood_decals_by_seat_index_array.size()
++		var seat_pos: Vector3 = (seats[idx] as Node3D).global_position
++
++		# The nearest original seat's set is the template
++		var src_i: int = 0
++		var bd: float = INF
++		for i in mini(4, seats.size()):
++			var d: float = seat_pos.distance_to((seats[i] as Node3D).global_position)
++			if d < bd and i < blood_decals_by_seat_index_array.size():
++				bd = d
++				src_i = i
++
++		var src: Node3D = blood_decals_by_seat_index_array[src_i]
++		if src == null or not is_instance_valid(src):
++			blood_decals_by_seat_index_array.append(null)
++			continue
++
++		var dup: Node3D = src.duplicate()
++		dup.name = "MP8BloodSeat%d" % idx
++		src.get_parent().add_child(dup)
++		# The decals are children of the set's node, so moving it carries them all
++		dup.global_position = src.global_position + (
++			seat_pos - (seats[src_i] as Node3D).global_position
++		)
++		dup.visible = false
++		blood_decals_by_seat_index_array.append(dup)
++
++		# A copy of seat 1 or 2 faces the fan too
++		if src_i in [1, 2]:
++			_mp8_fan_seats.append(idx)
++
++		made.append("seat %d from seat %d" % [idx, src_i])
++
++	print("[MP8] Smoke Break trolley: %d revolver angles / %d blood decal sets (new: %s) / %d smoke particles (reused modulo) / fan seats %s" % [
++		rot_by_seat_index_array.size(), blood_decals_by_seat_index_array.size(),
++		(" ".join(made) if made.size() > 0 else "none"),
++		particles_smoke.size(), str(_mp8_fan_seats)
++	])
++
++
+ @rpc("any_peer", "call_local", "reliable")
+ func eliminate_players_routine_rpc(player_seats_to_eliminate):
+ 
+@@ -44,6 +103,62 @@ func setup_trolley():
+ 
+ func shoot_player(seat: int):
+ 
++	# [MP8] A mixed room shoots as the game does (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_shoot_player(seat)
++		return
++
++	smoke_particle_active_index += 1
++
++	# [MP8] Bounds check: a missing angle must not break the whole elimination sequence
++	if seat < 0 or seat >= rot_by_seat_index_array.size():
++		push_warning("[MP8] Smoke Break: seat %d has no revolver angle (the table has %d), this shot is skipped" % [
++			seat, rot_by_seat_index_array.size()
++		])
++		return
++
++	var tweener = get_tree().create_tween().set_ease(Tween.EASE_IN_OUT).set_trans(Tween.TRANS_ELASTIC)
++	var rot_destination = rot_by_seat_index_array[seat]
++	var rot_duration = 0.3
++	tweener.tween_property(revolver_yaw_parent, "rotation_degrees", rot_destination, rot_duration)
++	await get_tree().create_timer(rot_duration + 0.2, false).timeout
++	anim_revolver_firing.play("fire")
++	fire_audio_player.stop()
++	fire_audio_player.play(0.0)
++	# [MP8] The game has 4 smoke particles and the index grows each shot; with 8 players up to 8 are
++	# shot and the fifth would index out of range. Reused modulo: it is only muzzle smoke.
++	if particles_smoke.size() > 0:
++		particles_smoke[smoke_particle_active_index % particles_smoke.size()].emitting = true
++	shaker_trolley.force_stop_shake()
++	shaker_trolley.play_shake()
++
++	var player_to_shoot: SmokeBreakPlayer
++	var counter = 0
++	for player: SmokeBreakPlayer in player_parent.get_children():
++		if counter == seat:
++			player_to_shoot = player
++			break
++		else:
++			counter += 1
++
++	player_to_shoot.anim_handler.get_eliminated()
++	player_to_shoot.anim_handler.show_blood_on_player()
++
++	# [MP8] Bounds check: the added seats' decal sets are copied at runtime and may be missing
++	var si: int = player_to_shoot.active_player_seat_index
++	if si >= 0 and si < blood_decals_by_seat_index_array.size():
++		var bd: Node3D = blood_decals_by_seat_index_array[si]
++		if bd != null and is_instance_valid(bd):
++			bd.visible = true
++
++	# [MP8] The game hardcodes `seat in [1, 2]`, the two seats facing the fan; _mp8_fan_seats adds
++	# the seats copied from them (it is [1, 2] with 4 players or fewer).
++	if si in _mp8_fan_seats:
++		blood_decal_fan.visible = true
++
++# The game's shoot_player, for a mixed room (D120).
++func _mp8_game_shoot_player(seat: int):
++
+ 	smoke_particle_active_index += 1
+ 	var tweener = get_tree().create_tween().set_ease(Tween.EASE_IN_OUT).set_trans(Tween.TRANS_ELASTIC)
+ 	var rot_destination = rot_by_seat_index_array[seat]

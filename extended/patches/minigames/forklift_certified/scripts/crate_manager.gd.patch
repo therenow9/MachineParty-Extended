@@ -1,0 +1,82 @@
+diff --git a/minigames/forklift_certified/scripts/crate_manager.gd b/minigames/forklift_certified/scripts/crate_manager.gd
+--- a/minigames/forklift_certified/scripts/crate_manager.gd
++++ b/minigames/forklift_certified/scripts/crate_manager.gd
+@@ -16,6 +16,16 @@ var active: bool = false
+ var instances: Dictionary[int, ForkliftCertifiedCrate]
+ var remove_indicies_after_move: Array[int]
+ 
++# ---------------------------------------------------------------- [MP8] Sampling parameters
++# [MP8] `spawn_radius` is the minimum distance between points (4.0), and a 12x12 box rarely holds more
++# than 11 such points, so vanilla's unbounded `while` can hang the server in initialize().
++const MP8_HARD_CEILING: int = 24     # replaces vanilla's hard-coded 10 in spawn_crates
++
++# [MP8] Above four players, forklift_certified's _mp8v_set_crate_region sets a world XZ rectangle, the free
++# centre cell of the eight bays; an empty region keeps the shipped 12x12 box. The cap is the shipped 10 at every count.
++var mp8_spawn_region: Rect2 = Rect2()
++var mp8_crate_cap: int = MP8_HARD_CEILING
++
+ func _physics_process(_delta: float) -> void :
+ 
+ 	if not multiplayer.is_server():
+@@ -23,6 +33,61 @@ func _physics_process(_delta: float) -> void :
+ 
+ func spawn_crates(amount: int):
+ 
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_spawn_crates(amount)
++		return
++
++	var size: float = 6.0
++	var polygon: PackedVector2Array = [
++		Vector2( - size, - size),
++		Vector2(size, - size),
++		Vector2(size, size),
++		Vector2( - size, size),
++	]
++
++	# The sampler works around item_spawn_position_node, so the region goes in relative to it.
++	var start_point: Vector2 = Vector2.ZERO
++	if mp8_spawn_region.has_area():
++		var origin: Vector2 = Vector2(item_spawn_position_node.global_position.x, item_spawn_position_node.global_position.z)
++		var lo: Vector2 = mp8_spawn_region.position - origin
++		var hi: Vector2 = mp8_spawn_region.end - origin
++		polygon = [Vector2(lo.x, lo.y), Vector2(hi.x, lo.y), Vector2(hi.x, hi.y), Vector2(lo.x, hi.y)]
++		start_point = (lo + hi) * 0.5
++
++	var target_size: int = mini(amount, mp8_crate_cap)
++	var points: PackedVector2Array
++
++	# [MP8] Bounded retries that keep the best attempt: it exits as soon as there are enough points, as
++	# vanilla does, and when there never are, the round starts with fewer crates instead of hanging.
++	var attempts: int = 0
++	while points.size() < target_size and attempts < 200:
++		attempts += 1
++		var got: PackedVector2Array = PoissonDiscSampling.generate_points_for_polygon(
++			polygon, spawn_radius, 20, start_point
++		)
++		if got.size() > points.size():
++			points = got
++
++	if points.size() < target_size:
++		push_warning("[MP8] Forklift Certified: %d attempts found only %d points (wanted %d); starting with %d crates. Half extent %.1f, min spacing %.1f" % [
++			attempts, points.size(), target_size, points.size(), 6.0, spawn_radius
++		])
++		target_size = points.size()
++
++	print("[MP8] Forklift Certified: %d crates (box %.0fx%.0f, min spacing %.1f, %d attempts)" % [
++		target_size, 12.0, 12.0, spawn_radius, attempts
++	])
++
++	var counter: int = 0
++	for i in target_size:
++		spawn_crate(Vector3(points[i].x, 0.0, points[i].y))
++		counter += 1
++		if counter >= MP8_HARD_CEILING:     # [MP8] vanilla hard-codes 10 here
++			return
++
++# [MP8] The game's spawn_crates, verbatim, for a mixed room (D120).
++func _mp8_game_spawn_crates(amount: int):
++
+ 	var size: float = 6.0
+ 	var polygon: PackedVector2Array = [
+ 		Vector2( - size, - size), 

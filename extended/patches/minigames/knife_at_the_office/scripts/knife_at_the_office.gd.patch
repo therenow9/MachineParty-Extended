@@ -1,0 +1,516 @@
+diff --git a/minigames/knife_at_the_office/scripts/knife_at_the_office.gd b/minigames/knife_at_the_office/scripts/knife_at_the_office.gd
+--- a/minigames/knife_at_the_office/scripts/knife_at_the_office.gd
++++ b/minigames/knife_at_the_office/scripts/knife_at_the_office.gd
+@@ -48,9 +48,36 @@ var player_count: int = 0
+ var player_scores: Dictionary[int, int]
+ var dead_players: Array[int]
+ 
++# [MP8] The 4 shipped spawns are a 2x2, so the generic midpoint top-up would put the new ones
++# on one line; PlayerSpawnPositions is shared with other games, so this opts out and adds its own.
++var mp8_owns_spawns: bool = true
++
++# Searchables #5 and #6 sit in a sealed room no player can reach. Matched by scene path, not by
++# index, since filtering one shifts the later indices. Only their areas are disabled.
++const MP8_DISABLED_SEARCHABLE_PATHS := [
++	"Geometry/kato office art1/searchables parent/desk with drawers3/Searchable right side",
++	"Geometry/kato office art1/searchables parent/desk with drawers2/Searchable left side",
++]
++
++var mp8_player_count: int = 0
++var mp8_searchables_collected: bool = false
++
++# [MP8] mp8knifemark: a debug number over each unsearched container, visible through walls.
++var _mp8_mark_on: bool = false
++var _mp8_marks: Array = []          # [[Label3D, Searchable], ...]
++var _mp8_mark_last: String = ""     # the remaining numbers last logged, so a log line prints once per change
++
++
+ func _ready() -> void :
+ 	super._ready()
+ 
++	# Before spawn_players() reads the markers. Runs on every peer, but only the server reads
++	# them (positions go out in teleport_rpc).
++	_mp8v_add_spawns()
++	# Every peer: the clients switch off the two sealed-room containers' areas too,
++	# and the server clamps the search target to the rest (_mp8v_setup_search).
++	_mp8_collect_searchables()
++
+ 	if multiplayer.is_server():
+ 
+ 		countdown_state.countdown_started.connect(_on_countdown_started)
+@@ -59,6 +86,13 @@ func _ready() -> void :
+ 
+ 		countdown_handler.expired.connect(_on_game_countdown_expired)
+ 
++	var mp8_args := NetworkManager.mp8_dev_args()
++	# [MP8] Command-line switch mp8knifemark: numbers each unsearched container through walls,
++	# to find ones the level geometry makes unreachable (the scene cannot show it).
++	_mp8_mark_on = mp8_args.has("mp8knifemark")
++	if _mp8_mark_on:
++		call_deferred("_mp8_mark_begin")
++
+ 	if GameManager.local_game:
+ 
+ 		await get_tree().create_timer(1.0).timeout
+@@ -69,8 +103,26 @@ func _ready() -> void :
+ 
+ 		local_audio_listener.make_current()
+ 
++# A player's split-screen tile is its local_camera, which follows its camera only in the player's own _process.
++# Offline Bots switches a bot's _process off, so without this a bot's tile never leaves where the scene put it.
++func _mp8_follow_idle_tile_views() -> void:
++	if not GameManager.local_game:
++		return
++	for player in players.values():
++		if is_instance_valid(player) and not player.is_processing():
++			player.local_camera.global_transform = player.camera.global_transform
++			player.local_camera.fov = player.camera.fov
++
+ func _process(delta: float) -> void :
+ 
++	# A mixed room runs only the game's lines below (D120).
++	if NetworkManager.mp8_room_extended():
++		_mp8_follow_idle_tile_views()
++
++		# Ahead of the local_game return below, so the mp8knifemark labels refresh online too.
++		if _mp8_mark_on:
++			_mp8_mark_refresh()
++
+ 	if not GameManager.local_game:
+ 		return
+ 
+@@ -117,6 +169,11 @@ func spawn_players():
+ 	var random_removal: int = round((searchable_base * 0.5) * randf())
+ 	guaranteed_search_result = searchable_base - random_removal
+ 
++	# Caps the rolled target at what the office can reach (_mp8v_clamp_target). A mixed room keeps the roll,
++	# and indexes the spawns as the game does (D120).
++	var mp8_ext: bool = NetworkManager.mp8_room_extended()
++	if mp8_ext:
++		_mp8v_setup_search()
+ 
+ 	var counter: int = 0
+ 	for key in PlayerManager.player_presences.keys():
+@@ -127,10 +184,22 @@ func spawn_players():
+ 
+ 		player_character.set_player_presence.rpc(player_presence.network_id)
+ 		player_character.set_game_reference_from_path.rpc(self.get_path())
+-		player_character.teleport_rpc.rpc(
+-			spawn_positions[counter].global_position, 
+-			spawn_positions[counter].global_rotation, 
+-		)
++		# _mp8v_add_spawns() normally makes 8 markers. If it did not run (the scene changed),
++		# the slots wrap instead of indexing past the end.
++		if not mp8_ext:
++			player_character.teleport_rpc.rpc(
++				spawn_positions[counter].global_position, 
++				spawn_positions[counter].global_rotation, 
++			)
++		else:
++			if counter >= spawn_positions.size():
++				push_warning("[MP8] Inside Job: only %d spawn points, player %d wraps around (top-up failed?)" % [
++					spawn_positions.size(), counter + 1])
++			var mp8_slot: int = counter % spawn_positions.size()
++			player_character.teleport_rpc.rpc(
++				spawn_positions[mp8_slot].global_position,
++				spawn_positions[mp8_slot].global_rotation,
++			)
+ 
+ 		players[player_presence.network_id] = player_character
+ 		active_players[player_presence.network_id] = player_character
+@@ -145,15 +214,171 @@ func spawn_players():
+ 
+ 	if GameManager.local_game:
+ 		local_handler.set_players(players.values())
++		_mp8_prepare_local_world()
+ 
+ 		for i in players.size():
+ 			var network_id = players.keys()[i]
+ 			var player = players[network_id]
+-			var starting_layer = 11 + (i * 2)
++			# Preserve world layers 1..4; each seat owns one of eight FoW pairs.
++			var starting_layer = 5 + (i * 2)
+ 			player.set_local_values(starting_layer)
+ 			for mesh in fow_meshes:
+ 				mesh.set_layer_mask_value(starting_layer, true)
+ 
++func _mp8_prepare_local_world() -> void:
++	# The retail projector beam uses layer 10, which here is P3's private fog output.
++	# Move only this shared visual, and keep projector illumination/shadows
++	# on world geometry rather than the per-seat fog compositing meshes.
++	var beam := get_node_or_null("Geometry/projector beam") as MeshInstance3D
++	if beam != null:
++		beam.layers = 1
++	var projector := get_node_or_null("projector light new") as Light3D
++	if projector != null:
++		projector.light_cull_mask &= 15
++		projector.shadow_caster_mask &= 15
++	# Every split-screen tile redraws each omni light's shadow every frame; dual paraboloid is 2 passes to
++	# the cube's 6 (D90). Each player's fog-of-war light keeps the cube: its shadow is that player's line of sight.
++	var fog_lights: Array = players.values().map(func(p): return p.fog_of_war.fog_of_war_light)
++	for light in find_children("*", "OmniLight3D", true, false):
++		if not fog_lights.has(light):
++			(light as OmniLight3D).omni_shadow_mode = OmniLight3D.SHADOW_DUAL_PARABOLOID
++
++
++# [MP8] Fills vanilla's declared-but-never-filled `searchables` with the scene's real containers,
++# found by type (the scene has 36, not the 26 vanilla's roll assumes), minus the sealed-room two.
++func _mp8_collect_searchables() -> void :
++
++	if mp8_searchables_collected:
++		return
++	# A mixed room leaves the game's searchables unfilled and every container on (D120).
++	if not NetworkManager.mp8_room_extended():
++		print("[MP8] Inside Job: a mixed room, every container left on")
++		return
++	mp8_searchables_collected = true
++
++	searchables.clear()
++	var stack: Array = [self]
++	var disabled_count: int = 0
++	var raw_index: int = 0
++	while not stack.is_empty():
++		var node: Node = stack.pop_back()
++		if node is KnifeAtTheOfficeSearchable:
++			var searchable := node as KnifeAtTheOfficeSearchable
++			# The mp8knifemark labels show the index before filtering, so #7 does not become #5.
++			searchable.set_meta(&"mp8_raw_searchable_index", raw_index)
++			raw_index += 1
++			if _mp8_disable_searchable_if_needed(searchable):
++				disabled_count += 1
++			else:
++				searchables.append(searchable)
++		for c in node.get_children():
++			stack.append(c)
++
++	if disabled_count != MP8_DISABLED_SEARCHABLE_PATHS.size():
++		push_warning("[MP8] Inside Job: expected to disable %d unreachable containers, matched %d; the scene paths may have changed" % [
++			MP8_DISABLED_SEARCHABLE_PATHS.size(), disabled_count])
++	else:
++		print("[MP8] Inside Job: unreachable containers #5/#6 disabled; %d searchable containers" % searchables.size())
++
++
++func _mp8_disable_searchable_if_needed(node: KnifeAtTheOfficeSearchable) -> bool :
++
++	var relative_path: String = String(get_path_to(node))
++	if not MP8_DISABLED_SEARCHABLE_PATHS.has(relative_path):
++		return false
++
++	# Players find a Searchable through area_entered; clearing all four hides it from them and
++	# stops it detecting anything. Its visual children are untouched.
++	node.monitoring = false
++	node.monitorable = false
++	node.collision_layer = 0
++	node.collision_mask = 0
++	return true
++
++
++# [MP8] Logs the final scores; changes none. Points: +1 for finding the syringe, +1 per infection,
++# +1 for each human still uninfected at the end.
++func _mp8_log_scores(survivors: int) -> void :
++
++	var rows := PackedStringArray()
++	for id in players.keys():
++		rows.append("%s %d pts%s" % [
++			_mp8_name(id),
++			player_scores.get(id, 0),
++			"(infected)" if infected_players.has(id) else "(human)",
++		])
++
++	print("[MP8] Inside Job scores (%d present / %d survived / survivor bonus %d / %d infected): %s" % [
++		players.size(), survivors, 1, infected_players.size(),
++		" | ".join(rows),
++	])
++
++
++func _mp8_name(network_id: int) -> String :
++
++	if players.has(network_id) and is_instance_valid(players[network_id]):
++		return String(players[network_id].player_presence.network_name)
++	return "id%d" % network_id
++
++
++# [MP8] mp8knifemark: a Label3D with the unfiltered index over each unsearched container,
++# drawn through walls, hidden once searched. The containers differ only in position, so an
++# unreachable one shows up only in play: its number is the one left (also logged near the end).
++func _mp8_mark_begin() -> void :
++
++	if not _mp8_marks.is_empty():
++		return
++	_mp8_collect_searchables()
++
++	for i in searchables.size():
++		var s = searchables[i]
++		if not is_instance_valid(s):
++			continue
++
++		var lbl := Label3D.new()
++		lbl.text = str(s.get_meta(&"mp8_raw_searchable_index", i))
++		lbl.font_size = 96
++		lbl.pixel_size = 0.012
++		lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
++		lbl.no_depth_test = true
++		lbl.modulate = Color(1.0, 0.9, 0.2)
++		lbl.outline_modulate = Color.BLACK
++		lbl.outline_size = 12
++		lbl.position = Vector3(0, 1.6, 0)
++		s.add_child(lbl)
++		_mp8_marks.append([lbl, s])
++
++	print("[MP8] Inside Job: mp8knifemark - %d containers numbered (visible through walls, hidden once searched)" % _mp8_marks.size())
++
++
++func _mp8_mark_refresh() -> void :
++
++	if _mp8_marks.is_empty():
++		return
++
++	var left := PackedStringArray()
++	for pair in _mp8_marks:
++		var lbl = pair[0]
++		var s = pair[1]
++		if not is_instance_valid(lbl) or not is_instance_valid(s):
++			continue
++		lbl.visible = not s.searched
++		if not s.searched:
++			left.append(lbl.text)
++
++	if left.size() <= 4 and left.size() > 0:
++		var key: String = ",".join(left)
++		if key != _mp8_mark_last:
++			_mp8_mark_last = key
++			var parts := PackedStringArray()
++			for pair in _mp8_marks:
++				var s = pair[1]
++				if is_instance_valid(s) and not s.searched:
++					parts.append("#%s (%.1f, %.1f)" % [
++						pair[0].text, s.global_position.x, s.global_position.z])
++			print("[MP8] Inside Job: %d containers left unsearched - %s" % [left.size(), " / ".join(parts)])
++
++
+ func all_players_loaded():
+ 	super.all_players_loaded()
+ 
+@@ -189,10 +414,16 @@ func end_game():
+ 
+ 	await get_tree().create_timer(1.0).timeout
+ 
++	# Each human left uninfected scores 1, as in vanilla; _mp8_log_scores only logs the totals.
++	var mp8_survivors: int = 0
+ 	for p in players.values():
+ 		if infected_players.has(p.player_presence.network_id):
+ 			continue
+ 		player_scores[p.player_presence.network_id] += 1
++		mp8_survivors += 1
++
++	_mp8_log_scores(mp8_survivors)
++
+ 	player_scores_finalized.emit(player_scores)
+ 
+ 	await get_tree().create_timer(1.0).timeout
+@@ -206,12 +437,25 @@ func start_2nd_phase_music():
+ 	MusicManager.play_kato_2nd_phase_music()
+ 	speaker_syringe_found.play()
+ 
++	# [MP8] Runs on every peer (start_projector_hide_hunt_loop_rpc), and camera_zoom_in() moves
++	# that peer's own camera. The counts show in each peer's log whom it treated as a survivor.
++	var mp8_zoomed: int = 0
++	var mp8_skipped: int = 0
+ 	for player: KnifeAtTheOfficePlayer in player_spawn_node.get_children():
+ 		if !player.is_infected:
+ 			player.camera_zoom_in()
++			mp8_zoomed += 1
++		else:
++			mp8_skipped += 1
++
++	print("[MP8] Inside Job: second phase on this peer - zoomed in %d / skipped (infected) %d" % [
++		mp8_zoomed, mp8_skipped])
+ 
+ 
+ func player_disconnected(_network_id: int):
++	# [MP8] The room is read before the await, which can outlast this minigame's latch. A mixed room
++	# keeps the game's own end check (D116).
++	var mp8_ext: bool = NetworkManager.mp8_room_extended()
+ 	super.player_disconnected(_network_id)
+ 
+ 	if not multiplayer.is_server():
+@@ -220,6 +464,13 @@ func player_disconnected(_network_id: int):
+ 	remove_player_rpc.rpc(_network_id)
+ 	await get_tree().create_timer(1.0).timeout
+ 
++	# [MP8] Before everyone has loaded, spawn_players() has not run and no one is in play, so
++	# check_game_end()'s `active_players.size() <= 1` would end a game that never started.
++	# The cleanup above still runs.
++	if mp8_ext and not is_all_player_loaded:
++		print("[MP8] Inside Job: %d disconnected before the game started, skipping the end check" % _network_id)
++		return
++
+ 	check_game_end()
+ 
+ 
+@@ -230,7 +481,11 @@ func remove_player_rpc(_network_id: int):
+ 	var player_instance = players.get(_network_id, null)
+ 	if player_instance:
+ 
+-		player_instance.cleanup_rpc.rpc()
++		# [MP8] Only the server sends cleanup_rpc: remove_player_rpc runs on every peer, and a send
++		# from each would hit an already-freed node. Each peer frees its own copy just below.
++		# A mixed room sends from every peer, as the game does (D116).
++		if NetworkManager.mp8_sends_broadcast(multiplayer.is_server()):
++			player_instance.cleanup_rpc.rpc()
+ 		player_instance.queue_free()
+ 
+ 		player_scores.erase(_network_id)
+@@ -241,7 +496,13 @@ func remove_player_rpc(_network_id: int):
+ @rpc("any_peer", "call_local", "reliable")
+ func start_projector_hide_hunt_loop_rpc():
+ 	for player: KnifeAtTheOfficePlayer in player_spawn_node.get_children():
+-		if player.is_infected:
++		# [MP8] Online an infected name moves to layer 20, which only infected cameras draw. Locally it
++		# stays on the shared layer (set_infected_name_label returns early), so the hunt hides it too.
++		# A mixed room runs the game's check (D120).
++		if not NetworkManager.mp8_room_extended():
++			if player.is_infected:
++				continue
++		elif player.is_infected and not GameManager.local_game:
+ 			continue
+ 		player.player_name_label.animation_player.play("hide name")
+ 	anim_projector_hide_hunt.play("loop")
+@@ -265,25 +526,70 @@ func request_item_find_rpc(_network_id: int):
+ 
+ 	containers_searched += 1
+ 
+-	if GameManager.local_game:
+-
++	# A mixed room runs the game's broadcast (D120).
++	if not NetworkManager.mp8_room_extended():
+ 		if containers_searched == guaranteed_search_result:
+-			players[_network_id].search_result_rpc(true)
++			players[_network_id].search_result_rpc.rpc(true)
+ 		else:
+-			players[_network_id].search_result_rpc(false)
++			players[_network_id].search_result_rpc.rpc(false)
++		return
++
++	var hit: bool = containers_searched == guaranteed_search_result
++
++	if GameManager.local_game:
++
++		players[_network_id].search_result_rpc(hit)
+ 
+ 		return
+ 
+-	if containers_searched == guaranteed_search_result:
+-		players[_network_id].search_result_rpc.rpc(true)
++	# [MP8] Sent to the searcher alone: a broadcast runs the result on every peer, and each one
++	# re-broadcasts set_has_item_rpc. search_result_rpc is call_remote, so the host's own search is a
++	# direct call.
++	if _network_id == multiplayer.get_unique_id():
++		players[_network_id].search_result_rpc(hit)
+ 	else:
+-		players[_network_id].search_result_rpc.rpc(false)
+-
++		players[_network_id].search_result_rpc.rpc_id(_network_id, hit)
+ 
+ 
+ @rpc("any_peer", "call_local", "reliable")
+ func _on_item_found(_network_id):
+ 
++	# A mixed room runs the game's (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_on_item_found(_network_id)
++		return
++
++	# Runs again for each infected player when infected_rpc hands them the item, so every
++	# side effect sits behind a guard: mp8_first_time, projector_started, hunting_phase.
++	var mp8_first_time: bool = not infected_players.has(_network_id)
++
++	if mp8_first_time:
++		infected_players.append(_network_id)
++		# The finder's point, given at the find; mp8_first_time keeps the repeat calls out.
++		player_scores[_network_id] += 1
++
++	if !projector_started:
++		start_projector_hide_hunt_loop_rpc.rpc()
++	projector_started = true
++	await get_tree().create_timer(1.5).timeout
++
++	if not hunting_phase:
++		hunting_phase = true
++
++		# [MP8] Stabbing is allowed from here: the player's update_has_knife waits for this flag.
++		set_searching_disabled_rpc.rpc(true)
++
++		light_handler.transition_to_dark_rpc.rpc()
++		await get_tree().create_timer(3.0).timeout
++		# Lit for the players not yet infected: stabs can land in the 3 s before this.
++		countdown_handler.set_active_rpc.rpc(
++			maxi(active_players.size() - infected_players.size(), 0)
++		)
++		enable_player_fow_rpc.rpc()
++
++# The game's _on_item_found, for a mixed room (D120).
++func _mp8_game_on_item_found(_network_id):
++
+ 	if not infected_players.has(_network_id):
+ 		infected_players.append(_network_id)
+ 
+@@ -342,3 +648,58 @@ func _on_countdown_expired():
+ 		player.set_active_rpc.rpc(true)
+ 
+ 	state_machine.transition_to_rpc.rpc(&"Play")
++
++
++# [MP8V] machine-party-8p's Inside Job
++# Adapted from machine-party-8p's knife_at_the_office.gd and scene: vanilla's one syringe, turning up on
++# the Nth search overall, N clamped to what the office can reach; eight spawn markers; vanilla scoring.
++# A container is searched once, so N above the searchable count never comes and the hunt never starts.
++const MP8V_SEARCH_MARGIN: int = 2
++# 8p's knife_at_the_office.tscn adds four markers to PlayerSpawnPositions, each 1.2 along x from a
++# shipped one, unrotated as the shipped ones are; [shipped marker index, position under PlayerSpawnPositions].
++const MP8V_ADDED_MARKERS: Array = [
++	[0, Vector3(-3.82012, 0.0, -6.68596)],
++	[1, Vector3(6.2386, 0.0, -7.46958)],
++	[2, Vector3(-3.77804, 0.0, -2.71269)],
++	[3, Vector3(6.14438, 0.0, -2.16074)],
++]
++
++
++# The margin keeps the find off the very last container. Counted over the reachable searchables
++# (the list _mp8_collect_searchables fills, without the two sealed-room ones), so the margin is real.
++static func _mp8v_clamp_target(rolled: int, searchable_count: int) -> int :
++	return mini(rolled, maxi(searchable_count - MP8V_SEARCH_MARGIN, 1))
++
++
++func _mp8v_add_spawns() -> void :
++
++	# The room is latched before this scene's add_child (game.gd). A mixed room keeps the game's 4 (D116).
++	if not NetworkManager.mp8_room_extended():
++		print("[MP8] Inside Job: a mixed room, the game's spawns unchanged")
++		return
++
++	if player_spawn_positions_node == null:
++		return
++	var shipped: Array[Node] = player_spawn_positions_node.get_children()
++	if shipped.size() != MP8V_ADDED_MARKERS.size():
++		return
++	for row in MP8V_ADDED_MARKERS:
++		var twin: Node3D = shipped[row[0]] as Node3D
++		var added: Node3D = twin.duplicate()
++		added.name = "%s_MP8V" % twin.name
++		player_spawn_positions_node.add_child(added)
++		added.position = row[1]
++
++
++# Runs after vanilla's roll in spawn_players: the rolled target is already in guaranteed_search_result.
++func _mp8v_setup_search() -> void :
++
++	mp8_player_count = PlayerManager.player_presences.size()
++
++	_mp8_collect_searchables()
++	var rolled: int = guaranteed_search_result
++	guaranteed_search_result = _mp8v_clamp_target(rolled, searchables.size())
++
++	var markers: int = player_spawn_positions_node.get_child_count() if player_spawn_positions_node != null else 0
++	print("[MP8] Inside Job 8p: %d players, %d markers, %d searchables, 1 syringe, search target %d (rolled %d)" % [
++		mp8_player_count, markers, searchables.size(), guaranteed_search_result, rolled])

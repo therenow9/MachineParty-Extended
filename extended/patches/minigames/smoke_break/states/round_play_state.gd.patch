@@ -1,0 +1,29 @@
+diff --git a/minigames/smoke_break/states/round_play_state.gd b/minigames/smoke_break/states/round_play_state.gd
+--- a/minigames/smoke_break/states/round_play_state.gd
++++ b/minigames/smoke_break/states/round_play_state.gd
+@@ -37,6 +37,11 @@ func enter(_msg: Dictionary = {}) -> void :
+ 
+ 	while countdown_timer >= 0:
+ 
++		# [MP8] The countdown freezes while seats are being placed by hand, or the round ends mid-edit.
++		# mp8_edit_paused is true only in the seat editor; `owner.get()` gives null on an owner without it.
++		while owner.get("mp8_edit_paused") == true:
++			await get_tree().create_timer(0.25).timeout
++
+ 		countdown_timer -= 1
+ 		tick_rpc.rpc(countdown_timer + 1)
+ 		await get_tree().create_timer(1.0).timeout
+@@ -60,6 +65,13 @@ func update_physics(_delta: float) -> void :
+ @rpc("any_peer", "call_local", "reliable")
+ func tick_rpc(time):
+ 	timer_updated.emit(time)
++
++	# [MP8] Only the server plays the beep. tick_rpc is call_local, so every peer runs this, and each
++	# play_omni_rpc broadcast takes a free voice from a 32-voice pool: with every peer broadcasting,
++	# each peer plays one stacked beep per player. A mixed room does that, as the game does (D116).
++	if not NetworkManager.mp8_sends_broadcast(multiplayer.is_server()):
++		return
++
+ 	SoundManager.play_omni_rpc.rpc(
+ 		"ekg_beep", 
+ 		&"MINIGAME_SFX", 

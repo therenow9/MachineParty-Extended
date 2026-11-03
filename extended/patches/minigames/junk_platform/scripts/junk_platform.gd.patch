@@ -1,0 +1,1739 @@
+diff --git a/minigames/junk_platform/scripts/junk_platform.gd b/minigames/junk_platform/scripts/junk_platform.gd
+--- a/minigames/junk_platform/scripts/junk_platform.gd
++++ b/minigames/junk_platform/scripts/junk_platform.gd
+@@ -30,9 +30,98 @@ var finished: bool = false
+ 
+ var player_count: int = 0
+ 
++# [MP8] 8 platforms, one per player: each is an Area3D plus its visuals, damage ring, compactor and
++# alarm. The colliders stay put while the visuals hang under the rotating `visuals base`, so a turned
++# view must re-point each platform at the visuals now above it.
++
++# Radius of the new platforms (of all 8 in view mode c); the stock corners sit at 18.38. At 22.5 the
++# edge gap is too wide to walk across. `mp8junkr=<radius>` overrides it.
++const MP8_NEW_RADIUS: float = 22.5
++
++# The new platforms turn 45 degrees about Y so their orientation matches their bearing.
++const MP8_NEW_YAW_DEGREES: float = 45.0
++
++# platforms[i] <-> spawn point i <-> player i, stock platforms first and copies after: a fault only in
++# the copies shows on P5-P8, and an off-by-one index hits P8 first.
++
++var _mp8_expanded: bool = false
++
++
++# [MP8] Debug aids: the local player's id top right (8 windows look alike) and number keys for the
++# junk rate. The junk timer runs only on the server, so the keys go through an RPC.
++
++const MP8_JUNK_SPEED_KEYS: Dictionary = {
++	KEY_1: 1.0,    # stock rate
++	KEY_2: 2.0,    # 2x slower
++	KEY_3: 5.0,    # 5x slower
++	KEY_4: 10.0,   # 10x slower
++	KEY_5: 0.0,    # paused
++}
++
++# [MP8] Debug aids switch: the junk-rate keys, the id HUD and the platform name labels. On with
++# `mp8junkdebug`, or `-debug-tools` without `mp8nojunkdebug`; a release launch passes neither.
++var _mp8_debug_aids: bool = false
++var _mp8_junk_keys: bool = false
++var _mp8_junk_mult: float = 1.0
++var _mp8_junk_base_interval: float = 0.0
++var _mp8_junk_base_min: float = 0.0
++var _mp8_debug_canvas: CanvasLayer = null
++# [MP8] Pause button; key 5 sends the same RPC.
++var _mp8_junk_btn: Button = null
++var _mp8_id_label: Label = null
++var _mp8_junk_label: Label = null
++
++# [MP8-DIAG] Opt-in diagnostics (`-debug-tools`, `mp8diag` or the editor; nothing in a release launch).
++# One file per instance, user://mp8_diag_<peer>.log, since 8 instances interleave in godot.log; each
++# line is flushed because a hung round gets killed. A survivor at y=-999 with active=false was killed
++# but never removed from `active_players`.
++var _mp8_diag_on: bool = false
++var _mp8_diag_f: FileAccess = null
++var _mp8_diag_timer: Timer = null
++
++
+ func _ready() -> void :
+ 	super._ready()
+ 
++	# [MP8] A mixed room runs the rest of the game's _ready (D120): no flags, octagon, camera, aim, sweep or labels.
++	if not NetworkManager.mp8_room_extended():
++		await _mp8_game_ready_tail()
++		return
++
++	# [MP8] Before `_mp8_expand_platforms()`, which builds the labels these flags gate.
++	_mp8_init_flags()
++	_mp8_init_couch()
++	# [MP8] Aimed throws (D113): the couch layout, and online at 5-8, where the octagon's far decks are 42-45
++	# apart. Decided on every peer: online each player's own peer runs their throw.
++	var online_8: bool = not GameManager.local_game and PlayerManager.player_presences.size() > 4
++	_mp8_aim_on = _mp8_couch != Vector3.ZERO or online_8
++
++	_mp8_diag_start()
++	_mp8_sweep_start()
++
++	camera.current = true
++
++	# [MP8] Before `spawn_players()`: spawn points come from platform positions, and junk drop points
++	# from spawn points.
++	if not NetworkManager.mp8_dev_args().has("mp8noexpand"):
++		_mp8_expand_platforms()
++
++	if multiplayer.is_server():
++
++		countdown_state.countdown_started.connect(_on_countdown_started)
++		countdown_state.tick.connect(_on_countdown_tick)
++		countdown_state.expired.connect(_on_countdown_expired)
++
++	# [MP8] Records the base junk intervals: keys set base x multiplier, so presses do not compound.
++	_mp8_init_debug()
++
++	if GameManager.local_game:
++		await get_tree().create_timer(1.0).timeout
++		minigame_ready.emit(1)
++
++# The game's _ready after its super call, for a mixed room (D120).
++func _mp8_game_ready_tail():
++
+ 	camera.current = true
+ 
+ 	if multiplayer.is_server():
+@@ -45,6 +134,212 @@ func _ready() -> void :
+ 		await get_tree().create_timer(1.0).timeout
+ 		minigame_ready.emit(1)
+ 
++
++# [MP8] Runs before any HUD or label is built.
++func _mp8_init_flags() -> void :
++
++	var mp8_args := NetworkManager.mp8_dev_args()
++	# [MP8] An explicit `mp8junkdebug` beats `mp8nojunkdebug`, so a clean test launch can still show it.
++	_mp8_debug_aids = mp8_args.has("mp8junkdebug") \
++		or (mp8_args.has("-debug-tools") and not mp8_args.has("mp8nojunkdebug"))
++	_mp8_junk_keys = _mp8_debug_aids or mp8_args.has("mp8junkkeys")
++
++	# [MP8] View mode, `mp8junkview=a|b|c`, default MP8_VIEW_DEFAULT:
++	#   a = stock: 2 facings (0/180), mixed two-ring layout
++	#   b = 4 facings (0/90/180/270), same layout
++	#   c = 8 facings (every 45), all platforms on one regular octagon
++	var vm: String = _mp8_arg("mp8junkview=").to_lower()
++	_mp8_view_mode = vm if MP8_VIEW_STEPS.has(vm) else MP8_VIEW_DEFAULT
++	if vm != "" and not MP8_VIEW_STEPS.has(vm):
++		push_warning("[MP8] Debris Platforms: mp8junkview=%s not recognised, using the default C (a, b or c only)" % vm)
++	print("[MP8] Debris Platforms: view mode = %s (%d facings, step %.0f°)" % [
++		("stock" if _mp8_view_mode == MP8_VIEW_VANILLA else _mp8_view_mode.to_upper()),
++		int(round(360.0 / _mp8_facing_step())), _mp8_facing_step()
++	])
++
++
++func _mp8_init_debug() -> void :
++
++	if junk_handler != null:
++		_mp8_junk_base_interval = junk_handler.spawn_interval
++		_mp8_junk_base_min = junk_handler.min_spawn_interval
++
++	# Starting multiplier: `mp8junkslow=<x>`, else 5x slower with the junk keys on, else stock.
++	var v: String = _mp8_arg("mp8junkslow=")
++	if v.is_valid_float():
++		_mp8_junk_mult = float(v)
++	elif _mp8_junk_keys:
++		_mp8_junk_mult = 5.0
++
++	if multiplayer.is_server():
++		_mp8_apply_junk_speed()
++
++	_mp8_show_id_hud()
++	_mp8_update_junk_hud()
++
++
++# [MP8] One overlay layer for the id HUD and the junk-rate line.
++func _mp8_debug_layer() -> CanvasLayer:
++	if _mp8_debug_canvas == null:
++		_mp8_debug_canvas = CanvasLayer.new()
++		_mp8_debug_canvas.layer = 100
++		add_child(_mp8_debug_canvas)
++	return _mp8_debug_canvas
++
++
++# [MP8] The game's own font: the default theme font collapses the spacing in these labels.
++func _mp8_style_label(lbl: Label, color: Color) -> void :
++
++	var f = load("res://fonts/Terminal F4.ttf")
++	if f != null:
++		lbl.add_theme_font_override("font", f)
++	lbl.add_theme_font_size_override("font_size", 26)
++	lbl.add_theme_color_override("font_color", color)
++	lbl.add_theme_color_override("font_outline_color", Color.BLACK)
++	lbl.add_theme_constant_override("outline_size", 6)
++	lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
++
++
++# [MP8] Top-right id HUD: the local player's name and network id. Names may not be filled at `_ready`,
++# so `mp8_set_platform_labels_rpc` refreshes it.
++func _mp8_show_id_hud() -> void :
++
++	if not _mp8_debug_aids:
++		return
++
++	if _mp8_id_label == null:
++		var lbl := Label.new()
++		lbl.set_anchors_preset(Control.PRESET_TOP_RIGHT)
++		lbl.offset_left = -420.0
++		lbl.offset_top = 12.0
++		lbl.offset_right = -16.0
++		# [MP8] Three lines: who, view mode, local facing.
++		lbl.offset_bottom = 150.0
++		lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
++		_mp8_style_label(lbl, Color(1.0, 0.95, 0.4))
++		_mp8_debug_layer().add_child(lbl)
++		_mp8_id_label = lbl
++
++	var me: int = multiplayer.get_unique_id() if multiplayer.has_multiplayer_peer() else 0
++	var who: String = ""
++	if PlayerManager.player_presences.has(me):
++		who = String(PlayerManager.player_presences[me].network_name)
++
++	# [MP8] Facing is per peer: in mode c the 8 windows show 8 values, in b they match in pairs. All
++	# equal means the facing was not applied.
++	var lines := PackedStringArray()
++	lines.append(("id %d" % me) if who == "" else ("%s   id %d" % [who, me]))
++	lines.append("view %s   %d facings" % [
++		("stock" if _mp8_view_mode == MP8_VIEW_VANILLA else _mp8_view_mode.to_upper()),
++		int(round(360.0 / _mp8_facing_step()))
++	])
++	lines.append("my facing %.0f°" % _mp8_my_facing)
++	_mp8_id_label.text = "\n".join(lines)
++
++
++# [MP8] Junk-rate line and pause button, only with the junk keys on.
++func _mp8_update_junk_hud() -> void :
++
++	if not _mp8_junk_keys:
++		return
++
++	if _mp8_junk_label == null:
++		var lbl := Label.new()
++		lbl.set_anchors_preset(Control.PRESET_TOP_WIDE)
++		lbl.offset_top = 12.0
++		lbl.offset_bottom = 52.0
++		lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
++		_mp8_style_label(lbl, Color(0.6, 0.9, 1.0))
++		_mp8_debug_layer().add_child(lbl)
++		_mp8_junk_label = lbl
++
++	var state: String
++	if _mp8_junk_mult <= 0.0:
++		state = "junk paused"
++	elif is_equal_approx(_mp8_junk_mult, 1.0):
++		state = "stock rate (a batch every %.1f s)" % _mp8_junk_base_interval
++	else:
++		state = "%.0fx slower (a batch every %.1f s)" % [_mp8_junk_mult, _mp8_junk_base_interval * _mp8_junk_mult]
++
++	_mp8_junk_label.text = "[junk debug] %s    1=stock 2=2x slower 3=5x slower 4=10x slower 5=pause" % state
++
++	# [MP8] The button exists only on the host: the pause is global, and a button in every window would
++	# let any client stop the junk with a stray click. Key 5 sends the same RPC on every peer. This
++	# minigame never captures the mouse, so the button is clickable.
++	if multiplayer.is_server() and _mp8_junk_btn == null:
++		var b := Button.new()
++		b.set_anchors_preset(Control.PRESET_TOP_RIGHT)
++		b.offset_left = -220.0
++		b.offset_top = 158.0
++		b.offset_right = -16.0
++		b.offset_bottom = 202.0
++		var bf = load("res://fonts/Terminal F4.ttf")
++		if bf != null:
++			b.add_theme_font_override("font", bf)
++		b.add_theme_font_size_override("font_size", 24)
++		b.pressed.connect(_mp8_toggle_junk_pause)
++		_mp8_debug_layer().add_child(b)
++		_mp8_junk_btn = b
++
++	# Clients have no button.
++	if _mp8_junk_btn != null:
++		_mp8_junk_btn.text = "Resume junk" if _mp8_junk_mult <= 0.0 else "Pause junk"
++
++
++# [MP8] Toggles paused / stock rate through the key-5 RPC, so every window agrees.
++func _mp8_toggle_junk_pause() -> void :
++	NetworkManager.mp8_rpc(self, &"mp8_set_junk_speed_rpc", [0.0 if _mp8_junk_mult > 0.0 else 1.0])
++
++
++# [MP8] Keys work on any peer; the RPC carries them to the server's timer.
++func _unhandled_key_input(event: InputEvent) -> void :
++
++	if not _mp8_junk_keys:
++		return
++	var key := event as InputEventKey
++	if key == null or not key.pressed or key.echo:
++		return
++	if not MP8_JUNK_SPEED_KEYS.has(key.keycode):
++		return
++
++	NetworkManager.mp8_rpc(self, &"mp8_set_junk_speed_rpc", [float(MP8_JUNK_SPEED_KEYS[key.keycode])])
++	get_viewport().set_input_as_handled()
++
++
++# [MP8] any_peer: whoever pressed sends it; call_local refreshes the sender's HUD as well.
++func mp8_set_junk_speed_rpc(mult: float) -> void :
++
++	_mp8_junk_mult = mult
++	if multiplayer.is_server():
++		_mp8_apply_junk_speed()
++	_mp8_update_junk_hud()
++	print("[MP8] junk rate -> %s" % [
++		"paused" if mult <= 0.0 else ("%.0fx slower" % mult if mult > 1.0 else "stock")
++	])
++
++
++# [MP8] Server only. Scales `spawn_interval` and `min_spawn_interval` both: the rate ramps from one to
++# the other, so scaling only the start would not slow the curve.
++func _mp8_apply_junk_speed() -> void :
++
++	if junk_handler == null or _mp8_junk_base_interval <= 0.0:
++		return
++
++	# [MP8] The pause is state on the handler: `set_active(true)` would restart a merely stopped timer.
++	junk_handler.mp8_paused = (_mp8_junk_mult <= 0.0)
++
++	if _mp8_junk_mult <= 0.0:
++		if junk_handler.timer != null:
++			junk_handler.timer.stop()
++		return
++
++	junk_handler.spawn_interval = _mp8_junk_base_interval * _mp8_junk_mult
++	junk_handler.min_spawn_interval = _mp8_junk_base_min * _mp8_junk_mult
++
++	# Restart the running timer, or its current wait keeps the old interval.
++	if junk_handler.active and junk_handler.timer != null:
++		junk_handler.timer.start(junk_handler.spawn_interval)
++
+ func fade_in_ambience():
+ 	for speaker_controller in ambience_speaker_controllers:
+ 		speaker_controller.speaker.volume_linear = 0
+@@ -71,8 +366,979 @@ func initialize(_round_number: int, _total_rounds: int, _scores: Dictionary = {}
+ 
+ 	state_machine.transition_to_rpc.rpc(&"Round", {"round": _round_number, "total": _total_rounds})
+ 
++# [MP8] Expands the 4 stock platforms to `NetworkManager.MAX_PLAYERS`.
++func _mp8_expand_platforms() -> void :
++
++	if _mp8_expanded:
++		return
++	var target: int = NetworkManager.MAX_PLAYERS
++	var n: int = platforms.size()
++	if n == 0 or n >= target:
++		return
++	_mp8_expanded = true
++
++	# 1. Group each platform's nodes by position, not by number: `platform main parent1` is not under
++	# Platform1, and diagonal platforms reference the same visuals.
++	var groups: Array = []
++	for p in platforms:
++		groups.append({"platform": p, "nodes": [], "pos": p.global_position})
++
++	for parent_path in [
++		"visuals base/junk platform visuals2",
++		"visuals base/damage indicators",
++		"junk platform compactors",
++	]:
++		var parent: Node = get_node_or_null(parent_path)
++		if parent == null:
++			continue
++		for child in parent.get_children():
++			if child is Node3D:
++				_mp8_assign_to_nearest(groups, child)
++
++	# The alarm speakers are loose children of the root.
++	for child in get_children():
++		if child is Node3D and String(child.name).begins_with("speaker_indicator alarm"):
++			_mp8_assign_to_nearest(groups, child)
++
++	# 2. Copy whole groups and move each as one, so the parts keep their relative offsets.
++	var all_groups: Array = groups.duplicate()
++	for i in range(n, target):
++		var src: Dictionary = groups[i % n]
++		var clone: Dictionary = {"nodes": [], "pos": src["pos"]}
++
++		var dup_platform: JunkPlatformPlatform = src["platform"].duplicate()
++		dup_platform.name = "MP8Platform%d" % (i + 1)
++		src["platform"].get_parent().add_child(dup_platform)
++		dup_platform.global_position = src["platform"].global_position
++		clone["platform"] = dup_platform
++		platforms.append(dup_platform)
++
++		for node in src["nodes"]:
++			var dup_node: Node3D = node.duplicate()
++			dup_node.name = "MP8_%d_%s" % [i + 1, node.name]
++			node.get_parent().add_child(dup_node)
++			dup_node.transform = node.transform
++			clone["nodes"].append(dup_node)
++
++		all_groups.append(clone)
++
++	# 3. Move to the slots. In modes a and b the stock 4 stay put (delta 0).
++	var original_positions: Array = []
++	for g in groups:
++		original_positions.append(g["pos"])
++	var slots: Array[Vector3] = _mp8_slot_positions(original_positions)
++
++	for i in all_groups.size():
++		if i >= slots.size():
++			break
++		var g: Dictionary = all_groups[i]
++		var delta: Vector3 = slots[i] - g["pos"]
++		# A couch slot may be raised, so its height counts.
++		if _mp8_couch == Vector3.ZERO:
++			delta.y = 0.0
++		if delta.length() < 0.01:
++			continue  # a stock platform left in place
++
++		# Only the new 4 turn 45 degrees; the stock 4 keep their bearing (mode c changes only their radius).
++		var yaw: float = deg_to_rad(MP8_NEW_YAW_DEGREES) if i >= n else 0.0
++		_mp8_move_group(g, slots[i], yaw)
++
++	# [MP8] Final positions, for `_mp8_rebind_for_facing`; `g["pos"]` is the position before the move.
++	_mp8_groups_final.clear()
++	for i in all_groups.size():
++		var gg: Dictionary = all_groups[i]
++		_mp8_groups_final.append({
++			"platform": gg["platform"],
++			"nodes": gg["nodes"],
++			"pos": (slots[i] if i < slots.size() else gg["pos"]),
++		})
++
++	_mp8_report_gaps(slots)
++	_mp8_check_pairing(slots)
++
++	# 4. Wire each platform to its own group and its opposite: `duplicate()` keeps @export references
++	# pointing at the originals.
++	for i in all_groups.size():
++		# The partner comes from positions: in slot order, `(i + size/2) % size` is not the 180-degree opposite.
++		var partner: int = _mp8_opposite_index(slots, i)
++		_mp8_wire_platform(all_groups[i], all_groups[partner])
++
++		# A ring lighting with someone else's junk is only diagnosable from this line.
++		var pl: JunkPlatformPlatform = all_groups[i]["platform"]
++		var own_i: Node3D = _mp8_pick(all_groups[i], "damage indicator")
++		var far_i: Node3D = _mp8_pick(all_groups[partner], "damage indicator")
++		print("[MP8-WIRE] platform%d (%.0f,%.0f) rings=%d own ring=%s flipped ring=%s(platform%d)" % [
++			i + 1, slots[i].x, slots[i].z, pl.damage_circles.size(),
++			"none" if own_i == null else own_i.name,
++			"none" if far_i == null else far_i.name, partner + 1
++		])
++
++	# 5. One spawn point per platform, in platform order.
++	_mp8_rebuild_spawn_points(slots)
++
++	# 6. Camera. Record the stock camera before camera_base turns: the per-player mode measures against it.
++	if camera != null:
++		_mp8_cam_xf0 = camera.global_transform
++		_mp8_cam_fov0 = camera.fov
++
++	# The couch layout fits its own camera unless `mp8junkcam=` sets the offset.
++	if _mp8_couch != Vector3.ZERO and _mp8_arg("mp8junkcam=") == "":
++		_mp8_fit_couch_camera(slots)
++	# By default every player gets the same offset. It is in camera_base's local space, so it turns with
++	# the later rotation and stays symmetric.
++	elif not NetworkManager.mp8_dev_args().has("mp8junkcamper"):
++		var c: Vector3 = _mp8_cam_values()
++		_mp8_apply_camera(c.x, c.y, c.z)
++
++	_mp8_report_camera(all_groups, slots)
++
++	# [MP8] The stock decks' floors are one static collider left at the corners, its top at y -0.06,
++	# above the fall plane. Every deck has its own pillar, so a moved couch layout turns it off.
++	if _mp8_couch != Vector3.ZERO:
++		var stock_floor := get_node_or_null(
++			"junk platform base collider blockout3/StaticBody3D/CollisionShape3D"
++		) as CollisionShape3D
++		if stock_floor != null:
++			stock_floor.set_deferred("disabled", true)
++		print("[MP8] Debris Platforms: couch layout, stock floor collider %s" % [
++			"off" if stock_floor != null else "not found"
++		])
++		_mp8_couch_lift_compactors(all_groups, slots)
++		_mp8_couch_light(slots)
++
++	# 7. A name label above each platform.
++	_mp8_build_platform_labels()
++
++	print("[MP8] Debris Platforms: %d -> %d platforms (new 4 at 0/90/180/270°, radius %.1f)" % [
++		n, platforms.size(), _mp8_radius()
++	])
++
++
++# [MP8] Name labels (debug aids only). Height 8 clears a standing player and stays below the
++# compactors' rest height of 27; as the platform's child a label hides when its platform collapses.
++const MP8_LABEL_HEIGHT: float = 8.0
++const MP8_LABEL_FONT_SIZE: int = 96
++
++var _mp8_platform_labels: Array[Label3D] = []
++var _mp8_label_names: Array = []   # filled by the server in spawn_players, then broadcast
++
++
++func _mp8_build_platform_labels() -> void :
++
++	_mp8_platform_labels.clear()
++
++	# Sized to the platform count even with labels off: `spawn_players()` writes it by index.
++	_mp8_label_names.clear()
++	for p in platforms:
++		_mp8_label_names.append("")
++
++	if not _mp8_debug_aids:
++		return
++
++	for p in platforms:
++		var lbl := Label3D.new()
++		lbl.name = "MP8NameLabel"
++		lbl.text = ""
++		lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED  # cameras face different ways
++		lbl.font_size = MP8_LABEL_FONT_SIZE
++		lbl.outline_size = 24
++		lbl.modulate = Color(1.0, 0.95, 0.4)
++		lbl.outline_modulate = Color.BLACK
++		var f = load("res://fonts/Terminal F4.ttf")
++		if f != null:
++			lbl.font = f
++		p.add_child(lbl)
++		lbl.position = Vector3(0.0, MP8_LABEL_HEIGHT, 0.0)
++		_mp8_platform_labels.append(lbl)
++
++
++# [MP8] The server sends each platform's owner; the labels already exist on every peer.
++func mp8_set_platform_labels_rpc(names: Array) -> void :
++
++	for i in _mp8_platform_labels.size():
++		if i < names.size():
++			_mp8_platform_labels[i].text = String(names[i])
++		else:
++			_mp8_platform_labels[i].text = ""
++
++	# [MP8] PlayerManager is filled by now, so the id HUD can show the name.
++	_mp8_show_id_hud()
++
++
++# [MP8] Turns a group by yaw about its own centre, then moves it to target; the parts keep their
++# relative offsets.
++func _mp8_move_group(g: Dictionary, target: Vector3, yaw: float) -> void :
++
++	var center: Vector3 = g["pos"]
++	var basis_rot := Basis(Vector3.UP, yaw)
++
++	var nodes: Array = [g["platform"]]
++	nodes.append_array(g["nodes"])
++
++	for node in nodes:
++		var offset: Vector3 = node.global_position - center
++		offset = basis_rot * offset
++		node.global_position = target + offset
++		node.global_transform.basis = basis_rot * node.global_transform.basis
++
++
++# [MP8] Logs the smallest edge gap between platforms: too small and players walk across.
++func _mp8_report_gaps(slots: Array[Vector3]) -> void :
++
++	var radius: float = 6.0
++	if junk_handler != null and "platform_radius" in junk_handler:
++		radius = junk_handler.platform_radius
++
++	var min_gap: float = 1e20
++	for i in slots.size():
++		for j in range(i + 1, slots.size()):
++			var d: float = Vector2(
++				slots[i].x - slots[j].x, slots[i].z - slots[j].z
++			).length()
++			min_gap = minf(min_gap, d - radius * 2.0)
++
++	print("[MP8] smallest platform edge gap %.2f (stock corners: %.2f; too small and players walk across)" % [
++		min_gap, 26.0 - radius * 2.0
++	])
++
++
++# [MP8] Assigns a node to the nearest platform by horizontal distance (compactors hang high above).
++func _mp8_assign_to_nearest(groups: Array, node: Node3D) -> void :
++
++	var best: int = -1
++	var best_dist: float = 1e20
++	var np: Vector3 = node.global_position
++	for i in groups.size():
++		var gp: Vector3 = groups[i]["pos"]
++		var d: float = Vector2(np.x - gp.x, np.z - gp.z).length()
++		if d < best_dist:
++			best_dist = d
++			best = i
++	# Farther than a platform diameter: shared scenery.
++	if best >= 0 and best_dist < 12.0:
++		groups[best]["nodes"].append(node)
++
++
++# [MP8] World positions of the 8 slots, in `platforms` order: the stock 4 first, then the new 4 at
++# 0/90/180/270 degrees.
++func _mp8_slot_positions(original_positions: Array) -> Array[Vector3]:
++
++	var out: Array[Vector3] = []
++
++	for p in original_positions:
++		out.append(Vector3(p.x, 0.0, p.z))
++
++	if _mp8_couch != Vector3.ZERO:
++		for i in out.size():
++			out[i] = _mp8_couch_slot(atan2(out[i].x, out[i].z))
++		for k in 4:
++			out.append(_mp8_couch_slot(deg_to_rad(90.0 * float(k))))
++		return out
++
++	var r: float = _mp8_radius()
++
++	# [MP8] Mode c: the stock 4 keep their bearing at the new radius, making a regular octagon; only
++	# then is 45 degrees a symmetry, giving each player a facing of their own.
++	if _mp8_view_mode == "c":
++		for i in out.size():
++			var a: float = atan2(out[i].x, out[i].z)
++			out[i] = Vector3(sin(a) * r, 0.0, cos(a) * r)
++
++	for k in 4:
++		var angle: float = deg_to_rad(90.0 * float(k))
++		out.append(Vector3(sin(angle) * r, 0.0, cos(angle) * r))
++	return out
++
++
++# [MP8] Value of a `<prefix>=<value>` command-line argument, or "" when absent.
++func _mp8_arg(prefix: String) -> String:
++	for a in NetworkManager.mp8_dev_args():
++		var s: String = String(a)
++		if s.begins_with(prefix):
++			return s.substr(prefix.length())
++	return ""
++
++
++# [MP8] `mp8junkr=<radius>` overrides MP8_NEW_RADIUS.
++func _mp8_radius() -> float:
++	var v: String = _mp8_arg("mp8junkr=")
++	if v.is_valid_float():
++		return float(v)
++	return MP8_NEW_RADIUS
++
++
++# [MP8] Couch layout at 5-8 seats. One shared camera draws the back decks at about half the front's
++# size, so the ring flattens (rx, rz) and may tilt about X, back decks up; only up, since the fall
++# plane is at y -2. Online keeps mode c: its turned views need the regular octagon.
++var _mp8_couch: Vector3 = Vector3.ZERO   # (rx, rz, tilt in degrees); zero = off
++
++# The owner's pick from in-game renders (D102): wider and shallower, all decks at one height.
++# `mp8junkcouch=<rx>,<rz>,<tilt>` overrides it, and `mp8junkcouch=0,0,0` turns it off.
++const MP8_COUCH_LAYOUT: Vector3 = Vector3(34.0, 18.0, 0.0)
++
++# World units kept clear beyond each deck's radius when the couch camera is fitted.
++const MP8_COUCH_FRAME_MARGIN: float = 2.0
++
++
++# [MP8] Runs before `_mp8_expand_platforms()`: presences are filled by the lobby, before the load.
++func _mp8_init_couch() -> void :
++
++	_mp8_couch = Vector3.ZERO
++	if not GameManager.local_game:
++		return
++	var seats: int = PlayerManager.player_presences.size()
++	if seats > 4:
++		_mp8_couch = MP8_COUCH_LAYOUT
++	var v: String = _mp8_arg("mp8junkcouch=")
++	var parts: PackedStringArray = v.split(",")
++	if seats > 4 and parts.size() == 3 \
++			and parts[0].is_valid_float() and parts[1].is_valid_float() and parts[2].is_valid_float():
++		_mp8_couch = Vector3(float(parts[0]), float(parts[1]), float(parts[2]))
++	elif v != "" and seats > 4:
++		push_warning("[MP8] Debris Platforms: mp8junkcouch=%s not recognised (rx,rz,tilt)" % v)
++
++	if _mp8_couch == Vector3.ZERO:
++		print("[MP8] Debris Platforms: couch layout off (%d seats)" % seats)
++	else:
++		print("[MP8] Debris Platforms: couch layout rx %.1f rz %.1f tilt %.0f° (%d seats)" % [
++			_mp8_couch.x, _mp8_couch.y, _mp8_couch.z, seats
++		])
++
++
++# [MP8] The couch slot at bearing b: the ellipse turned about X by the tilt, then raised so the front
++# deck (+Z, nearest the camera) sits at y 0.
++func _mp8_couch_slot(b: float) -> Vector3:
++	var t: float = deg_to_rad(_mp8_couch.z)
++	var z0: float = cos(b) * _mp8_couch.y
++	return Vector3(sin(b) * _mp8_couch.x, (_mp8_couch.y - z0) * sin(t), z0 * cos(t))
++
++
++# [MP8] Couch camera: the stock orientation (the sway animates rotation, so only the position is
++# ours), slid along the view axis through the decks' centre until every deck is whole in frame.
++func _mp8_fit_couch_camera(slots: Array[Vector3]) -> void :
++
++	if camera == null or slots.is_empty() or _mp8_cam_fov0 <= 0.0:
++		return
++
++	var radius: float = 6.0
++	if junk_handler != null and "platform_radius" in junk_handler:
++		radius = junk_handler.platform_radius
++
++	camera.fov = _mp8_cam_fov0 + MP8_CAM_FOV_ADD
++	var half_v: float = deg_to_rad(camera.fov) * 0.5
++	var half_h: float = atan(tan(half_v) * _mp8_aspect())
++
++	var centre: Vector3 = Vector3.ZERO
++	for s in slots:
++		centre += s
++	centre /= float(slots.size())
++
++	var xf: Transform3D = camera.global_transform
++	var fwd: Vector3 = - xf.basis.z.normalized()
++	var d: float = 10.0
++	while d < 200.0:
++		xf.origin = centre - fwd * d
++		var worst: float = INF
++		for s in slots:
++			var m: Vector3 = _mp8_frame_margin(xf, half_v, half_h, s)
++			worst = minf(worst, minf(m.y, m.z))
++		if worst >= radius + MP8_COUCH_FRAME_MARGIN:
++			break
++		d += 0.25
++	camera.global_transform = xf
++
++	# On-screen size: a deck's radius as a fraction of half the screen height.
++	var sizes: PackedStringArray = []
++	var smallest: float = INF
++	var largest: float = 0.0
++	for i in slots.size():
++		var depth: float = _mp8_frame_margin(xf, half_v, half_h, slots[i]).x
++		var size: float = radius / (depth * tan(half_v))
++		smallest = minf(smallest, size)
++		largest = maxf(largest, size)
++		sizes.append("%d(%.0f,%.1f,%.0f)=%.3f" % [i + 1, slots[i].x, slots[i].y, slots[i].z, size])
++	print("[MP8] couch camera: distance %.1f, position (%.1f, %.1f, %.1f), fov %.1f; deck sizes %s; smallest/largest %.2f" % [
++		d, xf.origin.x, xf.origin.y, xf.origin.z, camera.fov, " ".join(sizes), smallest / largest
++	])
++
++
++# [MP8] A compactor slams by tweening its own position to y 1.355 under `junk platform compactors`, at
++# the origin, so over a raised deck it would plunge through. Each hangs from a node at its deck's
++# height instead, and rests no lower than the camera: below it, compactors block the view of the back.
++func _mp8_couch_lift_compactors(groups: Array, slots: Array[Vector3]) -> void :
++
++	var lowest_rest: float = 0.0
++	if camera != null:
++		lowest_rest = camera.global_position.y + 1.0
++
++	var lifted: int = 0
++	for i in groups.size():
++		if i >= slots.size():
++			break
++		var comp = _mp8_pick(groups[i], "compactor")
++		if comp == null:
++			continue
++		var holder := Node3D.new()
++		holder.name = "MP8CompactorLift%d" % (i + 1)
++		comp.get_parent().add_child(holder)
++		holder.global_position = Vector3(0.0, slots[i].y, 0.0)
++		comp.reparent(holder, true)
++		comp.global_position.y = maxf(comp.global_position.y, lowest_rest)
++		lifted += 1
++
++	print("[MP8] Debris Platforms: %d compactors hang from their decks, resting at y %.1f or higher" % [
++		lifted, lowest_rest
++	])
++
++
++# [MP8] The scene's one light sits 11 above the deck plane, over the centre, so a deck raised above it
++# is lit from below. It moves as far above the highest deck, over the decks' centre, with its energy
++# scaled by distance squared so the farthest deck gets about the stock farthest deck's light.
++func _mp8_couch_light(slots: Array[Vector3]) -> void :
++
++	var light := get_node_or_null("visuals base/Lighting/OmniLight3D") as OmniLight3D
++	if light == null or slots.is_empty():
++		print("[MP8] Debris Platforms: couch light not found")
++		return
++
++	var above: float = light.global_position.y
++	var stock_far: float = Vector2(MP8_NEW_RADIUS, above).length()
++
++	var centre: Vector3 = Vector3.ZERO
++	var top: float = 0.0
++	for s in slots:
++		centre += s
++		top = maxf(top, s.y)
++	centre /= float(slots.size())
++	var pos: Vector3 = Vector3(centre.x, top + above, centre.z)
++
++	var far: float = 0.0
++	for s in slots:
++		far = maxf(far, pos.distance_to(s))
++
++	light.global_position = pos
++	light.light_energy *= pow(far / stock_far, 2.0)
++	light.omni_range = maxf(light.omni_range, far * 2.0)
++	print("[MP8] Debris Platforms: couch light at (%.1f, %.1f, %.1f), energy %.1f, farthest deck %.1f (stock %.1f)" % [
++		pos.x, pos.y, pos.z, light.light_energy, far, stock_far
++	])
++
++
++# [MP8] The slot opposite slot i: nearest to (-x, -z). A view turned 180 degrees draws visuals from V
++# over (-V.x, -V.z), so the pairing is pure geometry, unrelated to array index.
++func _mp8_opposite_index(slots: Array[Vector3], i: int) -> int:
++
++	var target := Vector2( - slots[i].x, - slots[i].z)
++	var best: int = i
++	var best_d: float = 1e20
++	for j in slots.size():
++		var d: float = Vector2(slots[j].x, slots[j].z).distance_to(target)
++		if d < best_d:
++			best_d = d
++			best = j
++	return best
++
++
++# [MP8] Checks the flip pairing is an involution with no shared partner; otherwise a ring lights with
++# someone else's junk, which is hard to see by eye.
++func _mp8_check_pairing(slots: Array[Vector3]) -> void :
++
++	var partners: Array[int] = []
++	for i in slots.size():
++		partners.append(_mp8_opposite_index(slots, i))
++
++	var bad: bool = false
++	var seen: Dictionary = {}
++	for i in partners.size():
++		if partners[partners[i]] != i:
++			bad = true
++		if seen.has(partners[i]):
++			bad = true
++		seen[partners[i]] = true
++
++	var txt: PackedStringArray = []
++	for i in partners.size():
++		txt.append("%d(%.0f,%.0f)->%d" % [
++			i + 1, slots[i].x, slots[i].z, partners[i] + 1
++		])
++	print("[MP8] flip pairing %s: %s" % [
++		"❌ broken (slots not 180° symmetric)" if bad else "✓ involution holds",
++		" ".join(txt)
++	])
++
++
++# [MP8] Points a platform at its own group and its flipped partner. Rings and visuals sit under
++# `visuals base` and turn with the view, so they come from `own`; compactors and alarms do not turn,
++# so they always come from the platform's own group (`fixed`, else `own`). A compactor picked by
++# facing would slam on a different player on each peer.
++func _mp8_wire_platform(own: Dictionary, partner: Dictionary, fixed = null) -> void :
++
++	var p: JunkPlatformPlatform = own["platform"]
++
++	# Turn with the view: from `own`, the group above this platform now.
++	var own_indicator: Node3D = _mp8_pick(own, "damage indicator")
++	var own_visual: Node3D = _mp8_pick(own, "platform main")
++
++	# Do not turn: always the platform's own group.
++	var src_fixed: Dictionary = own if fixed == null else fixed
++	var own_compactor = _mp8_pick(src_fixed, "compactor")
++	var own_alarm = _mp8_pick(src_fixed, "speaker_indicator alarm")
++
++	var far_indicator: Node3D = _mp8_pick(partner, "damage indicator")
++	var far_visual: Node3D = _mp8_pick(partner, "platform main")
++	var far_compactor = _mp8_pick(partner, "compactor")
++	var far_alarm = _mp8_pick(partner, "speaker_indicator alarm")
++
++	if own_indicator != null:
++		p.damage_circle_parent = own_indicator
++	if far_indicator != null:
++		p.damage_circle_parent_flipped = far_indicator
++
++	var vis: Array[Node3D] = []
++	if own_indicator != null:
++		vis.append(own_indicator)
++	if own_visual != null:
++		vis.append(own_visual)
++	p.platform_visuals = vis
++
++	var vis_f: Array[Node3D] = []
++	if far_indicator != null:
++		vis_f.append(far_indicator)
++	if far_visual != null:
++		vis_f.append(far_visual)
++	p.platform_visuals_flipped = vis_f
++
++	if own_compactor != null:
++		p.compactor = own_compactor
++	if far_compactor != null:
++		p.compactor_flipped = far_compactor
++	if own_alarm != null:
++		p.speaker_alarm = own_alarm
++	if far_alarm != null:
++		p.speaker_alarm_flipped = far_alarm
++
++	p.assign_indicators()
++
++
++# Picks a group node by name, with `contains`: copies are prefixed `MP8_<n>_`.
++func _mp8_pick(group: Dictionary, keyword: String):
++	for node in group["nodes"]:
++		if String(node.name).contains(keyword):
++			return node
++	return null
++
++
++# [MP8] One spawn point per platform, in platform order: junk drop points derive from spawn points,
++# so a spawn point left behind drops junk into the void.
++func _mp8_rebuild_spawn_points(slots: Array[Vector3]) -> void :
++
++	var container: Node3D = player_spawn_position_node
++	if container == null:
++		return
++
++	var kids: Array = container.get_children()
++	if kids.is_empty():
++		return
++
++	var template: Node3D = kids[0]
++	while container.get_child_count() < slots.size():
++		var dup: Node3D = template.duplicate()
++		dup.name = "MP8Spawn%d" % container.get_child_count()
++		container.add_child(dup)
++
++	var all: Array = container.get_children()
++	for i in slots.size():
++		if i >= all.size():
++			break
++		var m: Node3D = all[i]
++		# Platform centre, at the template's height so the player does not start inside the collider.
++		m.global_position = slots[i] + Vector3(0.0, template.global_position.y, 0.0)
++
++
++# [MP8] View modes. A facing turns `camera_base` (the one camera node nothing else writes each frame)
++# and `visuals_base` while the colliders stay put, so each platform is re-pointed at the visuals above
++# it; stock has only two states (`platform_visuals` / `_flipped`). The step must map the ring onto
++# itself: b keeps the mixed rings (90), c puts all 8 on one octagon (45).
++const MP8_VIEW_STEPS: Dictionary = {"a": 180.0, "b": 90.0, "c": 45.0}
++const MP8_VIEW_DEFAULT: String = "c"
++# The mode on the stock two-state switch; the others re-point by geometry in `_mp8_apply_view()`.
++const MP8_VIEW_VANILLA: String = "a"
++
++var _mp8_view_mode: String = MP8_VIEW_DEFAULT
++var _mp8_my_facing: float = 0.0
++# Each group after the move: {"platform":, "nodes":, "pos": final world position}
++var _mp8_groups_final: Array = []
++
++# [MP8] Sweep: a round ends only by elimination, with no timeout, so a player killed (`active` false)
++# but never removed from `active_players` hangs it. The server removes them after a grace longer than
++# `fall_rpc`'s 1.5 s tween, which clears `active` before `emit_died`, and only while
++# `junk_handler.active`: before play starts every player is inactive.
++const MP8_SWEEP_TICK: float = 1.0
++const MP8_SWEEP_GRACE: float = 3.0
++var _mp8_dead_since: Dictionary[int, float] = {}
++var _mp8_sweep_timer: Timer = null
++
++
++func _mp8_facing_step() -> float:
++	return float(MP8_VIEW_STEPS.get(_mp8_view_mode, 180.0))
++
++
++# [MP8] A player's facing: the platform's bearing `atan2(x, z)` rounded to the mode's step (the camera
++# rests on +Z looking at -Z). With step 180 this equals the stock `position.z < 0` rule.
++func _mp8_facing_for(pos: Vector3) -> float:
++	var step: float = _mp8_facing_step()
++	var bearing: float = rad_to_deg(atan2(pos.x, pos.z))
++	return fposmod(round(bearing / step) * step, 360.0)
++
++
++# [MP8] Re-points every platform at the visuals above it: with `visuals_base` turned by deg, the group
++# at g draws at R(deg)*g, so platform p takes the group nearest R(-deg)*p. The stock
++# `platform_visuals_flipped` switch must not be applied on top.
++func _mp8_rebind_for_facing(deg: float) -> void :
++
++	if _mp8_groups_final.is_empty():
++		return
++
++	var inv := Basis(Vector3.UP, deg_to_rad( - deg))
++	var hit: int = 0
++	# [MP8] Each platform picks its nearest group on its own; two picking one group means one compactor
++	# serves two platforms. Reported, not corrected: the slots are not symmetric.
++	var taken: Dictionary = {}
++
++	for g in _mp8_groups_final:
++		var pl = g["platform"]
++		if pl == null or not is_instance_valid(pl):
++			continue
++
++		var p: Vector3 = Vector3(pl.global_position.x, 0.0, pl.global_position.z)
++		var want: Vector3 = inv * p
++		var want_far: Vector3 = - want
++
++		var best: Dictionary = {}
++		var far: Dictionary = {}
++		var bd: float = INF
++		var fd: float = INF
++		for h in _mp8_groups_final:
++			var hp: Vector3 = h["pos"]
++			var d: float = Vector2(hp.x - want.x, hp.z - want.z).length()
++			if d < bd:
++				bd = d
++				best = h
++			var d2: float = Vector2(hp.x - want_far.x, hp.z - want_far.z).length()
++			if d2 < fd:
++				fd = d2
++				far = h
++
++		if best.is_empty():
++			continue
++
++		var key: String = str(best.get("pos", Vector3.ZERO))
++		if taken.has(key):
++			print("[MP8] Debris Platforms: ⚠️ facing %.0f° rebind collision - platforms %s and %s both took group %s (one compactor shared)" % [
++				deg, String(pl.name), String(taken[key]), key
++			])
++		taken[key] = String(pl.name)
++
++		# A temporary group for `_mp8_wire_platform`; `g`, the platform's own group, supplies the compactor
++		# and alarm.
++		_mp8_wire_platform(
++			{"platform": pl, "nodes": best["nodes"]},
++			(far if not far.is_empty() else best),
++			g
++		)
++		hit += 1
++
++	print("[MP8] Debris Platforms: facing %.0f° -> re-pointed %d/%d platforms' visuals" % [
++		deg, hit, _mp8_groups_final.size()
++	])
++
++
++# [MP8] Applies a facing in modes b and c, locally: each peer turns its own view.
++func _mp8_apply_view(deg: float) -> void :
++
++	_mp8_my_facing = deg
++	if camera_base != null:
++		camera_base.rotation_degrees.y = deg
++	if visuals_base != null:
++		visuals_base.rotation_degrees.y = deg
++	_mp8_rebind_for_facing(deg)
++	_mp8_show_id_hud()
++
++
++# [MP8] Camera: each peer has its own, so position and fov can differ per player. Offsets go into the
++# camera's transform in `camera_base`'s local space, never onto `camera_base`: it turns about the world
++# origin, so a world offset would push rotated players' cameras forward. Default: one offset for
++# everyone; `mp8junkcamper` offsets only players whose platform touches the frame edge.
++const MP8_CAM_BACK: float = 6.0      # level pull-back; raised, the camera would pass the compactor tops (y~26.8)
++const MP8_CAM_DOWN: float = 2.0
++const MP8_CAM_FOV_ADD: float = 10.0  # fov added (stock 50.3 -> 60.3)
++
++var _mp8_cam_xf0: Transform3D        # stock camera transform, taken before camera_base turns
++var _mp8_cam_fov0: float = 0.0
++
++
++# [MP8] Per-player mode: (back, down, fov_add) for this player, zero = stock. Judged on whether the top
++# of their own platform is fully in frame; the near pillars are cut off in the stock game too.
++func _mp8_camera_adjust_for(pos: Vector3, rot: float) -> Vector3:
++
++	if _mp8_cam_fov0 <= 0.0:
++		return Vector3.ZERO
++
++	# The default shared offset was applied by `_mp8_expand_platforms`; do not add it twice.
++	if not NetworkManager.mp8_dev_args().has("mp8junkcamper"):
++		return Vector3.ZERO
++
++	var radius: float = 6.0
++	if junk_handler != null and "platform_radius" in junk_handler:
++		radius = junk_handler.platform_radius
++
++	# A 180-degree view equals the stock camera looking at the platform mirrored to (-x, -z).
++	var p: Vector3 = Vector3(pos.x, 0.0, pos.z)
++	if absf(rot) > 90.0:
++		p = Vector3( - p.x, 0.0, - p.z)
++
++	var half_v: float = deg_to_rad(_mp8_cam_fov0) * 0.5
++	var half_h: float = atan(tan(half_v) * _mp8_aspect())
++	var m: Vector3 = _mp8_frame_margin(_mp8_cam_xf0, half_v, half_h, p)
++
++	if minf(m.y, m.z) >= radius:
++		return Vector3.ZERO   # stock framing is enough
++
++	return _mp8_cam_values()
++
++
++# [MP8] Camera offset (back, down, fov_add); `mp8junkcam=<back>,<down>,<fov_add>` overrides it.
++func _mp8_cam_values() -> Vector3:
++
++	var back: float = MP8_CAM_BACK
++	var down: float = MP8_CAM_DOWN
++	var fov_add: float = MP8_CAM_FOV_ADD
++	var v: String = _mp8_arg("mp8junkcam=")
++	if v != "":
++		var parts: PackedStringArray = v.split(",")
++		if parts.size() > 0 and String(parts[0]).is_valid_float():
++			back = float(parts[0])
++		if parts.size() > 1 and String(parts[1]).is_valid_float():
++			down = float(parts[1])
++		if parts.size() > 2 and String(parts[2]).is_valid_float():
++			fov_add = float(parts[2])
++	return Vector3(back, down, fov_add)
++
++
++# [MP8] Sent per player by the server; not call_local, since `spawn_players` applies the host's directly.
++func mp8_adjust_camera_rpc(back: float, down: float, fov_add: float) -> void :
++	_mp8_apply_camera(back, down, fov_add)
++
++
++func _mp8_apply_camera(back: float, down: float, fov_add: float) -> void :
++
++	if camera == null or camera_base == null:
++		return
++
++	var before: Vector3 = camera.global_position
++	var before_fov: float = camera.fov
++
++	# In camera_base's local space the camera looks down -Z: back = +Z, down = -Y.
++	var t: Transform3D = camera_base.global_transform.affine_inverse() * camera.global_transform
++	t.origin += Vector3(0.0, - down, back)
++	camera.global_transform = camera_base.global_transform * t
++
++	camera.fov = before_fov + fov_add
++
++	print("[MP8] local camera: back %.1f, down %.1f, fov %.1f -> %.1f; position (%.1f, %.1f, %.1f) -> (%.1f, %.1f, %.1f)" % [
++		back, down, before_fov, camera.fov,
++		before.x, before.y, before.z,
++		camera.global_position.x, camera.global_position.y, camera.global_position.z
++	])
++
++
++func _mp8_aspect() -> float:
++	var vp: Viewport = get_viewport()
++	if vp != null and vp.get_visible_rect().size.y > 0.0:
++		return vp.get_visible_rect().size.x / vp.get_visible_rect().size.y
++	return 16.0 / 9.0
++
++
++# [MP8] Logs each platform's framing in the 0 and 180-degree views (180 = the platform mirrored to
++# (-x, -z) under the same camera). Margin = world distance to the frustum edge: < 0 the centre is off
++# screen, < radius the edge is cut, >= radius the platform is whole.
++func _mp8_report_camera(groups: Array, slots: Array[Vector3]) -> void :
++
++	if camera == null:
++		return
++
++	var xf: Transform3D = camera.global_transform
++	var half_v: float = deg_to_rad(camera.fov) * 0.5
++	var aspect: float = 16.0 / 9.0
++	var vp: Viewport = get_viewport()
++	if vp != null and vp.get_visible_rect().size.y > 0.0:
++		aspect = vp.get_visible_rect().size.x / vp.get_visible_rect().size.y
++	var half_h: float = atan(tan(half_v) * aspect)
++
++	var radius: float = 6.0
++	if junk_handler != null and "platform_radius" in junk_handler:
++		radius = junk_handler.platform_radius
++
++	print("[MP8-CAM] camera pos=(%.1f, %.1f, %.1f) pitch=%.1f° fov=%.1f half-angle V=%.1f° H=%.1f° platform radius=%.1f camera_base=(%.1f, %.1f, %.1f)" % [
++		xf.origin.x, xf.origin.y, xf.origin.z,
++		- rad_to_deg(xf.basis.get_euler().x), camera.fov,
++		rad_to_deg(half_v), rad_to_deg(half_h), radius,
++		camera_base.global_position.x, camera_base.global_position.y, camera_base.global_position.z
++	])
++
++	for i in slots.size():
++		var s: Vector3 = slots[i]
++		var a: Vector3 = _mp8_frame_margin(xf, half_v, half_h, s)
++		var b: Vector3 = _mp8_frame_margin(xf, half_v, half_h, Vector3( - s.x, s.y, - s.z))
++		print("[MP8-CAM] platform%d (x=%6.1f z=%6.1f)  facing 0°: depth%5.1f vert%+6.1f horiz%+6.1f %s   facing 180°: depth%5.1f vert%+6.1f horiz%+6.1f %s" % [
++			i + 1, s.x, s.z,
++			a.x, a.y, a.z, _mp8_verdict(a, radius),
++			b.x, b.y, b.z, _mp8_verdict(b, radius)
++		])
++
++	# Compactors rest at y~26.8, level with the camera; one too close to the lens fills the frame.
++	for i in groups.size():
++		var c = _mp8_pick(groups[i], "compactor")
++		if c == null:
++			continue
++		var cp: Vector3 = c.global_position
++		var d0: float = _mp8_frame_margin(xf, half_v, half_h, cp).x
++		var d1: float = _mp8_frame_margin(xf, half_v, half_h, Vector3( - cp.x, cp.y, - cp.z)).x
++		var near: float = minf(d0, d1)
++		if near < 12.0:
++			print("[MP8-CAM] ⚠️ platform%d compactor (y=%.1f) only %.1f from the lens, it will block the view" % [
++				i + 1, cp.y, near
++			])
++
++
++# [MP8] (depth, vertical margin, horizontal margin); a margin is the world distance to the frustum
++# edge, negative = off screen.
++func _mp8_frame_margin(xf: Transform3D, half_v: float, half_h: float, p: Vector3) -> Vector3:
++
++	var local: Vector3 = xf.affine_inverse() * p
++	var depth: float = - local.z          # the camera looks down -Z
++	if depth <= 0.01:
++		return Vector3(depth, -999.0, -999.0)   # behind the camera
++	return Vector3(
++		depth,
++		depth * tan(half_v) - absf(local.y),
++		depth * tan(half_h) - absf(local.x)
++	)
++
++
++func _mp8_verdict(m: Vector3, radius: float) -> String:
++	var worst: float = minf(m.y, m.z)
++	if worst < 0.0:
++		return "✗ centre off screen"
++	if worst < radius:
++		return "△ edge cut"
++	return "✓ whole"
++
++
+ func spawn_players():
+ 
++	# [MP8] A mixed room runs the game's spawn_players (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_spawn_players()
++		return
++
++	player_count = PlayerManager.player_presences.size()
++	var spawn_positions: Array[Transform3D]
++	for p in player_spawn_position_node.get_children():
++		spawn_positions.append(p.global_transform)
++	if GameManager.local_game:
++		spawn_positions.shuffle()
++
++	for i in PlayerManager.player_presences.size():
++		var network_id = PlayerManager.player_presences.keys()[i]
++
++		var camera_rotation: float = 0.0
++		var position: Vector3 = spawn_positions[i].origin
++		var player_character: JunkPlatformPlayer = player_scene.instantiate()
++		players_node.add_child(player_character, true)
++
++		junk_handler.add_spawn_point(
++			network_id, 
++			position + (Vector3.UP * 20.0)
++		)
++
++		player_character.network_id = network_id
++
++		# [MP8] In mode a (step 180) this equals the stock `if position.z < 0: camera_rotation = 180.0`.
++		camera_rotation = _mp8_facing_for(position)
++
++		if GameManager.local_game:
++			camera_rotation = rad_to_deg(spawn_positions[i].basis.get_euler().y)
++
++		player_character.set_player_presence.rpc(network_id)
++		player_character.setup_rpc.rpc(
++			position, camera_rotation
++		)
++
++		# [MP8] The fall cast reaches 10 down, so off a raised couch deck a player would drop freely,
++		# and could land on a lower deck, before it met the fall plane. It reaches from this player's
++		# deck and no higher: they drop in from the spawn marker, 22 up, and may steer until they land.
++		var own_deck: int = _mp8_nearest_platform(position)
++		if _mp8_couch != Vector3.ZERO and player_character.fall_cast != null and own_deck >= 0:
++			player_character.fall_cast.target_position = Vector3(
++				0.0, - (platforms[own_deck].global_position.y + 10.0), 0.0
++			)
++
++		# [MP8] Modes b and c send facing 0 too: clients refresh their HUD from it, and a 0 rebind is the
++		# identity. Mode a keeps the stock `> 0.0` condition and two-state path.
++		if not GameManager.local_game and (_mp8_view_mode != MP8_VIEW_VANILLA or camera_rotation > 0.0):
++
++			if network_id == 1:
++				if _mp8_view_mode != MP8_VIEW_VANILLA:
++					_mp8_apply_view(camera_rotation)
++				else:
++					camera_base.rotation_degrees.y = camera_rotation
++					visuals_base.rotation_degrees.y = camera_rotation
++					for j in platforms:
++						j.damage_circle_parent = j.damage_circle_parent_flipped
++						j.platform_visuals = j.platform_visuals_flipped
++						j.assign_indicators()
++						j.assign_flipped_compactor()
++			else:
++				rotate_camera_rpc.rpc_id(network_id, camera_rotation)
++
++		# [MP8] Per-player camera mode only: a player whose platform touches the frame edge gets the
++		# offset. It is in camera_base's local space, independent of the rotation above.
++		if not GameManager.local_game:
++			var adj: Vector3 = _mp8_camera_adjust_for(position, camera_rotation)
++			if adj != Vector3.ZERO:
++				print("[MP8] player %s is on a platform on the camera axis, adjusting their camera" % [
++					PlayerManager.player_presences[network_id].network_name
++				])
++				if network_id == 1:
++					_mp8_apply_camera(adj.x, adj.y, adj.z)
++				else:
++					NetworkManager.mp8_rpc_id(network_id, self, &"mp8_adjust_camera_rpc", [adj.x, adj.y, adj.z])
++
++		player_character.emit_died.connect(_on_player_died)
++		player_character.event_fallen.connect(_on_player_fallen)
++
++		# [MP8-DIAG] Log-only listeners; bound arguments come after the signal's own.
++		player_character.event_fallen.connect(_mp8_diag_fallen.bind(network_id, player_character))
++		player_character.emit_died.connect(_mp8_diag_died)
++
++		players[network_id] = player_character
++		active_players[network_id] = player_character
++		player_scores[network_id] = 0
++
++		# [MP8] The player's platform, matched by position rather than index. Bounds-checked: with
++		# `mp8noexpand`, `_mp8_label_names` is empty.
++		var nearest: int = _mp8_nearest_platform(position)
++		if nearest >= 0 and nearest < _mp8_label_names.size():
++			_mp8_label_names[nearest] = PlayerManager.player_presences[network_id].network_name
++
++	# [MP8] Label text to every peer; the labels already exist.
++	if not _mp8_label_names.is_empty():
++		NetworkManager.mp8_rpc(self, &"mp8_set_platform_labels_rpc", [_mp8_label_names])
++
++# The game's spawn_players, for a mixed room (D120).
++func _mp8_game_spawn_players():
++
+ 	player_count = PlayerManager.player_presences.size()
+ 	var spawn_positions: Array[Transform3D]
+ 	for p in player_spawn_position_node.get_children():
+@@ -127,12 +1393,106 @@ func spawn_players():
+ 		player_scores[network_id] = 0
+ 
+ 
++# [MP8] Index of the platform nearest pos, by horizontal distance.
++func _mp8_nearest_platform(pos: Vector3) -> int:
++
++	var best: int = -1
++	var best_dist: float = 1e20
++	for i in platforms.size():
++		var pp: Vector3 = platforms[i].global_position
++		var d: float = Vector2(pos.x - pp.x, pos.z - pp.z).length()
++		if d < best_dist:
++			best_dist = d
++			best = i
++	return best
++
++
++# [MP8] Aimed throws (D113). The stock throw comes down past chest height about 28 out, and the couch oval's far
++# ends are 68 apart, so a throw at an opponent beyond that is strengthened until the rock reaches them at chest
++# height. Only the strength changes, never the direction; a nearer target keeps stock.
++var _mp8_aim_on: bool = false
++const MP8_AIM_CONE_DEG: float = 20.0
++# The capsule's middle: it stands 5 tall from the player's feet.
++const MP8_AIM_HEIGHT: float = 2.5
++# Lands about 84 out at deck height: past the far end's deck.
++const MP8_AIM_MAX_MULT: float = 1.75
++
++
++# [MP8] The opponent nearest the thrown direction within the cone, alive; the throw's strength to reach them.
++# Targets come from `players_node`, which the spawner fills on every peer (`players` is the server's alone);
++# `active` is set on every peer by `set_active_rpc` and `kill_rpc`. `throw_rpc` carries the strength to all.
++func mp8_aimed_throw_power(thrower, dir: Vector3, stock: float) -> float:
++
++	var rock: RigidBody3D = thrower.held_item
++	var flat := Vector2(dir.x, dir.z)
++	if not _mp8_aim_on or rock == null or flat.length() < 0.001:
++		return stock
++	var from: Vector3 = thrower.grab_position.global_position
++
++	var target = null
++	var off: float = deg_to_rad(MP8_AIM_CONE_DEG)
++	for p in players_node.get_children():
++		if not p is JunkPlatformPlayer or p == thrower or not p.active:
++			continue
++		var a: float = absf(flat.angle_to(Vector2(p.global_position.x - from.x, p.global_position.z - from.z)))
++		if a <= off:
++			off = a
++			target = p
++	if target == null:
++		return stock
++
++	var dist: float = Vector2(target.global_position.x - from.x, target.global_position.z - from.z).length()
++	var drop: float = from.y - (target.global_position.y + MP8_AIM_HEIGHT)
++	var lift: float = atan2(dir.y, flat.length())
++	var g: float = float(ProjectSettings.get_setting("physics/3d/default_gravity")) * rock.gravity_scale
++	var damp: float = float(ProjectSettings.get_setting("physics/3d/default_linear_damp")) + rock.linear_damp
++
++	var power: float = stock
++	if _mp8_throw_reach(drop, stock / rock.mass, lift, g, damp) < dist:
++		var lo: float = stock
++		var hi: float = stock * MP8_AIM_MAX_MULT
++		if _mp8_throw_reach(drop, hi / rock.mass, lift, g, damp) < dist:
++			power = hi
++		else:
++			for i in 20:
++				var mid: float = (lo + hi) * 0.5
++				if _mp8_throw_reach(drop, mid / rock.mass, lift, g, damp) < dist:
++					lo = mid
++				else:
++					hi = mid
++			power = hi
++
++	print("[MP8] Debris Platforms: %s throws at %s, %.1f away, %.1f off, power %.0f (stock %.0f)" % [
++		thrower.name, target.name, dist, rad_to_deg(off), power, stock
++	])
++	return power
++
++
++# [MP8] How far a rock goes before it comes down past `drop` below its release, in Godot Physics' rigid body
++# steps: gravity, then the damping factor, then the move. cl_playtest's throw test checks it against a real throw.
++func _mp8_throw_reach(drop: float, speed: float, lift: float, g: float, damp: float) -> float:
++
++	var dt: float = 1.0 / float(Engine.physics_ticks_per_second)
++	var v := Vector2(cos(lift), sin(lift)) * speed
++	var p := Vector2.ZERO
++	for i in 1200:
++		v.y -= g * dt
++		v *= maxf(1.0 - damp * dt, 0.0)
++		p += v * dt
++		if v.y < 0.0 and p.y <= - drop:
++			return p.x
++	return p.x
++
++
+ func cleanup():
+ 
+ 	if is_multiplayer_authority():
+ 		queue_free()
+ 
+ func player_disconnected(_network_id: int):
++	# [MP8] The room is read before the await, which can outlast this minigame's latch. A mixed room
++	# keeps the game's own end check (D116).
++	var mp8_ext: bool = NetworkManager.mp8_room_extended()
+ 	super.player_disconnected(_network_id)
+ 
+ 	if not multiplayer.is_server():
+@@ -141,11 +1501,49 @@ func player_disconnected(_network_id: int):
+ 	remove_player_rpc.rpc(_network_id)
+ 	await get_tree().create_timer(1.0).timeout
+ 
++	# [MP8] Before the round starts nobody has spawned, so `check_game_end()` would end a round that never
++	# began. Deaths call it separately.
++	if mp8_ext and not is_all_player_loaded:
++		print("[MP8] Debris Platforms: %d left before the round started, end check skipped" % _network_id)
++		return
++
+ 	check_game_end()
+ 
+ 
+ func check_game_end():
+ 
++	# [MP8] A mixed room runs the game's check_game_end (D120).
++	if not NetworkManager.mp8_room_extended():
++		await _mp8_game_check_game_end()
++		return
++
++	if finished:
++		return
++
++	if active_players.size() > 1:
++		_mp8_diag("check_game_end held: %d players still alive" % active_players.size())
++		return
++
++	_mp8_diag("★★ check_game_end passed, scoring ★★")
++	finished = true
++
++	for i in dead_players.size():
++		player_scores[dead_players[i]] = i
++
++	# [MP8] The survivor scores one more than the last to die; the stock `player_count` jumps 2 between
++	# first and second. Not `player_count - 1`: a player who disconnects leaves `active_players` but
++	# never enters `dead_players`.
++	for network_id in active_players.keys():
++		player_scores[network_id] = dead_players.size()
++		break
++
++	_mp8_log_scores()
++
++	player_scores_finalized.emit(player_scores)
++
++# The game's check_game_end, for a mixed room (D120).
++func _mp8_game_check_game_end():
++
+ 	if finished:
+ 		return
+ 
+@@ -172,9 +1570,57 @@ func check_game_end():
+ 	set_effects_visibility_rpc.rpc(false)
+ 
+ 
++# [MP8] Logs rank, name and score, then ends Extended's round: check_game_end's tail (the 2 s wait, the
++# Finished transition) runs here, after the emit. Server only (from `check_game_end`).
++func _mp8_log_scores() -> void :
++
++	var ranked: Array = player_scores.keys()
++	ranked.sort_custom(func(a, b): return player_scores[a] > player_scores[b])
++
++	var parts: PackedStringArray = []
++	for i in ranked.size():
++		var nid = ranked[i]
++		var nm: String = "id%d" % nid
++		if PlayerManager.player_presences.has(nid):
++			nm = String(PlayerManager.player_presences[nid].network_name)
++		parts.append("#%d %s %d pts" % [i + 1, nm, player_scores[nid]])
++
++	print("[MP8] Debris Platforms results (%d present / %d dead): %s" % [
++		player_count, dead_players.size(), " / ".join(parts)
++	])
++
++	await get_tree().create_timer(2.0).timeout
++	set_minigame_sfx_linear_volume_rpc.rpc(0.0)
++
++	state_machine.transition_to_rpc.rpc(&"Finished")
++	set_effects_visibility_rpc.rpc(false)
++
++
+ 
+ @rpc("any_peer", "call_remote", "reliable")
+ func rotate_camera_rpc(_rotation: float):
++
++	# [MP8] A mixed room runs the game's rotate_camera_rpc (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_rotate_camera_rpc(_rotation)
++		return
++
++	# [MP8] Modes b and c: any angle, re-pointed by geometry. Return before the stock two-state switch,
++	# which would flip the already correct visuals.
++	if _mp8_view_mode != MP8_VIEW_VANILLA:
++		_mp8_apply_view(_rotation)
++		return
++
++	camera_base.rotation_degrees.y = _rotation
++	visuals_base.rotation_degrees.y = _rotation
++	for i in platforms:
++		i.damage_circle_parent = i.damage_circle_parent_flipped
++		i.platform_visuals = i.platform_visuals_flipped
++		i.assign_indicators()
++		i.assign_flipped_compactor()
++
++# The game's rotate_camera_rpc, for a mixed room (D120).
++func _mp8_game_rotate_camera_rpc(_rotation: float):
+ 	camera_base.rotation_degrees.y = _rotation
+ 	visuals_base.rotation_degrees.y = _rotation
+ 	for i in platforms:
+@@ -204,6 +1650,25 @@ func remove_player_rpc(_network_id: int):
+ func _on_countdown_expired():
+ 	super._on_countdown_expired()
+ 
++	# [MP8] A mixed room runs the rest of the game's handler (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_on_countdown_expired_tail()
++		return
++
++	for player in players.values():
++		player.set_active_rpc.rpc(true)
++
++	junk_handler.set_active(true)
++
++	state_machine.transition_to_rpc.rpc(&"Play")
++
++	# [MP8] `mp8shot` screenshots at 3, 12 and 25 s. Broadcast: `expired` is connected only on the server,
++	# and each player's camera can only be checked on their own machine.
++	NetworkManager.mp8_rpc(self, &"mp8_shot_rpc")
++
++# The game's _on_countdown_expired after its super call, for a mixed room (D120).
++func _mp8_game_on_countdown_expired_tail():
++
+ 	for player in players.values():
+ 		player.set_active_rpc.rpc(true)
+ 
+@@ -211,6 +1676,33 @@ func _on_countdown_expired():
+ 
+ 	state_machine.transition_to_rpc.rpc(&"Play")
+ 
++
++func mp8_shot_rpc() -> void :
++	_mp8_shot(3.0)
++	_mp8_shot(12.0)
++	_mp8_shot(25.0)
++
++
++# [MP8] Each instance saves its own PNG, named after its player.
++func _mp8_shot(delay: float) -> void :
++
++	if not NetworkManager.mp8_dev_args().has("mp8shot"):
++		return
++
++	await get_tree().create_timer(delay, false).timeout
++	if not is_inside_tree():
++		return
++	await RenderingServer.frame_post_draw
++
++	var me: int = multiplayer.get_unique_id() if multiplayer.has_multiplayer_peer() else 0
++	var who: String = "p%d" % me
++	if PlayerManager.player_presences.has(me):
++		who = String(PlayerManager.player_presences[me].network_name)
++
++	var img: Image = get_viewport().get_texture().get_image()
++	if img != null:
++		img.save_png("user://mp8_junk_t%d_%s.png" % [int(delay), who])
++
+ func _on_player_died(_network_id: int):
+ 
+ 	if active_players.has(_network_id):
+@@ -235,3 +1727,168 @@ func _on_player_fallen(last_hit_by_network_id: int):
+ 			players[last_hit_by_network_id].trigger_achievement_rpc.rpc()
+ 
+ 	pass
++
++
++# ---------- [MP8-DIAG] Diagnostics ----------
++
++func _mp8_diag_start() -> void :
++
++	var mp8_args := NetworkManager.mp8_dev_args()
++	_mp8_diag_on = OS.has_feature("editor") or mp8_args.has("-debug-tools") or mp8_args.has("mp8diag")
++	if not _mp8_diag_on:
++		return
++
++	var peer: int = multiplayer.get_unique_id()
++	var path: String = "user://mp8_diag_%d.log" % peer
++	_mp8_diag_f = FileAccess.open(path, FileAccess.WRITE)
++
++	_mp8_diag("═══ Debris Platforms diagnostics peer=%d server=%s ═══" % [peer, str(multiplayer.is_server())])
++	_mp8_diag("void plane y=-2.00; a probe found a surface at y=-0.06 at bearings 45/135/225/315°, r=14~24.5")
++
++	# A survivor snapshot every 2 s, on a Timer: a `_process` here could override the base class's.
++	_mp8_diag_timer = Timer.new()
++	_mp8_diag_timer.wait_time = 2.0
++	_mp8_diag_timer.autostart = true
++	_mp8_diag_timer.timeout.connect(_mp8_diag_tick)
++	add_child(_mp8_diag_timer)
++
++
++func _mp8_diag(s: String) -> void :
++
++	if not _mp8_diag_on:
++		return
++	var line: String = "[%8.2f] %s" % [float(Time.get_ticks_msec()) / 1000.0, s]
++	print("[MP8-DIAG] " + line)
++	if _mp8_diag_f != null:
++		_mp8_diag_f.store_line(line)
++		_mp8_diag_f.flush()          # a hung round is killed; unflushed lines would be lost
++
++
++func _mp8_diag_name(nid: int) -> String :
++	if PlayerManager.player_presences.has(nid):
++		return String(PlayerManager.player_presences[nid].network_name)
++	return "id%d" % nid
++
++
++# y is the key: a player standing on the y=-0.06 surface never triggers a fall.
++func _mp8_diag_tick() -> void :
++
++	if not _mp8_diag_on or finished:
++		return
++
++	var parts: PackedStringArray = []
++	for nid in active_players.keys():
++		var pl = active_players[nid]
++		if not is_instance_valid(pl):
++			parts.append("%s:invalid ref" % _mp8_diag_name(nid))
++			continue
++		var gp: Vector3 = pl.global_position
++		var r: float = Vector2(gp.x, gp.z).length()
++		var ang: float = rad_to_deg(atan2(gp.x, gp.z))
++		if ang < 0.0:
++			ang += 360.0
++		parts.append("%s y=%.2f r=%.1f bearing %.0f° active=%s onfloor=%s" % [
++			_mp8_diag_name(nid), gp.y, r, ang, str(pl.active), str(pl.is_on_floor())
++		])
++
++	var np: int = -1
++	if junk_handler != null:
++		np = junk_handler.spawn_points.size()
++
++	_mp8_diag("alive %d | drop points %d | %s" % [
++		active_players.size(), np, "  ||  ".join(parts)])
++
++
++# `fall_rpc` emits this first; a fall with no death after it means the chain broke in the tween.
++func _mp8_diag_fallen(_last_hit_by: int, nid: int, who) -> void :
++
++	var pos: String = "?"
++	if is_instance_valid(who):
++		var gp: Vector3 = who.global_position
++		pos = "(%.1f, %.2f, %.1f) r=%.1f" % [gp.x, gp.y, gp.z, Vector2(gp.x, gp.z).length()]
++		# What the fall cast saw: a fall far above the plane at y -2 shows its reach and its hit.
++		var fc: ShapeCast3D = who.fall_cast
++		if fc != null:
++			var hits: PackedStringArray = []
++			for i in fc.get_collision_count():
++				var c = fc.get_collider(i)
++				hits.append("%s@%.1f" % [String(c.name) if c != null else "?", fc.get_collision_point(i).y])
++			pos += " cast %.1f hits %s" % [fc.target_position.y, ",".join(hits)]
++	_mp8_diag("★ falling %s pos=%s" % [_mp8_diag_name(nid), pos])
++
++
++# The death itself: `kill_rpc` and `emit_died` after `fall_rpc`'s 1.5 s tween.
++func _mp8_diag_died(nid: int) -> void :
++
++	_mp8_diag("☠ died %s (active_players=%d now)" % [
++		_mp8_diag_name(nid), active_players.size()])
++
++
++# ---------- [MP8] Sweep (see MP8_SWEEP_GRACE) ----------
++
++func _mp8_sweep_start() -> void :
++
++	# Server only: only the server fills `active_players`.
++	if not multiplayer.is_server():
++		return
++
++	_mp8_sweep_timer = Timer.new()
++	_mp8_sweep_timer.wait_time = MP8_SWEEP_TICK
++	_mp8_sweep_timer.autostart = true
++	_mp8_sweep_timer.timeout.connect(_mp8_sweep_dead)
++	add_child(_mp8_sweep_timer)
++
++
++func _mp8_sweep_dead() -> void :
++
++	if finished or not multiplayer.is_server():
++		return
++
++	# Only during play: before it starts every player is inactive.
++	if junk_handler == null or not junk_handler.active:
++		_mp8_dead_since.clear()
++		return
++
++	var stale: Array = []
++
++	for nid in active_players.keys():
++
++		var pl = active_players[nid]
++
++		if not is_instance_valid(pl):
++			stale.append(nid)          # reference gone, no grace needed
++			continue
++
++		if pl.active:
++			_mp8_dead_since.erase(nid)
++			continue
++
++		var t: float = float(_mp8_dead_since.get(nid, 0.0)) + MP8_SWEEP_TICK
++		_mp8_dead_since[nid] = t
++		if t >= MP8_SWEEP_GRACE:
++			stale.append(nid)
++
++	if stale.is_empty():
++		return
++
++	for nid in stale:
++
++		_mp8_dead_since.erase(nid)
++		if not active_players.has(nid):
++			continue
++
++		active_players.erase(nid)
++		# Into `dead_players` as well: ranks and the survivor's score are computed from it.
++		if not dead_players.has(nid):
++			dead_players.append(nid)
++		if junk_handler != null:
++			junk_handler.remove_spawn_point(nid)
++
++		var nm: String = "id%d" % nid
++		if PlayerManager.player_presences.has(nid):
++			nm = String(PlayerManager.player_presences[nid].network_name)
++		print("[MP8] Debris Platforms: ⚠️ sweep - %s was killed but emit_died never reached the server, %d left" % [
++			nm, active_players.size()
++		])
++
++	check_game_end()

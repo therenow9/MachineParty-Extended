@@ -1,0 +1,13 @@
+diff --git a/modules/multiplayer/backends/multiplayer_backend.gd b/modules/multiplayer/backends/multiplayer_backend.gd
+--- a/modules/multiplayer/backends/multiplayer_backend.gd
++++ b/modules/multiplayer/backends/multiplayer_backend.gd
+@@ -59,6 +59,9 @@ func set_lobby_joinable(_joinable: bool):
+ 
+ func set_self_data(data: Dictionary):
+ 
++	# [MP8] Every peer receives every player's join data, so this key tells each peer who runs Extended
++	# (NetworkManager.mp8_peer_extended). Both backends build their join data only through here.
++	data["mp8"] = NetworkManager.MP8_VERSION_TAG
+ 	self_data = data
+ 
+ 	if Globals.debug and OS.has_feature("editor"):

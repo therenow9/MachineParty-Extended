@@ -1,0 +1,437 @@
+diff --git a/minigames/spine_breaker/components/player/scripts/spine_breaker_player.gd b/minigames/spine_breaker/components/player/scripts/spine_breaker_player.gd
+--- a/minigames/spine_breaker/components/player/scripts/spine_breaker_player.gd
++++ b/minigames/spine_breaker/components/player/scripts/spine_breaker_player.gd
+@@ -42,6 +42,18 @@ var has_spine_breaker: bool = false
+ var movement_input: Vector3
+ var spine_breaker_device: SpineBreakerDevice
+ 
++# [MP8] The device on this player's back. `spine_breaker_device` is the scene's one device, fixed in
++# setup_rpc(); with two, throwing, the death reset and the blink sync would use the wrong one.
++# Set by the device's mp8_bind_rpc on attach, on every peer (attached_to exists only on the server).
++var mp8_current_device: SpineBreakerDevice = null
++
++# [MP8] Tinted surfaces: [[MeshInstance3D, surface index, override material before tinting], ...]
++# The previous override is kept, not cleared to null (see mp8_set_visual_tint).
++var _mp8_tinted: Array = []
++
++# [MP8] The BoneAttachment3D holding the device's hourglass on this player's back, or null.
++var _mp8_back_mark: Node = null
++
+ var kicking: bool = false
+ var kick_progress: float = 0.0
+ var kick_timeout: float = 0.0
+@@ -55,6 +67,81 @@ var footstep_counter = 0
+ signal spine_broken()
+ signal emit_died(network_id)
+ 
++
++# [MP8] Tints the device seen on this player's back with c (Color.WHITE restores it): surface 3 of the
++# attached character mesh, found by texture name (empty tex_key tints every textured surface), not the
++# hidden device or `spine_breaker_visual`. mark (mp8_make_mark) replaces the previous one on bone 34,
++# `main body`, whose pose scale shows and hides the back visual, so the mark goes with it.
++func mp8_set_visual_tint(c: Color, tex_key: String = "", mark: Node3D = null) -> int :
++
++	# Undo the previous tint by restoring each surface's earlier override: player customization may
++	# have set one, and clearing to null would erase it.
++	for row in _mp8_tinted:
++		var old_mi = row[0]
++		if is_instance_valid(old_mi):
++			old_mi.set_surface_override_material(row[1], row[2])
++	_mp8_tinted.clear()
++
++	# Out of the tree at once, so the next mark takes its name.
++	if _mp8_back_mark != null and is_instance_valid(_mp8_back_mark):
++		_mp8_back_mark.get_parent().remove_child(_mp8_back_mark)
++		_mp8_back_mark.queue_free()
++	_mp8_back_mark = null
++
++	if mark != null:
++		if skeleton_attached != null:
++			var ba := BoneAttachment3D.new()
++			ba.name = "MP8Mark"
++			ba.bone_name = SpineBreakerDevice.MP8_MARK_BONE
++			skeleton_attached.add_child(ba)
++			ba.add_child(mark)
++			_mp8_back_mark = ba
++		else:
++			mark.free()
++
++	if c == Color.WHITE or visuals == null:
++		return 0
++
++	var n: int = 0
++
++	for node in visuals.find_children("", "MeshInstance3D", true, false):
++
++		var mi: MeshInstance3D = node
++		if mi.mesh == null:
++			continue
++
++		for s in mi.mesh.get_surface_count():
++
++			var src = mi.get_active_material(s)
++			if not (src is StandardMaterial3D):
++				continue
++
++			var sd: StandardMaterial3D = src
++			if sd.albedo_texture == null:
++				continue
++
++			if tex_key != "":
++				var f: String = str(sd.albedo_texture.resource_path).get_file()
++				if not f.ends_with(tex_key):
++					continue
++
++			var m: StandardMaterial3D = sd.duplicate()
++			m.albedo_color = c
++			_mp8_tinted.append([mi, s, mi.get_surface_override_material(s)])
++			mi.set_surface_override_material(s, m)
++			n += 1
++
++	return n
++
++
++# [MP8] The device on this player's back, else the setup device (the same one when there is one device).
++func _mp8_dev() -> SpineBreakerDevice :
++
++	if mp8_current_device != null and is_instance_valid(mp8_current_device):
++		return mp8_current_device
++	return spine_breaker_device
++
++
+ func _ready() -> void :
+ 
+ 	spine_breaker_visual.visible = false
+@@ -63,6 +150,48 @@ func _ready() -> void :
+ 
+ func _process(_delta: float) -> void :
+ 
++	# [MP8] A mixed room runs the game's _process (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_process(_delta)
++		return
++
++	var dev: SpineBreakerDevice = _mp8_dev()      # [MP8]
++	if dev:
++
++		blink_animation_player.speed_scale = (
++			dev.light_animation_player.speed_scale
++		)
++
++	if not active:
++		return
++
++	if PauseMenu.active:
++		movement_input = Vector3.ZERO
++		return
++
++	if not GameManager.game_focused:
++		movement_input = Vector3.ZERO
++		return
++
++	if can_act:
++
++		if GameManager.local_game and player_presence and not player_presence.local_controller_connected:
++			movement_input = Vector3.ZERO
++			return
++
++		movement_input = Vector3(
++			DynamicInput.get_axis(player_presence.device_id, "left", "right"),
++			0.0,
++			DynamicInput.get_axis(player_presence.device_id, "up", "down")
++		).rotated(Vector3.UP, deg_to_rad(scene_rotation))
++
++	else:
++
++		movement_input = Vector3.ZERO
++
++# The game's _process, for a mixed room (D120).
++func _mp8_game_process(_delta: float) -> void :
++
+ 	if spine_breaker_device:
+ 
+ 		blink_animation_player.speed_scale = (
+@@ -126,6 +255,42 @@ func set_spinebreaker_visuals():
+ 
+ func update_throwing(_delta: float):
+ 
++	# [MP8] A mixed room runs the game's update_throwing (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_update_throwing(_delta)
++		return
++
++	if kicking:
++		return
++
++	if not active:
++		return
++
++	if not can_act:
++		return
++
++	if not has_spine_breaker:
++		return
++
++	# [MP8] Only walls block a throw: `wall_raycast` excludes only self, and living players and devices
++	# are on collision layer 1 too (a player in front is common with 8). RayCast3D reports the nearest
++	# hit only, so a player against a wall lets the throw through: a throw into a wall beats a throw
++	# that never happens.
++	if wall_raycast.is_colliding():
++		var wall_hit = wall_raycast.get_collider()
++		if not (wall_hit is SpineBreakerPlayer or wall_hit is SpineBreakerDevice):
++			return
++
++	if GameManager.local_game and player_presence and not player_presence.local_controller_connected:
++		return
++
++	if DynamicInput.is_action_just_released(player_presence.device_id, "action_1"):
++		throw_spine_breaker_rpc.rpc()
++		kick_timeout = 0.2
++
++# The game's update_throwing, for a mixed room (D120).
++func _mp8_game_update_throwing(_delta: float):
++
+ 	if kicking:
+ 		return
+ 
+@@ -203,12 +368,92 @@ func beep():
+ 
+ 
+ 
+-
+ var tween_attachment: Tween
+ var tween_throw: Tween
+ @rpc("any_peer", "call_local", "reliable")
+ func set_spine_breaker_rpc(_has_spine_breaker: bool, _thrown: bool = false, _from_direction: int = 0):
+ 
++	# [MP8] A mixed room runs the game's set_spine_breaker_rpc (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_set_spine_breaker_rpc(_has_spine_breaker, _thrown, _from_direction)
++		return
++
++	spine_breaker_visual.visible = _has_spine_breaker
++	has_spine_breaker = _has_spine_breaker
++
++	# [MP8] The device left (thrown or reset): unbind it so the next throw does not move it, and
++	# restore the tint so the white device does not show red on the next attach.
++	if not _has_spine_breaker:
++		mp8_current_device = null
++		mp8_set_visual_tint(Color.WHITE)
++
++	if _thrown:
++		set_spinebreaker_visuals()
++		animation_tree_attached.set("parameters/blend_normal_attached/blend_amount", 0)
++		animation_tree_attached.set("parameters/blend_throw_spinebreaker/blend_amount", 1)
++		animation_tree_attached.set("parameters/oneshot_throw_spinebreaker/request", AnimationNodeOneShot.ONE_SHOT_REQUEST_ABORT)
++		animation_tree_attached.set("parameters/oneshot_throw_spinebreaker/request", AnimationNodeOneShot.ONE_SHOT_REQUEST_FIRE)
++		if tween_throw:
++			tween_throw.kill()
++		tween_throw = create_tween().set_trans(Tween.TRANS_EXPO)
++		tween_throw.tween_property(animation_tree_attached, "parameters/blend_throw_spinebreaker/blend_amount", 0, 0.5)
++
++	if _has_spine_breaker:
++		speaker_attach.pitch_scale = randf_range(0.95, 1.05)
++		speaker_attach.play()
++		match _from_direction:
++			0:
++				animation_tree_attached.set("parameters/blend_normal_attached/blend_amount", 1)
++				animation_tree_attached.set("parameters/oneshot_attach_spinebreaker_floor_back/request", AnimationNodeOneShot.ONE_SHOT_REQUEST_ABORT)
++				animation_tree_attached.set("parameters/oneshot_attach_spinebreaker_floor_back/request", AnimationNodeOneShot.ONE_SHOT_REQUEST_FIRE)
++				animation_tree_attached.set("parameters/blend_attach_spinebreaker_floor/blend_amount", 1)
++				animation_tree_attached.set("parameters/blend_attach_back_forward/blend_amount", 0)
++				animation_tree_attached.set("parameters/blend_attach_up_bottom/blend_amount", 0)
++				if tween_attachment:
++					tween_attachment.kill()
++				tween_attachment = create_tween()
++				tween_attachment.tween_property(animation_tree_attached, "parameters/blend_attach_spinebreaker_floor/blend_amount", 0, 0.4)
++			3:
++				animation_tree_attached.set("parameters/blend_normal_attached/blend_amount", 1)
++				animation_tree_attached.set("parameters/oneshot_attach_spinebreaker_floor_forward/request", AnimationNodeOneShot.ONE_SHOT_REQUEST_ABORT)
++				animation_tree_attached.set("parameters/oneshot_attach_spinebreaker_floor_forward/request", AnimationNodeOneShot.ONE_SHOT_REQUEST_FIRE)
++				animation_tree_attached.set("parameters/blend_attach_spinebreaker_floor/blend_amount", 1)
++				animation_tree_attached.set("parameters/blend_attach_back_forward/blend_amount", 1)
++				animation_tree_attached.set("parameters/blend_attach_up_bottom/blend_amount", 0)
++				if tween_attachment:
++					tween_attachment.kill()
++				tween_attachment = create_tween()
++				tween_attachment.tween_property(animation_tree_attached, "parameters/blend_attach_spinebreaker_floor/blend_amount", 0, 0.4)
++			2:
++				animation_tree_attached.set("parameters/blend_normal_attached/blend_amount", 1)
++				animation_tree_attached.set("parameters/oneshot_attach_spinebreaker_floor_left/request", AnimationNodeOneShot.ONE_SHOT_REQUEST_ABORT)
++				animation_tree_attached.set("parameters/oneshot_attach_spinebreaker_floor_left/request", AnimationNodeOneShot.ONE_SHOT_REQUEST_FIRE)
++				animation_tree_attached.set("parameters/blend_attach_spinebreaker_floor/blend_amount", 1)
++				animation_tree_attached.set("parameters/blend_attach_back_forward/blend_amount", 1)
++				animation_tree_attached.set("parameters/blend_attach_right_left/blend_amount", 1)
++				animation_tree_attached.set("parameters/blend_attach_up_bottom/blend_amount", 1)
++				if tween_attachment:
++					tween_attachment.kill()
++				tween_attachment = create_tween()
++				tween_attachment.tween_property(animation_tree_attached, "parameters/blend_attach_spinebreaker_floor/blend_amount", 0, 0.4)
++			1:
++				animation_tree_attached.set("parameters/blend_normal_attached/blend_amount", 1)
++				animation_tree_attached.set("parameters/oneshot_attach_spinebreaker_floor_right/request", AnimationNodeOneShot.ONE_SHOT_REQUEST_ABORT)
++				animation_tree_attached.set("parameters/oneshot_attach_spinebreaker_floor_right/request", AnimationNodeOneShot.ONE_SHOT_REQUEST_FIRE)
++				animation_tree_attached.set("parameters/blend_attach_spinebreaker_floor/blend_amount", 1)
++				animation_tree_attached.set("parameters/blend_attach_back_forward/blend_amount", 1)
++				animation_tree_attached.set("parameters/blend_attach_right_left/blend_amount", 0)
++				animation_tree_attached.set("parameters/blend_attach_up_bottom/blend_amount", 1)
++				if tween_attachment:
++					tween_attachment.kill()
++				tween_attachment = create_tween()
++				tween_attachment.tween_property(animation_tree_attached, "parameters/blend_attach_spinebreaker_floor/blend_amount", 0, 0.4)
++
++	set_spinebreaker_visuals()
++
++# The game's set_spine_breaker_rpc, for a mixed room (D120).
++func _mp8_game_set_spine_breaker_rpc(_has_spine_breaker: bool, _thrown: bool = false, _from_direction: int = 0):
++
+ 	spine_breaker_visual.visible = _has_spine_breaker
+ 	has_spine_breaker = _has_spine_breaker
+ 
+@@ -296,6 +541,75 @@ func set_player_presence(_network_id: int):
+ @rpc("any_peer", "call_local", "reliable")
+ func break_spine_rpc():
+ 
++	# [MP8] A mixed room runs the game's break_spine_rpc (D120).
++	if not NetworkManager.mp8_room_extended():
++		await _mp8_game_break_spine_rpc()
++		return
++
++	active = false
++	can_act = false
++	velocity = Vector3.ZERO
++	stop_kicking()
++
++	animation_tree_attached.set("parameters/blend_kill/blend_amount", 1)
++	animation_tree_attached.set("parameters/oneshot_kill/request", AnimationNodeOneShot.ONE_SHOT_REQUEST_FIRE)
++	speaker_kill.play()
++
++	await get_tree().create_timer(0.5).timeout
++
++	customization_assigner.hide_hat()
++
++	if multiplayer.is_server():
++		if player_presence.customization.size() > 0:
++
++			PropManager.spawn_rpc.rpc(
++				&"hat_gib",
++				global_position + (Vector3.UP * 3.0),
++				visuals.basis.z,
++				Vector3.ONE,
++				[player_presence.customization[0]]
++			)
++
++			DecalManager.spawn_rpc.rpc(
++				&"blood_splat_01",
++				global_position,
++				Vector3(0.0, lerp(-180.0, 180.0, randf()), 0.0),
++				Vector3.ONE
++			)
++
++	await get_tree().create_timer(0.5, false).timeout
++
++	# [MP8] Read the device before spine_broken.emit(): the emit runs break_spine_state._on_spine_broken()
++	# synchronously, whose call_local set_spine_breaker_rpc(false) clears mp8_current_device, and
++	# _mp8_dev() would then fall back to device 1, moving it onto the corpse.
++	var dev: SpineBreakerDevice = _mp8_dev()
++
++	# Tripwire: every device binds on attach, so no binding at death means the fallback device is
++	# probably not the killer, and the reset may move the wrong device.
++	if multiplayer.is_server() and mp8_current_device == null:
++		print("[MP8] Spine Breaker: ⚠️ %s died with no bound device - falling back to the setup device, the reset may move the wrong one" % String(name))
++
++	spine_broken.emit()
++
++	player_name_label.visible = false
++
++	set_collision_layer_value(1, false)
++	set_collision_layer_value(25, false)
++
++	if multiplayer.is_server():
++
++		emit_died.emit(player_presence.network_id)
++
++		# [MP8] A retired device is not reset: set_spine_broken_rpc would show it, re-enable its collision
++		# and move it to the corpse. Second entry point of the skip in _on_spine_broken.
++		if dev != null and not dev.mp8_retired:
++			dev.set_spine_broken_rpc.rpc(global_position)
++		elif dev != null:
++			print("[MP8] Spine Breaker: device %d is retired, skipping the reset at the corpse" % dev.mp8_index)
++
++# The game's break_spine_rpc, for a mixed room (D120).
++func _mp8_game_break_spine_rpc():
++
+ 	active = false
+ 	can_act = false
+ 	velocity = Vector3.ZERO
+@@ -344,6 +658,43 @@ func break_spine_rpc():
+ @rpc("any_peer", "call_local", "reliable")
+ func throw_spine_breaker_rpc():
+ 
++	# [MP8] A mixed room runs the game's throw_spine_breaker_rpc (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_throw_spine_breaker_rpc()
++		return
++
++	if not active:
++		return
++
++	if not can_act:
++		return
++
++	speaker_throw.pitch_scale = randf_range(0.95, 1.05)
++	speaker_throw.play()
++
++	if multiplayer.is_server():
++
++		# [MP8] Only the device actually on this player; none found -> nothing is thrown.
++		var dev: SpineBreakerDevice = _mp8_dev_to_throw()
++
++		if dev == null:
++			print("[MP8] Spine Breaker: %s pressed throw with no device on their back - nothing thrown" % String(name))
++			return
++
++		print("[MP8] Spine Breaker: %s throws -> device %d %s" % [
++			String(name), dev.mp8_index,
++			("" if dev == mp8_current_device else "(⚠️ binding was lost, found through attached_to)")
++		])
++		dev.try_throw_rpc.rpc(
++			throw_position.global_position,
++			- visuals.global_basis.z,
++			throw_strength,
++			get_path()
++		)
++
++# The game's throw_spine_breaker_rpc, for a mixed room (D120).
++func _mp8_game_throw_spine_breaker_rpc():
++
+ 	if not active:
+ 		return
+ 
+@@ -362,6 +713,26 @@ func throw_spine_breaker_rpc():
+ 			get_path()
+ 		)
+ 
++
++# [MP8] The device to throw: the one whose `attached_to` is this player, written by attached_state on
++# the server. `has_spine_breaker` and `mp8_current_device` are set by separate RPCs and can disagree,
++# and `_mp8_dev()`'s fallback may name a device on someone else or in the air. None -> no throw.
++# Server only (attached_to is null on clients). break_spine_rpc keeps `_mp8_dev()` and its fallback.
++func _mp8_dev_to_throw() -> SpineBreakerDevice :
++
++	if mp8_current_device != null and is_instance_valid(mp8_current_device) \
++			and mp8_current_device.attached_to == self:
++		return mp8_current_device
++
++	if game_instance != null:
++		var list = game_instance.get("_mp8_devices")
++		if list is Array:
++			for d in list:
++				if is_instance_valid(d) and d.attached_to == self:
++					return d
++
++	return null
++
+ @rpc("any_peer", "call_local", "reliable")
+ func set_active_rpc(_active: bool):
+ 	active = _active

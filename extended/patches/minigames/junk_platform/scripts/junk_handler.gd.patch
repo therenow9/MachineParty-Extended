@@ -1,0 +1,200 @@
+diff --git a/minigames/junk_platform/scripts/junk_handler.gd b/minigames/junk_platform/scripts/junk_handler.gd
+--- a/minigames/junk_platform/scripts/junk_handler.gd
++++ b/minigames/junk_platform/scripts/junk_handler.gd
+@@ -11,6 +11,13 @@ const junk_scene = preload("uid://c0tipjbyg5ofd")
+ @export var max_junk: int = 40
+ @export var platform_radius: float = 6.0
+ 
++# [MP8] Cubes are recycled only by falling into `junk_catcher`, and `counter` never goes down, so
++# cubes resting on the platform drain the pool and spawning stops (8 spawn points drain 40 fast).
++# The server recycles a cube left still and unheld this long, the same way the catcher does.
++@export var mp8_stuck_recycle_time: float = 30.0
++# Speed (m/s) below which a cube counts as still; a little above 0 to absorb physics jitter.
++@export var mp8_stuck_speed_threshold: float = 0.15
++
+ @export_category("Nodes")
+ @export var junks_node: Node3D
+ @export var timer: Timer
+@@ -25,6 +32,11 @@ var junk_instances: Dictionary[int, JunkCubeRigidbody]
+ var caught_junk: Array[JunkCubeRigidbody]
+ var elapsed: float = 0.0
+ 
++# [MP8] Seconds each cube has been still, keyed like `junk_instances`. Server only.
++var mp8_idle_time: Dictionary[int, float] = {}
++# For the log only.
++var mp8_stuck_recycled: int = 0
++
+ func _ready() -> void :
+ 
+ 	if multiplayer.is_server():
+@@ -33,12 +45,20 @@ func _ready() -> void :
+ 
+ func _physics_process(_delta: float) -> void :
+ 
++	# [MP8] A mixed room runs the game's _physics_process (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_physics_process(_delta)
++		return
++
+ 	if not multiplayer.is_server():
+ 		return
+ 
+ 	if active:
+ 		elapsed += _delta
+ 
++	# [MP8] Before the snapshot, so a cube recycled this frame is already inactive and skipped.
++	_mp8_recycle_stuck_junk(_delta)
++
+ 	var data: Dictionary[int, Transform3D]
+ 	for k in junk_instances.keys():
+ 		if junk_instances[k].active:
+@@ -46,7 +66,46 @@ func _physics_process(_delta: float) -> void :
+ 
+ 	updata_junk_positions_rpc.rpc(data)
+ 
++# The game's _physics_process, for a mixed room (D120).
++func _mp8_game_physics_process(_delta: float) -> void :
++
++	if not multiplayer.is_server():
++		return
++
++	if active:
++		elapsed += _delta
++
++	var data: Dictionary[int, Transform3D]
++	for k in junk_instances.keys():
++		if junk_instances[k].active:
++			data[k] = junk_instances[k].global_transform
++
++	updata_junk_positions_rpc.rpc(data)
++
++# [MP8] The junk pause lives here, not only as a stopped timer: `set_active(true)` restarts the
++# timer, which would undo a pause set by `junk_platform._mp8_apply_junk_speed()`.
++var mp8_paused: bool = false
++
++
+ func set_active(_active: bool):
++
++	# [MP8] A mixed room runs the game's set_active (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_set_active(_active)
++		return
++
++	active = _active
++
++	# [MP8] Idle times do not carry across phases.
++	mp8_idle_time.clear()
++	if active:
++		mp8_stuck_recycled = 0
++
++	if active and not mp8_paused:
++		timer.start(spawn_interval)
++
++# The game's set_active, for a mixed room (D120).
++func _mp8_game_set_active(_active: bool):
+ 	active = _active
+ 	if active:
+ 		timer.start(spawn_interval)
+@@ -72,6 +131,52 @@ func updata_junk_positions_rpc(data: Dictionary[int, Transform3D]):
+ 
+ 
+ func _on_timer_timeout():
++
++	# [MP8] A mixed room runs the game's _on_timer_timeout (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_on_timer_timeout()
++		return
++
++	# [MP8] Backstop if anything restarts the timer while paused. Return without restarting it.
++	if mp8_paused:
++		return
++
++	for p in spawn_points.values():
++		var junk_instance: JunkCubeRigidbody
++		if not caught_junk.is_empty():
++			junk_instance = caught_junk.pop_front()
++		elif counter < max_junk:
++			junk_instance = junk_scene.instantiate()
++			junks_node.add_child(junk_instance, true)
++			register_junk_cube_rpc.rpc(
++				junk_instances.size(), 
++				junk_instance.get_path()
++			)
++			counter += 1
++
++		if junk_instance:
++
++
++			var random_rot: float = TAU * randf()
++			var random_vector: Vector3 = Vector3(
++				cos(random_rot), 0.0, sin(random_rot)
++			) * (randf() * platform_radius)
++			var random_torque: Vector3 = Vector3(
++				-1.0 + (randf() * 2.0), 
++				-1.0 + (randf() * 2.0), 
++				-1.0 + (randf() * 2.0)
++			)
++
++			junk_instance.setup_rpc.rpc(p + random_vector, random_torque, true)
++
++	var spawn_time = lerp(
++		spawn_interval, min_spawn_interval, min(elapsed, time_to_spawn_interval_limit) / time_to_spawn_interval_limit
++	)
++
++	timer.start(spawn_time)
++
++# The game's _on_timer_timeout, for a mixed room (D120).
++func _mp8_game_on_timer_timeout():
+ 	for p in spawn_points.values():
+ 		var junk_instance: JunkCubeRigidbody
+ 		if not caught_junk.is_empty():
+@@ -111,3 +216,49 @@ func _on_catcher_body_entered(body):
+ 	if body is JunkCubeRigidbody:
+ 		body.reset_rpc.rpc()
+ 		caught_junk.append(body)
++
++
++# [MP8] Server only: called from `_physics_process` after its `is_server()` return.
++func _mp8_recycle_stuck_junk(delta: float) -> void :
++
++	# Cubes rest between rounds; without the reset a batch would be recycled as soon as play starts.
++	if not active:
++		mp8_idle_time.clear()
++		return
++
++	for k in junk_instances.keys():
++
++		var junk: JunkCubeRigidbody = junk_instances[k]
++
++		if not is_instance_valid(junk):
++			mp8_idle_time.erase(k)
++			continue
++
++		# Pooled or not yet dropped; also skips one the catcher just took, so it is not pooled twice.
++		if not junk.active:
++			mp8_idle_time[k] = 0.0
++			continue
++
++		# A held cube is frozen with zero velocity and would vanish from the player's hands.
++		if junk.held_by:
++			mp8_idle_time[k] = 0.0
++			continue
++
++		if junk.linear_velocity.length() > mp8_stuck_speed_threshold:
++			mp8_idle_time[k] = 0.0
++			continue
++
++		var idle: float = mp8_idle_time.get(k, 0.0) + delta
++
++		if idle < mp8_stuck_recycle_time:
++			mp8_idle_time[k] = idle
++			continue
++
++		# Same path as the catcher; the next tick drops it again.
++		mp8_idle_time[k] = 0.0
++		junk.reset_rpc.rpc()
++		caught_junk.append(junk)
++
++		mp8_stuck_recycled += 1
++		print("[MP8] Debris Platforms: #%d still for over %.0f s, recycled (%d this round, %d in pool)" % [
++			k, mp8_stuck_recycle_time, mp8_stuck_recycled, caught_junk.size()])

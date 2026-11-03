@@ -1,0 +1,307 @@
+diff --git a/minigames/chisel_gauntlet_multiplayer/components/player/scripts/chisel_gauntlet_player.gd b/minigames/chisel_gauntlet_multiplayer/components/player/scripts/chisel_gauntlet_player.gd
+--- a/minigames/chisel_gauntlet_multiplayer/components/player/scripts/chisel_gauntlet_player.gd
++++ b/minigames/chisel_gauntlet_multiplayer/components/player/scripts/chisel_gauntlet_player.gd
+@@ -73,6 +73,8 @@ func _physics_process(_delta: float) -> void :
+ 
+ 	if PauseMenu.active:
+ 		return
++	if GameManager.local_game and player_presence != null and not player_presence.local_controller_connected:
++		return
+ 
+ 	if not alive:
+ 
+@@ -106,27 +108,37 @@ func _on_solution_submitted(solution: Array[int]):
+ 
+ func setup_local_visuals(player_index: int):
+ 
+-	var starting_layer = 10 + (player_index * 2)
++	# Retail wall blood decals target layer 10. Keep it out of every player
++	# pair; shared scene layers 1/2 and the wall mask retain their meaning.
++	player_index = clampi(player_index, 0, 7)
++	var hand_layer := _mp8_local_layer(player_index, false)
++	var body_layer := _mp8_local_layer(player_index, true)
++	for layer in range(3, 20):
++		if layer != 10:
++			local_camera.set_cull_mask_value(layer, false)
+ 
+ 	visuals_third_person.visible = true
+ 	visuals_first_person.visible = true
+ 
+ 	for mesh in local_first_person_meshes:
+-		mesh.layers = 1 << starting_layer
++		mesh.layers = 1 << (hand_layer - 1)
+ 
+-	local_camera.set_cull_mask_value(starting_layer + 1, true)
+-	local_camera.set_cull_mask_value(starting_layer + 1 + 1, false)
++	local_camera.set_cull_mask_value(hand_layer, true)
++	local_camera.set_cull_mask_value(body_layer, false)
+ 
+-	for i in 4:
++	for i in 8:
+ 		if i == player_index:
+ 			continue
+-		var other_player_layer = 10 + (i * 2)
+-		local_camera.set_cull_mask_value(other_player_layer + 1 + 1, true)
++		local_camera.set_cull_mask_value(_mp8_local_layer(i, true), true)
+ 
+-	customization_assigner.set_visibility_layer(1 << (starting_layer + 1))
++	customization_assigner.set_visibility_layer(1 << (body_layer - 1))
+ 
+ 	for mesh in local_third_person_meshes:
+-		mesh.layers = 1 << (starting_layer + 1)
++		mesh.layers = 1 << (body_layer - 1)
++
++func _mp8_local_layer(seat: int, third_person: bool) -> int:
++	var layer := 3 + clampi(seat, 0, 7) * 2 + int(third_person)
++	return layer + int(layer >= 10)
+ 
+ 
+ 
+@@ -189,6 +201,30 @@ func eliminate_rpc():
+ 
+ @rpc("any_peer", "call_local", "reliable")
+ func set_spectator_rpc():
++
++	# [MP8] A mixed room runs the game's set_spectator_rpc (D120).
++	if not NetworkManager.mp8_room_extended():
++		await _mp8_game_set_spectator_rpc()
++		return
++	spectating = true
++
++	if GameManager.local_game:
++		return
++
++	if multiplayer.get_unique_id() != get_multiplayer_authority():
++		return
++
++	game_instance.mp8_show_dead_lobby()
++	game_instance.anim_viewblocker.play("fade to opaque")
++	await get_tree().create_timer(1.0).timeout
++
++	spectate_camera.current = true
++	camera.current = false
++	await get_tree().create_timer(0.2, false).timeout
++	game_instance.anim_viewblocker.play("fade to transparent")
++
++# The game's set_spectator_rpc, for a mixed room (D120).
++func _mp8_game_set_spectator_rpc():
+ 	spectating = true
+ 
+ 	if GameManager.local_game:
+@@ -288,6 +324,43 @@ func set_timer_label_text_rpc(text: String):
+ 
+ @rpc("any_peer", "call_local", "reliable")
+ func look_at_rpc(target: ChiselGauntletPlayer.LookAtTarget):
++
++	# [MP8] A mixed room runs the game's look_at_rpc (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_look_at_rpc(target)
++		return
++	if !alive: return
++
++	# [MP8] For the jumbotron the camera swings to face a screen and returns afterwards (see the section at the
++	# end of the file): a 45-degree seat faces a corner pillar. The game's 4 seats get offset 0, a no-op.
++	match target:
++		ChiselGauntletPlayer.LookAtTarget.Jumbotron:
++			_mp8_aim_view(_mp8_view_offset_deg, 1.5)
++			_mp8_hide_others(true)
++		ChiselGauntletPlayer.LookAtTarget.JumbotronInstant:
++			_mp8_aim_view(_mp8_view_offset_deg, 0.0)
++			_mp8_hide_others(true)
++		_:
++			_mp8_aim_view(0.0, 1.5)
++			_mp8_hide_others(false)
++
++	match target:
++
++		ChiselGauntletPlayer.LookAtTarget.None:
++			camera_animation_player.play("RESET")
++		ChiselGauntletPlayer.LookAtTarget.Jumbotron:
++			camera_animation_player.play("look at jumbotron")
++		ChiselGauntletPlayer.LookAtTarget.JumbotronInstant:
++			camera_animation_player.play("look at jumbotron instant")
++		ChiselGauntletPlayer.LookAtTarget.Desk:
++			camera_animation_player.play("look at desk")
++		ChiselGauntletPlayer.LookAtTarget.DeskInstant:
++			camera_animation_player.play("look at desk instant")
++		ChiselGauntletPlayer.LookAtTarget.DeskInstantVertical:
++			camera_animation_player.play("look at desk instant vertical")
++
++# The game's look_at_rpc, for a mixed room (D120).
++func _mp8_game_look_at_rpc(target: ChiselGauntletPlayer.LookAtTarget):
+ 	if !alive: return
+ 	match target:
+ 
+@@ -381,6 +454,22 @@ func set_player_presence(network_id: int):
+ 
+ @rpc("any_peer", "call_local", "reliable")
+ func teleport_rpc(
++	_position: Vector3,
++	_rotation: Vector3,
++):
++
++	# [MP8] A mixed room runs the game's teleport_rpc (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_teleport_rpc(_position, _rotation)
++		return
++	global_position = _position
++	global_rotation_degrees = _rotation
++
++	# [MP8] A seat is a yaw (every player shares one spawn point); the jumbotron camera swings by it.
++	_mp8_set_seat_yaw(_rotation.y)
++
++# The game's teleport_rpc, for a mixed room (D120).
++func _mp8_game_teleport_rpc(
+ 	_position: Vector3, 
+ 	_rotation: Vector3, 
+ ):
+@@ -400,3 +489,149 @@ func trigger_achievement_rpc():
+ 		if ach_active:
+ 			AchievementManager.set_achievement("ACH_05")
+ 			ach_active = false
++
++
++# ---------- [MP8] Jumbotron camera for the 45-degree seats ----------
++# The jumbotron's 4 screens face the game's seats, with pillars at the corners a 45-degree seat faces. The
++# camera rig (the `Node3D` above CameraParent, which `anim_camera` overwrites each frame) swings around the
++# arena centre by -(yaw mod 90): 0 for the game's seats, -45 for the new ones, each to a different screen.
++
++## Degrees the camera swings around the arena centre for the jumbotron (0 for the game's seats)
++var _mp8_view_offset_deg: float = 0.0
++## The rig's (CameraParent's parent) original local transform, taken once
++var _mp8_rig_rest: Transform3D = Transform3D.IDENTITY
++var _mp8_rig_rest_taken: bool = false
++var _mp8_view_tween: Tween
++
++
++func _mp8_camera_rig() -> Node3D :
++	if camera_parent == null:
++		return null
++	return camera_parent.get_parent() as Node3D
++
++
++func _mp8_set_seat_yaw(yaw_deg: float) -> void :
++
++	# Turn back by the difference from the nearest of the game's directions (a multiple of 90 degrees)
++	var within: float = fposmod(yaw_deg, 90.0)
++	_mp8_view_offset_deg = - within
++
++	if not is_zero_approx(_mp8_view_offset_deg):
++		print("[MP8] Chisel Gauntlet: local player in the %.0f° seat (not a stock direction), jumbotron camera turns %+.0f°" % [
++			fposmod(yaw_deg, 360.0), _mp8_view_offset_deg
++		])
++
++
++# Rotates the rig around the arena centre to `deg`: a left-multiplied rotation turns about the parent's
++# (the player root's) origin, which is the arena centre, so no absolute coordinates are needed.
++func _mp8_apply_view_angle(deg: float) -> void :
++
++	var rig: Node3D = _mp8_camera_rig()
++	if rig == null:
++		return
++	if not _mp8_rig_rest_taken:
++		_mp8_rig_rest = rig.transform
++		_mp8_rig_rest_taken = true
++
++	rig.transform = Transform3D(Basis(Vector3.UP, deg_to_rad(deg)), Vector3.ZERO) * _mp8_rig_rest
++
++
++# ---------- [MP8] Other players hidden while memorising ----------
++# The swung camera lands near the game's seat whose screen it faces, so it sees that player's head, and no
++# camera position faces the screen squarely without it. Other players' third-person visuals are hidden on
++# this machine only (no RPC); only what this hid is restored, so eliminated players stay hidden.
++# Split screen clears the other seats' body layers from this camera's cull mask; online sets `visible`.
++var _mp8_hidden_others: Array[Node3D] = []
++var _mp8_local_hidden_mask: int = 0
++
++
++func _mp8_is_local_view() -> bool :
++	if player_presence == null:
++		return false
++	return GameManager.local_game or (multiplayer.get_unique_id() == player_presence.network_id)
++
++
++# [MP8] Other player instances, not `game_instance.players`: that dictionary is filled by spawn_players()
++# from initialize(), which runs only on the server, so on clients it is empty. Players are children of
++# `PlayerSpawnNode` on every machine (replicated), so the siblings are scanned.
++func _mp8_others() -> Array :
++
++	var parent: Node = get_parent()
++	if parent == null:
++		return []
++
++	var out: Array = []
++	for c in parent.get_children():
++		if c != self and c is ChiselGauntletPlayer:
++			out.append(c)
++	return out
++
++
++func _mp8_hide_others(hide_them: bool) -> void :
++
++	# Split screens share one world. Hide bodies only in this camera, never by
++	# changing the shared visual node that the other seven cameras also render.
++	if GameManager.local_game:
++		if hide_them:
++			if _mp8_local_hidden_mask == 0:
++				for index in 8:
++					var bit: int = 1 << (_mp8_local_layer(index, true) - 1)
++					_mp8_local_hidden_mask |= local_camera.cull_mask & bit
++				local_camera.cull_mask &= ~_mp8_local_hidden_mask
++		else:
++			local_camera.cull_mask |= _mp8_local_hidden_mask
++			_mp8_local_hidden_mask = 0
++		return
++
++	# Only this machine's own player manages what its camera shows
++	if not _mp8_is_local_view():
++		return
++
++	if not hide_them:
++		for v in _mp8_hidden_others:
++			if is_instance_valid(v):
++				v.visible = true
++		_mp8_hidden_others.clear()
++		return
++
++	if not _mp8_hidden_others.is_empty():
++		return  # already hidden; don't record twice
++
++	for other in _mp8_others():
++		if not is_instance_valid(other):
++			continue
++		var v: Node3D = other.visuals_third_person
++		if v == null or not v.visible:
++			continue          # already invisible (eliminated/disconnected): not ours to hide or restore
++		v.visible = false
++		_mp8_hidden_others.append(v)
++
++	if not _mp8_hidden_others.is_empty():
++		print("[MP8] Chisel Gauntlet: hid %d other players' visuals while memorising (this machine)" % _mp8_hidden_others.size())
++
++
++# Tweens over `duration` when above 0, in step with the game's 1.5-second head turn.
++func _mp8_aim_view(target_deg: float, duration: float) -> void :
++
++	var rig: Node3D = _mp8_camera_rig()
++	if rig == null:
++		return
++	if not _mp8_rig_rest_taken:
++		_mp8_rig_rest = rig.transform
++		_mp8_rig_rest_taken = true
++
++	if _mp8_view_tween != null and _mp8_view_tween.is_valid():
++		_mp8_view_tween.kill()
++
++	# The game's seats have offset 0: from and to are both 0 and this returns, as the game behaves
++	var from: float = rad_to_deg((_mp8_rig_rest.affine_inverse() * rig.transform).basis.get_euler().y)
++	if is_zero_approx(target_deg) and is_zero_approx(from):
++		return
++
++	if duration <= 0.0:
++		_mp8_apply_view_angle(target_deg)
++		return
++
++	_mp8_view_tween = create_tween()
++	_mp8_view_tween.tween_method(_mp8_apply_view_angle, from, target_deg, duration
++	).set_ease(Tween.EASE_IN_OUT).set_trans(Tween.TRANS_SINE)

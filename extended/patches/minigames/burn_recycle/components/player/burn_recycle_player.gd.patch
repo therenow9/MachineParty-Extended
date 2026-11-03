@@ -1,0 +1,502 @@
+diff --git a/minigames/burn_recycle/components/player/burn_recycle_player.gd b/minigames/burn_recycle/components/player/burn_recycle_player.gd
+--- a/minigames/burn_recycle/components/player/burn_recycle_player.gd
++++ b/minigames/burn_recycle/components/player/burn_recycle_player.gd
+@@ -60,6 +60,9 @@ enum InputType{
+ @export var player_marker: Node3D
+ @export var player_name_label: PlayerNameLabel
+ 
++# [MP8] Vanilla's four seat yaws. Nothing indexes it by seat (seats 4-7 would read past the end):
++# _mp8_visual_rotation() computes 180 + step * seat, equal to this table at a 90-degree step, and
++# _mp8_self_check() compares the two.
+ const visual_parent_rotations: Array[float] = [180.0, 270.0, 0.0, 90.0]
+ 
+ var game_instance: BurnRecycleMinigame
+@@ -200,6 +203,31 @@ func setup_local_visuals():
+ 	local_camera.set_cull_mask_value(active_seat_index + 2, true)
+ 
+ func setup_clientside_visuals(_seat_counter: int):
++
++	# [MP8] A mixed room runs the game's setup_clientside_visuals (D120).
++	if not NetworkManager.mp8_room_extended():
++		await _mp8_game_setup_clientside_visuals(_seat_counter)
++		return
++	await get_tree().create_timer(1, false).timeout
++	# [MP8] Not visual_parent_rotations[_seat_counter]: it has four entries.
++	game_instance.clientside_visuals_parent.rotation_degrees = Vector3(
++		0.0, _mp8_visual_rotation(_seat_counter), 0.0
++	)
++
++	# [MP8] This lights the previous seat's indicator; seat 0 wraps to the last seat, not to vanilla's 3.
++	var index_to_enable_indicator_on = _seat_counter - 1
++	if index_to_enable_indicator_on == -1:
++		index_to_enable_indicator_on = _mp8_seats() - 1
++	for i in game_instance.player_parent_node.get_children():
++		var pl: BurnRecyclePlayer = i
++		if pl.active_seat_index == index_to_enable_indicator_on:
++			pl.end_score_labels[0].position = Vector3(-2.332, 3.747, 5.227)
++			for _indicator in game_instance.indicators:
++				if _indicator.indicator_id == index_to_enable_indicator_on:
++					_indicator.get_child(0).visible = true
++
++# The game's setup_clientside_visuals, for a mixed room (D120).
++func _mp8_game_setup_clientside_visuals(_seat_counter: int):
+ 	await get_tree().create_timer(1, false).timeout
+ 	game_instance.clientside_visuals_parent.rotation_degrees = Vector3(
+ 		0.0, visual_parent_rotations[_seat_counter], 0.0
+@@ -217,11 +245,45 @@ func setup_clientside_visuals(_seat_counter: int):
+ 					_indicator.get_child(0).visible = true
+ 
+ func set_active_belt(_seat_counter: int):
++
++	# [MP8] A mixed room runs the game's set_active_belt (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_set_active_belt(_seat_counter)
++		return
++	active_seat_index = _seat_counter
++	debug.text = "seat: " + str(_seat_counter)
++	# [MP8] Bounds-checked and reported: burn_recycle.gd extends belts to one per seat, and a seat without
++	# one would leave active_belt null for move_items_visual().
++	if _seat_counter < game_instance.belts.size():
++		active_belt = game_instance.belts[_seat_counter]
++	else:
++		printerr("[MP8] The Filter: seat %d has no belt (only %d in the array); its conveyor will not move" % [
++			_seat_counter, game_instance.belts.size()])
++
++# The game's set_active_belt, for a mixed room (D120).
++func _mp8_game_set_active_belt(_seat_counter: int):
+ 	active_seat_index = _seat_counter
+ 	debug.text = "seat: " + str(_seat_counter)
+ 	active_belt = game_instance.belts[_seat_counter]
+ 
+ func set_active_press(_seat_counter: int):
++
++	# [MP8] A mixed room runs the game's set_active_press (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_set_active_press(_seat_counter)
++		return
++	for i in game_instance.presses:
++		if i.press_id == _seat_counter:
++			active_press = i
++			break
++	# [MP8] A seat without a press is reported: set_eliminated_rpc() skips the press animation for it,
++	# and without that guard the elimination itself would not apply.
++	if active_press == null:
++		printerr("[MP8] The Filter: seat %d has no matching press (%d in total); elimination will misbehave" % [
++			_seat_counter, game_instance.presses.size()])
++
++# The game's set_active_press, for a mixed room (D120).
++func _mp8_game_set_active_press(_seat_counter: int):
+ 	for i in game_instance.presses:
+ 		if i.press_id == _seat_counter:
+ 			active_press = i
+@@ -240,6 +302,33 @@ func play_death_sound():
+ 	speaker_death.play()
+ 
+ func look_at_seat(_seat_index: int):
++
++	# [MP8] A mixed room runs the game's look_at_seat (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_look_at_seat(_seat_index)
++		return
++	# [MP8] Vanilla's 4x4 table is the relative seat offset (target - me) mod N: 0 self, 1 right, 2 centre,
++	# 3 left. This formula matches it at N=4; above four seats every look is a tween (_mp8_tween_look).
++	# Uses active_seat_index, which equals the press id, so a seat without a press does not crash here.
++	var n: int = _mp8_seats()
++	var offset: int = ((_seat_index - active_seat_index) % n + n) % n
++	var direction: String = "center"
++	if offset == 0:
++		direction = "self"
++	elif offset * 2 < n:
++		direction = "right"
++	elif offset * 2 == n:
++		direction = "center"
++	else:
++		direction = "left"
++
++	if n > BurnRecycleMinigame.MP8_ORIG_SEATS and _mp8_tween_look(_seat_index, direction):
++		return
++
++	anim_camera_movement.play("look " + direction)
++
++# The game's look_at_seat, for a mixed room (D120).
++func _mp8_game_look_at_seat(_seat_index: int):
+ 	var direction: String = "center"
+ 
+ 	match active_press.press_id:
+@@ -291,6 +380,43 @@ func move_items_data():
+ 
+ func move_items_visual():
+ 
++	# [MP8] A mixed room runs the game's move_items_visual (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_move_items_visual()
++		return
++
++	for i in items.keys().size() - 1:
++
++		var item = items[i]
++		if not item:
++			continue
++
++		var t = create_tween()
++		item_tweens[item] = t
++
++		t.tween_property(
++			item, "global_position", 
++			item_positions[i].global_position, conveyor_move_time
++		)
++		t.tween_callback( func():
++			if item:
++				item.global_position = item_positions[i].global_position
++				item_tweens.erase(item)
++		)
++
++		# [MP8] active_belt is null for a seat without a belt.
++		if active_belt == null:
++			continue
++		var t2 = create_tween()
++		var mat: StandardMaterial3D = active_belt.get_active_material(0)
++		var prev_uv = mat.uv1_offset.x
++		# [MP8] Vanilla's 0.028 is one 1 m slot on the 18-slot belt; a shortened belt needs a larger step
++		# or it scrolls slower than the items move.
++		t2.tween_property(mat, "uv1_offset", Vector3(prev_uv - _mp8_uv_step(), mat.uv1_offset.y, mat.uv1_offset.z), conveyor_move_time / 1.5)
++
++# The game's move_items_visual, for a mixed room (D120).
++func _mp8_game_move_items_visual():
++
+ 	for i in items.keys().size() - 1:
+ 
+ 		var item = items[i]
+@@ -513,6 +639,35 @@ func show_end_score_rpc():
+ @rpc("any_peer", "call_local", "reliable")
+ func set_eliminated_rpc():
+ 
++	# [MP8] A mixed room runs the game's set_eliminated_rpc (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_set_eliminated_rpc()
++		return
++
++	play_death_sound()
++
++	ik_left.stop()
++	ik_right.stop()
++	# [MP8] A null active_press would abort this function before is_dead and active are set, leaving an
++	# eliminated player in play. A missing press only skips the animation.
++	if active_press != null:
++		active_press.start_press()
++	else:
++		printerr("[MP8] The Filter: seat %d has no press; skipping the crush animation (elimination still applies)" % active_seat_index)
++	anim_character.play("thrown on control panel death1")
++	hide_nametag()
++	shake_camera()
++
++	valid_burns = 0
++	valid_recycles = 0
++	score_label.text = "00"
++
++	active = false
++	is_dead = true
++
++# The game's set_eliminated_rpc, for a mixed room (D120).
++func _mp8_game_set_eliminated_rpc():
++
+ 	play_death_sound()
+ 
+ 	ik_left.stop()
+@@ -568,6 +723,209 @@ func setup_rpc(_rotation_degrees: Vector3, _random_types_byte_array: PackedByteA
+ 			BurnRecycleMinigame.ItemTypes.values()[b]
+ 		)
+ 
++
++# [MP8] Extended's setup, sent by the relay in an Extended room (burn_recycle.gd's spawn_players) with the
++# slot count and the seat's push; a mixed room sends the game's setup_rpc above (D120).
++func mp8_setup_rpc(_rotation_degrees: Vector3, _random_types_byte_array: PackedByteArray, _slots: int = 0, _push: float = 0.0):
++
++	rotation_degrees = _rotation_degrees
++
++	# [MP8] Odd seats move out along their radial direction, the rotated local +Z (+X is the conveyor
++	# direction). The console, conveyor, score screen and camera are all under this instance, so the
++	# player's own view is unchanged. After rotation_degrees: basis.z must be the rotated one.
++	if _push != 0.0:
++		position = transform.basis.z.normalized() * _push
++
++	# [MP8] The station's hand-edited offset from the default layout (burn_recycle.gd's layout editor).
++	# Same order as the editor: turn dyaw about the station anchor, local (0, 0, radius), then move dpos.
++	# The instance origin is the arena centre, so turning about it would swing the station across.
++	if game_instance != null and game_instance.has_method("mp8_layout_delta"):
++		var d: Array = game_instance.mp8_layout_delta(active_seat_index)
++		var dyaw: float = float(d[1])
++		if absf(dyaw) > 0.001:
++			var anchor: Vector3 = global_transform * Vector3(
++				0.0, 0.0, game_instance.mp8_station_radial())
++			var b: Basis = Basis(Vector3.UP, deg_to_rad(dyaw))
++			var t: Transform3D = global_transform
++			t.origin = anchor + b * (t.origin - anchor)
++			t.basis = b * t.basis
++			global_transform = t
++		position += d[0] as Vector3
++
++	# [MP8] The server's slot count (see burn_recycle.gd's header). Applied here, not in _ready, where
++	# game_instance is not set yet; no items exist until the countdown, so trimming the arrays is safe.
++	if _slots > 0:
++		_mp8_apply_slot_count(_slots)
++
++	for b in _random_types_byte_array:
++		random_item_types.append(
++			BurnRecycleMinigame.ItemTypes.values()[b]
++		)
++
++	# [MP8] The `mp8burnnopanel` switch hides the player's console parts. Each peer reads its own command
++	# line (no RPC), so every instance needs the argument.
++	if NetworkManager.mp8_dev_args().has("mp8burnnopanel"):
++		mp8_set_panel_visible(false)
++
++	# [MP8] The binding debug panel (`mp8burndebug`): seat, belt, press, slots and push are all set by now.
++	_mp8_debug_build()
++	_mp8_debug_refresh()
++
++
++# ============================================================== [MP8] Added
++
++# [MP8] Shows or hides the player's own console parts (piston, two levers, console screen), which every
++# seat has. The scene's static station frames are a separate switch: burn_recycle.gd's
++# `_mp8_set_frames_visible()`. The score screen, the character, `indicator` and the item slots stay
++# visible; `visible` leaves collision alone, so this changes nothing in play.
++func mp8_set_panel_visible(on: bool) -> void :
++
++	var hit: int = 0
++	for nd in [piston, lever_burn, lever_recycle, _mp8_panel_screen()]:
++		var n3: Node3D = nd as Node3D
++		if n3 == null:
++			continue
++		n3.visible = on
++		hit += 1
++
++	# Warn when a part is missing: on screen a switch that did nothing looks like one that worked.
++	if hit < 4:
++		push_warning("[MP8] The Filter: seat %d console has only %d/4 parts (piston/two levers/screen); the rest unchanged" % [
++			active_seat_index, hit])
++
++
++# [MP8] The console screen has no @export, so it is found by name. The parent, not the mesh: the screen's
++# content is a SubViewport under the parent.
++func _mp8_panel_screen() -> Node3D :
++	return find_child("control panel screen parent", true, false) as Node3D
++
++
++# [MP8] Each look starts from where the view is: play() would restart at a baked look's straight-ahead first
++# key when a round's second victim comes. The baked looks turn only as far as a 90-degree neighbour, so another
++# seat's look aims at its console top (the Indicator, local y 2.6, where the press lands); a victim's own look
++# takes "look self"'s held pose. Zoom and pose are the baked look's at MP8_LOOK_HELD, its timing kept.
++const MP8_LOOK_HEIGHT: float = 2.6
++const MP8_LOOK_HELD: float = 2.4
++const MP8_LOOK_ROTATION: NodePath = ^"camera parent/camera sub parent:rotation"
++const MP8_LOOK_FOV: NodePath = ^"camera parent/camera sub parent/Camera3D:fov"
++var _mp8_look_tween: Tween = null
++
++func _mp8_tween_look(seat: int, direction: String) -> bool:
++	var sub: Node3D = camera.get_parent() as Node3D
++	var a: Animation = anim_camera_movement.get_animation("look " + direction)
++	if sub == null or a == null:
++		return false
++	var rot_track: int = a.find_track(MP8_LOOK_ROTATION, Animation.TYPE_VALUE)
++	var fov_track: int = a.find_track(MP8_LOOK_FOV, Animation.TYPE_VALUE)
++	if rot_track < 0 or fov_track < 0:
++		return false
++	var fov: float = a.value_track_interpolate(fov_track, MP8_LOOK_HELD)
++	var aim: Vector3
++	var hold_end: float = 3.03
++	if direction == "self":
++		aim = a.value_track_interpolate(rot_track, MP8_LOOK_HELD)
++		hold_end = 3.47
++	else:
++		var target: BurnRecyclePlayer = null
++		for c in game_instance.player_parent_node.get_children():
++			if c is BurnRecyclePlayer and c.active_seat_index == seat:
++				target = c
++		if target == null:
++			return false
++		var swayed: Node3D = sub.get_parent() as Node3D
++		var point: Vector3 = target.global_transform * Vector3(0.0, MP8_LOOK_HEIGHT, game_instance.mp8_station_radial())
++		var to_point: Vector3 = swayed.global_transform.affine_inverse() * point
++		var up: Vector3 = (swayed.global_basis.inverse() * Vector3.UP).normalized()
++		aim = (Basis.looking_at(to_point.normalized(), up) * camera.basis.orthonormalized().inverse()).get_euler()
++
++	anim_camera_movement.stop(true)
++	if _mp8_look_tween != null:
++		_mp8_look_tween.kill()
++	var t: Tween = create_tween().set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
++	t.tween_property(sub, "rotation", aim, 1.07)
++	t.parallel().tween_property(camera, "fov", fov, 1.07)
++	t.tween_interval(hold_end - 1.07)
++	t.tween_property(sub, "rotation", Vector3.ZERO, 4.87 - hold_end)
++	t.parallel().tween_property(camera, "fov", 57.3, 4.87 - hold_end)
++	_mp8_look_tween = t
++	return true
++
++# [MP8] The seat count; 4 before game_instance is set, so no caller can take a modulo by 0.
++func _mp8_seats() -> int:
++	if game_instance != null and game_instance.mp8_seats > 0:
++		return game_instance.mp8_seats
++	return 4
++
++
++# [MP8] The belt's UV scroll per slot, larger for a shortened belt (see move_items_visual).
++func _mp8_uv_step() -> float:
++	if game_instance != null and game_instance.mp8_belt_uv_step > 0.0:
++		return game_instance.mp8_belt_uv_step
++	return 0.028
++
++
++# [MP8] The client-side visuals' yaw: visual_parent_rotations is 180 + 90 * seat (mod 360), generalised
++# to any seat step.
++func _mp8_visual_rotation(seat: int) -> float:
++	var step: float = 90.0
++	if game_instance != null and game_instance.mp8_seat_step > 0.0:
++		step = game_instance.mp8_seat_step
++	return fposmod(180.0 + step * float(seat), 360.0)
++
++
++# [MP8] Trims the conveyor to n slots. Only slots 0-3 matter to play (0-2 preview, 3 the active slot);
++# the rest is the tail that carries unsorted items away, and at 45 degrees it crosses the next seat.
++# Every peer must use the same n: move_items_data() derives the erase index from the items length,
++# so n comes from the server through setup_rpc.
++func _mp8_apply_slot_count(n: int) -> void :
++
++	if n <= 4 or n >= item_positions.size():
++		return
++
++	_mp8_self_check()
++
++	item_positions.resize(n)
++	items.clear()
++	for i in n:
++		items[i] = null
++
++	if active_item_index >= n:
++		printerr("[MP8] The Filter: active slot index %d is past the %d-slot conveyor; items never reach it" % [
++			active_item_index, n])
++
++
++# [MP8] Checks burn_recycle.gd's hard-coded slot geometry (first slot, spacing, 18 slots) against the
++# real item positions: a game update could change the scene, and a wrong belt length raises no error.
++# Seat 0 only, once.
++func _mp8_self_check() -> void :
++
++	if active_seat_index != 0 or item_positions.size() < 2 or game_instance == null:
++		return
++
++	# Measured in the player root's own frame (to_local): the scene root's baked 90-degree yaw is replaced
++	# by rotation_degrees at runtime. At runtime the slots run along local x from -3.00, 1 m apart, at z 5.20.
++	var p0: Vector3 = to_local(item_positions[0].global_position)
++	var p1: Vector3 = to_local(item_positions[1].global_position)
++	var first_x: float = p0.x
++	var spacing: float = absf(p1.x - p0.x)
++	print("[MP8] The Filter conveyor: %d slots / first x=%.2f / spacing %.2f m / radial z=%.2f (constants %d / %.2f / %.2f / %.2f)" % [
++		item_positions.size(), first_x, spacing, p0.z,
++		BurnRecycleMinigame.MP8_ORIG_SLOTS, BurnRecycleMinigame.MP8_SLOT_FIRST_X,
++		BurnRecycleMinigame.MP8_SLOT_SPACING, BurnRecycleMinigame.MP8_STATION_RADIAL_Z])
++
++	if item_positions.size() != BurnRecycleMinigame.MP8_ORIG_SLOTS \
++			or absf(first_x - BurnRecycleMinigame.MP8_SLOT_FIRST_X) > 0.05 \
++			or absf(spacing - BurnRecycleMinigame.MP8_SLOT_SPACING) > 0.05 \
++			or absf(p0.z - BurnRecycleMinigame.MP8_STATION_RADIAL_Z) > 0.05:
++		printerr("[MP8] ⚠️ The Filter: conveyor geometry does not match the constants in burn_recycle.gd; belt length and push direction will be wrong, fix those constants")
++
++	# The formula must equal vanilla's table at a 90-degree step, or four-player games change.
++	for s in visual_parent_rotations.size():
++		var want: float = visual_parent_rotations[s]
++		var got: float = fposmod(180.0 + 90.0 * float(s), 360.0)
++		if absf(fposmod(want - got, 360.0)) > 0.01:
++			printerr("[MP8] ❌ visual yaw formula differs from vanilla table entry %d (table %.1f / formula %.1f)" % [s, want, got])
++
+ @rpc("any_peer", "call_local", "reliable")
+ func set_random_type_array_rpc(_random_types_byte_array: PackedByteArray):
+ 
+@@ -623,3 +981,86 @@ func set_player_presence(_network_id: int, seat_counter: int):
+ 
+ 		set_process(false)
+ 		indicator.visible = false
++
++
++# ============================================================== [MP8] Binding debug panel
++# Only with the `mp8burndebug` command-line argument. Top left, each window shows its own player's seat
++# bindings: a seat without a belt or a press shows nothing on screen until someone is eliminated.
++
++var _mp8_dbg_canvas: CanvasLayer = null
++var _mp8_dbg_panel: Label = null
++
++
++func _mp8_debug_on() -> bool :
++	return NetworkManager.mp8_dev_args().has("mp8burndebug")
++
++
++func _mp8_debug_build() -> void :
++
++	if _mp8_dbg_panel != null or not _mp8_debug_on():
++		return
++
++	# Built only for the local player.
++	if player_presence == null:
++		return
++	if not GameManager.local_game and player_presence.network_id != multiplayer.get_unique_id():
++		return
++
++	var lbl := Label.new()
++	lbl.name = "MP8BurnDebugPanel"
++	lbl.set_anchors_preset(Control.PRESET_TOP_LEFT)
++	lbl.position = Vector2(14, 10)
++	lbl.add_theme_color_override("font_color", Color(0.6, 1.0, 0.6))
++	lbl.add_theme_color_override("font_outline_color", Color.BLACK)
++	lbl.add_theme_constant_override("outline_size", 6)
++	lbl.add_theme_font_size_override("font_size", 15)
++
++	_mp8_dbg_canvas = CanvasLayer.new()
++	_mp8_dbg_canvas.layer = 127
++	_mp8_dbg_canvas.add_child(lbl)
++	add_child(_mp8_dbg_canvas)
++	_mp8_dbg_panel = lbl
++
++
++func _mp8_debug_refresh() -> void :
++
++	if _mp8_dbg_panel == null:
++		return
++
++	var seats: int = _mp8_seats()
++	var pname: String = "?"
++	var pid: int = 0
++	if player_presence != null:
++		pname = String(player_presence.network_name)
++		pid = player_presence.network_id
++
++	# This seat lights the previous seat's indicator, wrapping around.
++	var ind_id: int = active_seat_index - 1
++	if ind_id < 0:
++		ind_id = seats - 1
++
++	var belt_txt: String = "✗ not bound"
++	if active_belt != null:
++		belt_txt = "✓ %s" % String(active_belt.name)
++
++	var press_txt: String = "✗ not bound (elimination will break)"
++	if active_press != null:
++		press_txt = "✓ press_id=%d" % active_press.press_id
++
++	var ring: String = "?"
++	var push: float = 0.0
++	if game_instance != null:
++		push = float(game_instance.mp8_ring_push)
++		ring = "outer ring +%.2f m" % push if (active_seat_index % 2) == 1 and push > 0.0 else "inner ring"
++
++	var lines := PackedStringArray()
++	lines.append("[MP8] The Filter - binding debug")
++	lines.append("Player %s    id = %d" % [pname, pid])
++	lines.append("Seat %d of %d    %s" % [active_seat_index, seats, ring])
++	lines.append("Belt  %s" % belt_txt)
++	lines.append("Press  %s" % press_txt)
++	lines.append("Indicator  I light seat %d's" % ind_id)
++	lines.append("Conveyor %d slots    seat world position (%.2f, %.2f)" % [
++		item_positions.size(), global_position.x, global_position.z])
++
++	_mp8_dbg_panel.text = "\n".join(lines)

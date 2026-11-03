@@ -1,0 +1,91 @@
+diff --git a/scenes/lobby/scripts/lobby_scene.gd b/scenes/lobby/scripts/lobby_scene.gd
+--- a/scenes/lobby/scripts/lobby_scene.gd
++++ b/scenes/lobby/scripts/lobby_scene.gd
+@@ -18,7 +18,7 @@ extends Control
+ @export var load_timeout_timer: Timer
+ 
+ var player_order_by_seat: Dictionary[int, int] = {
+-	0: -1, 1: -1, 2: -1, 3: -1
++	0: -1, 1: -1, 2: -1, 3: -1, 4: -1, 5: -1, 6: -1, 7: -1  # [MP8] stock has 4 seats
+ }
+ 
+ var loading: bool = true
+@@ -172,7 +172,7 @@ func start_host():
+ 	hide_scene_roots()
+ 
+ 	NetworkManager.on_server_created.connect( func():
+-		player_order_by_seat = {0: 1, 1: -1, 2: -1, 3: -1}
++		player_order_by_seat = {0: 1, 1: -1, 2: -1, 3: -1, 4: -1, 5: -1, 6: -1, 7: -1}  # [MP8]
+ 		player_list_updated_rpc.rpc(player_order_by_seat)
+ 		fade_loading_screen()
+ 	)
+@@ -211,12 +211,16 @@ func setup_network_signals():
+ 	NetworkManager.lobby_joined.connect(_on_lobby_joined)
+ 	NetworkManager.join_allowed.connect(_on_join_allowed)
+ 	NetworkManager.join_refused.connect(_on_join_refused)
++	# [MP8] A joiner without the mod runs stock code we cannot change, so only the host can explain
++	# the refusal; it goes to the stock lobby message bar.
++	NetworkManager.mp8_join_blocked.connect(_mp8_on_join_blocked)
+ 
+ func update_player_list():
+ 
+ 	if not NetworkManager.active_backend:
+ 		return
+ 
++	NetworkManager.mp8_lobby_layout(lobby_handler, player_order_by_seat.size() > NetworkManager.MP8_MIXED_CAP)  # [MP8] D121
+ 	lobby_handler.update_player_list(player_order_by_seat.values())
+ 
+ func fade_loading_screen():
+@@ -294,6 +298,11 @@ func set_player_debug_rpc(_network_id: int, _debug: bool):
+ @rpc("any_peer", "call_remote", "reliable")
+ func player_joined_lobby_rpc(_network_id: int):
+ 
++	# [MP8] D121: the seat map fitted to the room, before the game's loop takes the first free seat.
++	var mp8_seats := player_order_by_seat.size()
++	player_order_by_seat = NetworkManager.mp8_fit_seats(player_order_by_seat, NetworkManager.mp8_room_extended())
++	if player_order_by_seat.size() != mp8_seats:
++		print("[MP8] seat map: %d -> %d seats %s" % [mp8_seats, player_order_by_seat.size(), str(player_order_by_seat.values())])
+ 
+ 	for key in player_order_by_seat.keys():
+ 		if player_order_by_seat[key] < 0:
+@@ -413,6 +422,13 @@ func _on_join_allowed(reconnect: bool, game_in_progress: bool, _debug_only: bool
+ 			if GameManager.is_using_controller():
+ 				reconnect_handler.cancel_button.grab_focus()
+ 
++# [MP8] Someone was refused: tell the host why and what the joiner should do.
++func _mp8_on_join_blocked(text: String) -> void :
++	if lobby_handler != null:
++		lobby_handler.send_lobby_message(text)
++	print("[MP8] " + text)
++
++
+ func _on_join_refused(network_id: int, refuse_reason):
+ 
+ 	NetworkManager.leave_lobby()
+@@ -426,11 +442,16 @@ func _on_join_refused(network_id: int, refuse_reason):
+ 		NetworkManager.RefuseReason.None:
+ 			message = tr("LOC_ROOM_UNKNOWN")
+ 		NetworkManager.RefuseReason.VersionMismatch:
+-			message = tr("LOC_TAG_VERSION_MISMATCH")
++			# [MP8] The stock text says only "version does not match", whatever differs; this one says
++			# which side's build differs.
++			message = NetworkManager.mp8_mismatch_text()
+ 		NetworkManager.RefuseReason.SessionEnded:
+ 			message = tr("LOC_ROOM_DISBANDED")
+ 		NetworkManager.RefuseReason.HostLeft:
+ 			message = tr("LOC_ROOM_DISBANDED")
++		NetworkManager.RefuseReason.MP8RoomFull:
++			# [MP8] Sent only by an Extended host; a vanilla joiner shows its own fallback for it (D117).
++			message = NetworkManager.MP8_ROOM_FULL_TEXT
+ 
+ 	GameManager.main_menu_dialog_message = message
+ 	if not is_inside_tree():
+@@ -470,6 +491,8 @@ func _on_peer_disconnected(_network_id: int):
+ 			player_order_by_seat[key] = -1
+ 			break
+ 
++	# [MP8] D121: a leave's broadcast is fitted too; a vanilla peer may be connecting.
++	player_order_by_seat = NetworkManager.mp8_fit_seats(player_order_by_seat, NetworkManager.mp8_room_extended())
+ 	player_list_updated_rpc.rpc(player_order_by_seat)
+ 
+ func _on_load_timeout():

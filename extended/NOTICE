@@ -1,0 +1,53 @@
+Machine Party: Extended - notice
+================================
+
+What the MIT license in LICENSE covers
+--------------------------------------
+
+Only material written by this project and by Machine Party Overtime, which it
+is built on:
+
+  * the ADDED lines in each file under patches/ (the mod's own code);
+  * tools/, mpml/ and the documentation.
+
+It does not and cannot cover:
+
+  * the game "Machine Party", its code, assets or data in any form;
+  * the unchanged lines of the game's own scripts that appear in the patch
+    files as diff context. They remain their copyright holder's, and are
+    present only in the minimum amount the patches need to apply;
+  * lines adapted from machine-party-8p's changes to the game's scripts (its
+    versions of Wrong Way, Forklift Certified, Inside Job and Firearm Factory). Those are
+    the game's code as its contributors changed it, credited below.
+
+No game files are distributed. You need your own legitimate Steam copy of
+Machine Party. Pirated copies are not supported, and piracy is strictly
+prohibited.
+
+This is an UNOFFICIAL third-party modification. It is not affiliated with,
+authorized by, sponsored by, or endorsed by the developer or publisher of
+Machine Party.
+
+Machine Party is a game by Mike Klubnika and GDeavid. Any part of this
+project that comes from the game's code is credited entirely to its makers.
+
+Credits
+-------
+
+  * Machine Party Overtime, by DarkJadeStone (DarkJade335), MIT:
+    https://github.com/DarkJadeStone/MachineParty-Overtime
+    This project is a fork of Overtime 1.7. Overtime's own credits, including
+    the community forks it drew on, are in docs/CREDITS.md.
+  * MachinePartyModLoader, by Krunk-theduck:
+    https://github.com/Krunk-theduck/MachinePartyModLoader
+    Not bundled; this mod loads through it.
+  * machine-party-8p, by Binary1936 and contributors:
+    https://github.com/Binary1936/machine-party-8p
+    Its 8-player minigame versions are the reference for this build's own:
+    their game-script changes are adapted here, on Overtime's local base.
+
+Special thanks
+--------------
+
+  * DarkJadeStone, for Machine Party Overtime; Binary1936, for
+    machine-party-8p; and Mike Klubnika and GDeavid, for Machine Party.

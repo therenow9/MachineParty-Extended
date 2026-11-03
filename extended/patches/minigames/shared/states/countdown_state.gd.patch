@@ -1,0 +1,25 @@
+diff --git a/minigames/shared/states/countdown_state.gd b/minigames/shared/states/countdown_state.gd
+--- a/minigames/shared/states/countdown_state.gd
++++ b/minigames/shared/states/countdown_state.gd
+@@ -43,14 +43,21 @@ func enter(_msg: Dictionary = {}) -> void :
+ 
+ 	countdown_started.emit()
+ 
++	# [MP8] A scene change can take the minigame out of the tree before it is freed, and a tick's timer can fire in
++	# between: the tick would send from outside the tree and then await get_tree() on null, which kills a release
++	# build. Out of the tree, the countdown ends.
+ 	while countdown_timer > 1:
+ 
+ 		await get_tree().create_timer(0.9).timeout
++		if not is_inside_tree():
++			return
+ 
+ 		countdown_timer -= 1
+ 		tick.emit(countdown_timer)
+ 
+ 	await get_tree().create_timer(0.9).timeout
++	if not is_inside_tree():
++		return
+ 
+ 	expired.emit()
+ 

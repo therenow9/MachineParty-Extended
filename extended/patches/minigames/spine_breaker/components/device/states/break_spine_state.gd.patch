@@ -1,0 +1,90 @@
+diff --git a/minigames/spine_breaker/components/device/states/break_spine_state.gd b/minigames/spine_breaker/components/device/states/break_spine_state.gd
+--- a/minigames/spine_breaker/components/device/states/break_spine_state.gd
++++ b/minigames/spine_breaker/components/device/states/break_spine_state.gd
+@@ -13,6 +13,45 @@ func can_enter() -> bool:
+ 	return true
+ 
+ func enter(_msg: Dictionary = {}) -> void :
++
++	# [MP8] A mixed room runs the game's enter (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_enter(_msg)
++		return
++	state_time = 0.0
++
++	target = _msg.get("target")
++
++	# [MP8] A target that is already dead must not enter this flow. The reset below waits on the
++	# one-shot `target.spine_broken`, which may already have fired; `_on_spine_broken` would never
++	# come and this device would sit in BreakSpine forever. Second guard after thrown_state's.
++	if target == null or not is_instance_valid(target) or not target.active:
++		if multiplayer.is_server():
++			print("[MP8] Spine Breaker: device %d's target is already dead - skipping, finding a new target" % owner.mp8_index)
++		owner.light_animation_player.stop()
++		# enter() runs mid-transition, so the transition is deferred. Idle with after_break
++		# sends request_new_target.
++		state_machine.call_deferred("transition_to", &"Idle", {"after_break": true})
++		return
++
++	owner.light_animation_player.stop()
++	target.blink_animation_player.stop()
++
++	# [MP8] Claim retirement here, not on death: the game emits spine_broken (device resets)
++	# before emit_died (the main script counts), so by then the device has moved on.
++	# mp8_claim_retire() is first-come: only one of two devices may retire, or none is left
++	# and the round never ends. The victim is passed so one death struck twice counts once.
++	if owner.game_instance != null and owner.game_instance.has_method("mp8_claim_retire"):
++		if owner.game_instance.mp8_claim_retire(target):
++			owner.mp8_retired = true
++			print("[MP8] Spine Breaker: device %d stays on this victim (2 players left after this kill, 1 device for the 1v1), retired" % owner.mp8_index)
++
++	fallback_position = target.global_position
++	target.spine_broken.connect(_on_spine_broken, CONNECT_ONE_SHOT)
++	target.break_spine_rpc.rpc()
++
++# The game's enter, for a mixed room (D120).
++func _mp8_game_enter(_msg: Dictionary = {}) -> void :
+ 	state_time = 0.0
+ 
+ 	target = _msg.get("target")
+@@ -37,6 +76,40 @@ func update_physics(_delta: float) -> void :
+ 
+ func _on_spine_broken():
+ 
++	# [MP8] A mixed room runs the game's _on_spine_broken (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_on_spine_broken()
++		return
++
++	# [MP8] A retired device skips the whole reset and stays in BreakSpine: it stays 100 m
++	# underground, the corpse keeps the device visual on its back (no set_spine_breaker_rpc(false)),
++	# and no Idle transition means no request_new_target.
++	if owner.mp8_retired:
++		print("[MP8] Spine Breaker: device %d stays on the corpse (no reset, no new target, light off)" % owner.mp8_index)
++		# Broadcast: each client drives the corpse's device blink in _process from this device's
++		# light_animation_player.speed_scale (see mp8_retire_quiet_rpc).
++		if target != null and is_instance_valid(target):
++			NetworkManager.mp8_rpc(owner, &"mp8_retire_quiet_rpc", [target.get_path()])
++		return
++
++	print("[MP8] Spine Breaker: device %d reset after the kill to (%.2f, %.2f)" % [
++		owner.mp8_index, fallback_position.x, fallback_position.z
++	])
++
++	owner.global_position = fallback_position
++	owner.force_update_transform()
++
++	owner.visuals.rotation.y = target.visuals.rotation.y
++	owner.spine_broken_exited_rpc.rpc()
++	target.set_spine_breaker_rpc.rpc(false)
++
++	state_machine.transition_to(&"Idle", {
++		"after_break": true
++	})
++
++# The game's _on_spine_broken, for a mixed room (D120).
++func _mp8_game_on_spine_broken():
++
+ 	owner.global_position = fallback_position
+ 	owner.force_update_transform()
+ 

@@ -1,0 +1,831 @@
+diff --git a/minigames/smoke_break/scripts/smoke_break.gd b/minigames/smoke_break/scripts/smoke_break.gd
+--- a/minigames/smoke_break/scripts/smoke_break.gd
++++ b/minigames/smoke_break/scripts/smoke_break.gd
+@@ -28,9 +28,79 @@ var active_players: Array[SmokeBreakPlayer]
+ var finished_players: Array[SmokeBreakPlayer]
+ var player_scores: Dictionary[int, int]
+ 
++# [MP8] Smoke Break seats 4 -> 8. The game's art is made for 4 seats, in five places indexed by seat:
++# the trolley's rot_by_seat_index_array, blood_decals_by_seat_index_array, particles_smoke (4, one
++# per shot) and `seat in [1, 2]` fan decal, and anim_handler's per-seat death match. Added seats
++# take the death animation of their nearest original seat.
++const MP8_MAX_PLAYERS: int = 8
++
++# Revolver aim from seat position: a least-squares fit of pivot, ratio and offset to the game's four
++# hand-set angles (RMS 0.058 degrees). Many fits match those four equally well, so it is reliable only
++# within their span [MP8_AIM_MIN, MP8_AIM_MAX]; the seat editor warns outside it.
++const MP8_AIM_PIVOT := Vector2(-13.0, -8.0)
++const MP8_AIM_K: float = -4.5126
++const MP8_AIM_C: float = 139.14
++const MP8_AIM_MIN: float = -55.0
++const MP8_AIM_MAX: float = 16.0
++
++const MP8_SEAT_FILE: String = "user://mp8_smoke_seats.txt"
++const MP8_EDIT_STEPS: Array[float] = [0.5, 0.2, 0.05]
++# The crate the game's seat 3 sits on, copied under added seats; the game's own props are untouched.
++const MP8_CRATE_PATH: String = "smoke break near final3/base mesh/crate1_003"
++
++# [MP8] Seat indexes that get a crate. The panel and seat tags show index + 1, so these are seats 4
++# and 5; the game's seats sit on scenery and the other added seats need none. X in the seat editor
++# hides or shows a crate without changing this list.
++const MP8_CRATE_SEATS: Array[int] = [3, 4]
++
++# [MP8] The final seat layout, baked in. _mp8_setup_seats() runs on every peer but the seat file
++# exists only where the seats were placed, so peers without it use this table, and a mismatch shows
++# different seats with clean logs. Row = [Vector2(x, z), yaw degrees, has crate, crate position or
++# null, crate yaw], the file's columns. A seat file still wins: update this table to match it.
++const MP8_SEATS_BAKED: Array = [
++	[Vector2(2.39, 2.70), 0.0, false, null, 0.0],
++	[Vector2(1.55, 3.42), -30.0, false, null, 0.0],
++	[Vector2(-0.63, 3.55), -60.0, false, null, 0.0],
++	[Vector2(3.35, -1.02), 30.0, true, Vector3(3.70, 0.00, -1.61), 113.5],
++	[Vector2(-2.02, 3.57), -60.0, true, Vector3(-1.87, 0.00, 3.90), 113.5],
++	[Vector2(2.95, 1.69), 15.0, false, null, 0.0],
++	[Vector2(0.46, 3.48), -52.5, false, null, 0.0],
++	[Vector2(3.15, 0.41), 22.5, false, null, 0.0],
++]
++
++# The spawns are an @export array the generic spawn fill would populate; this minigame manages its
++# own, so the flag is set at declaration (in _ready() could be too late).
++var mp8_owns_spawns: bool = true
++var mp8_player_count: int = 0
++# Seat index -> death animation: the game's match for 0-3, the nearest original seat's for the rest
++var mp8_death_anim_by_seat: Array[String] = []
++# Seat index -> its crate (only the seats in MP8_CRATE_SEATS)
++var _mp8_crates: Dictionary = {}
++# Crate offset from the seat, measured from seat 3 and its crate before any seat moves
++var _mp8_crate_offset: Vector3 = Vector3.ZERO
++# In-game seat editor
++var _mp8_edit_on: bool = false
++var _mp8_edit_sel: int = 4          # starts on the first added seat
++var _mp8_edit_step_i: int = 0
++var _mp8_edit_panel: Label = null
++var _mp8_edit_canvas: CanvasLayer = null
++var _mp8_tags: Array[Label3D] = []
++var _mp8_seat_src: String = "built-in arc fill"
++# [MP8] What I/K/J/L move: false = the seat (with its player), true = that seat's crate; C toggles.
++# A computed crate position may not fit a rearranged seat, so crates can be moved too.
++var _mp8_edit_crate: bool = false
++# [MP8] Freezes the round countdown while editing (round_play_state checks it each second).
++# The editor starts paused, or the round would end mid-placement; P toggles.
++var mp8_edit_paused: bool = false
++
++
+ func _ready() -> void :
+ 	super._ready()
+ 
++	# [MP8] Before spawn_players(): the seat index is its `counter` and the spawn array index,
++	# so a short array overflows at the fifth player.
++	_mp8_setup_seats()
++
+ 	round_play_state.timer_updated.connect(_on_timer_updated)
+ 
+ 	if multiplayer.is_server():
+@@ -82,8 +152,713 @@ func all_players_loaded():
+ 	is_all_player_loaded = true
+ 	minigame_ready.emit(multiplayer.get_unique_id())
+ 
++# [MP8] Seats 4 -> 8. The game's 4 seat nodes keep indexes 0-3 and added seats are appended at 4-7,
++# though they sit between them, so the game's angles, decals and death animations still line up.
++# With 4 players or fewer nothing changes.
++func _mp8_setup_seats() -> void :
++
++	# A mixed room keeps the game's 4 seats and tables (D120); they change above 4 players only.
++	if not NetworkManager.mp8_room_extended():
++		return
++
++	var mp8_args := NetworkManager.mp8_dev_args()
++	mp8_player_count = PlayerManager.player_presences.size()
++	_mp8_edit_on = mp8_args.has("mp8smokeedit")
++
++	var trolley: Node = _mp8_find_trolley()
++	var rots: Array = []
++	if trolley != null:
++		var r = trolley.get("rot_by_seat_index_array")
++		if r is Array:
++			rots = (r as Array).duplicate()
++
++	print("[MP8] Smoke Break: at runtime - %d seats / %d revolver angles / %d smoke particles; %d players" % [
++		player_spawn_positions.size(), rots.size(),
++		(trolley.get("particles_smoke") as Array).size() if trolley != null else -1,
++		mp8_player_count,
++	])
++
++	# The game's 4 death animations, copied from anim_handler's match; keep them identical
++	mp8_death_anim_by_seat = ["death_window", "death_fan", "death_fan", "death_window"]
++
++	# [MP8] Measure the crate offset before any seat moves: the game's seat 3 sits on this crate.
++	var _src_crate: Node3D = get_node_or_null(MP8_CRATE_PATH) as Node3D
++	if _src_crate != null and player_spawn_positions.size() >= 4:
++		_mp8_crate_offset = _src_crate.global_position - player_spawn_positions[3].global_position
++
++	if mp8_args.has("mp8noexpand"):
++		print("[MP8] Smoke Break: mp8noexpand, seats unchanged (the game's control setup, ⚠️ use 4 players)")
++		return
++
++	if mp8_player_count <= 4:
++		print("[MP8] Smoke Break: %d players, the game's 4 seats unchanged" % mp8_player_count)
++		return
++
++	if trolley == null or rots.size() != player_spawn_positions.size():
++		push_warning("[MP8] Smoke Break: no trolley, or the angle table does not match the seat count (%d vs %d); seats not extended" % [
++			rots.size(), player_spawn_positions.size()
++		])
++		return
++
++	var want: int = mini(maxi(mp8_player_count, 5), MP8_MAX_PLAYERS)
++	var parent: Node3D = player_spawn_positions[0].get_parent() as Node3D
++	if parent == null:
++		push_warning("[MP8] Smoke Break: the seats have no parent node, cannot extend")
++		return
++
++	# Seats on the arc: (angle, position, yaw). The revolver angle serves as the arc coordinate:
++	# the game's four angles sort the seats in their order along the arc.
++	var arc: Array = []
++	for i in player_spawn_positions.size():
++		arc.append({
++			"deg": float((rots[i] as Vector3).x),
++			"pos": player_spawn_positions[i].global_position,
++			"yaw": player_spawn_positions[i].global_rotation.y,
++		})
++
++	var added := PackedStringArray()
++
++	# The seat file first, else MP8_SEATS_BAKED (peers never have the file, and every peer must lay
++	# out the same seats); `mp8smokenofile` gives the arc fill alone. Rows cover all 8 seats, so the
++	# first 4 move the game's nodes rather than create new ones.
++	var saved: Array = ([] if mp8_args.has("mp8smokenofile") else _mp8_load_seats())
++	if saved.size() >= want:
++		var y0: float = player_spawn_positions[0].global_position.y
++		for i in want:
++			var s: Dictionary = saved[i]
++			var sp: Vector2 = s["pos"]
++			var pos3 := Vector3(sp.x, y0, sp.y)
++			var yaw3: float = deg_to_rad(float(s["yaw"]))
++
++			var mk: Node3D
++			if i < player_spawn_positions.size():
++				mk = player_spawn_positions[i]      # the game's 4: moved, not created
++			else:
++				mk = Marker3D.new()
++				mk.name = "MP8Seat%d" % i
++				parent.add_child(mk)
++				player_spawn_positions.append(mk)
++			mk.global_position = pos3
++			mk.global_rotation = Vector3(0.0, yaw3, 0.0)
++
++			var d0: float = _mp8_aim_for(pos3)
++			if i < rots.size():
++				rots[i] = Vector3(d0, 0.0, 0.0)
++			else:
++				rots.append(Vector3(d0, 0.0, 0.0))
++
++			if i >= mp8_death_anim_by_seat.size():
++				mp8_death_anim_by_seat.append(_mp8_nearest_vanilla_anim(pos3))
++
++			added.append("seat%d(%.2f,%.2f) angle %.1f°%s" % [
++				i + 1, pos3.x, pos3.z, d0, ("" if _mp8_aim_ok(d0) else "⚠out of range")])
++
++	# No file, or too few rows -> fill the rest on the arc
++	while player_spawn_positions.size() < want:
++
++		arc.sort_custom(func(a, b): return a["deg"] < b["deg"])
++
++		# Insert at the midpoint of the widest angle gap
++		var bi: int = 0
++		var bw: float = -1.0
++		for i in arc.size() - 1:
++			var w: float = arc[i + 1]["deg"] - arc[i]["deg"]
++			if w > bw:
++				bw = w
++				bi = i
++		if bw <= 0.001:
++			push_warning("[MP8] Smoke Break: no gap left on the arc, stopping at %d seats" % player_spawn_positions.size())
++			break
++
++		var a: Dictionary = arc[bi]
++		var b: Dictionary = arc[bi + 1]
++		var mid_pos: Vector3 = (a["pos"] as Vector3).lerp(b["pos"] as Vector3, 0.5)
++		# lerp_angle takes the short way round: the game's yaws are not monotonic along the arc
++		var mid_yaw: float = lerp_angle(float(a["yaw"]), float(b["yaw"]), 0.5)
++		# The angle comes from the position, not the neighbours' midpoint, so it can be recomputed
++		# after a seat is moved by hand
++		var mid_deg: float = _mp8_aim_for(mid_pos)
++
++		var idx: int = player_spawn_positions.size()
++		var m := Marker3D.new()
++		m.name = "MP8Seat%d" % idx
++		parent.add_child(m)
++		m.global_position = mid_pos
++		m.global_rotation = Vector3(0.0, mid_yaw, 0.0)
++		player_spawn_positions.append(m)
++
++		rots.append(Vector3(mid_deg, 0.0, 0.0))
++
++		# The nearest original seat's death animation; there are no new animations
++		mp8_death_anim_by_seat.append(_mp8_nearest_vanilla_anim(mid_pos))
++
++		arc.append({"deg": mid_deg, "pos": mid_pos, "yaw": mid_yaw})
++		added.append("seat%d(%.2f,%.2f) angle %.1f° %s" % [
++			idx, mid_pos.x, mid_pos.z, mid_deg, mp8_death_anim_by_seat[idx]
++		])
++
++	# [MP8] Crates go in once every seat is in its final place, only under MP8_CRATE_SEATS. Not in
++	# the seat loops: the game's seats skip them, and index 3 is one of the game's seats.
++	for ci in MP8_CRATE_SEATS:
++		if ci < 0 or ci >= player_spawn_positions.size():
++			continue
++		_mp8_make_crate(ci, player_spawn_positions[ci].global_position)
++		# A crate position from the file wins over the computed offset
++		var cr = _mp8_crates.get(ci)
++		if cr != null and is_instance_valid(cr) and ci < saved.size():
++			var srow: Dictionary = saved[ci]
++			if srow.has("crate_pos"):
++				(cr as Node3D).global_position = srow["crate_pos"]
++				(cr as Node3D).global_rotation = Vector3(
++					0.0, deg_to_rad(float(srow.get("crate_yaw", 0.0))), 0.0)
++
++	# Hand the extended tables to the trolley, which owns the decal nodes to copy
++	if trolley.has_method("mp8_extend_seat_arrays"):
++		trolley.call("mp8_extend_seat_arrays", rots, player_spawn_positions)
++	else:
++		push_warning("[MP8] Smoke Break: the trolley has no mp8_extend_seat_arrays, angles and blood decals not extended - patch incomplete?")
++
++	print("[MP8] Smoke Break: seats 4 -> %d (source %s) - %s" % [
++		player_spawn_positions.size(), _mp8_seat_src, " | ".join(added)
++	])
++
++	if _mp8_edit_on:
++		_mp8_edit_begin()
++
++
++# ---- Seat file: one row per seat, all 8 ----
++
++func _mp8_load_seats() -> Array :
++	# No seat file -> MP8_SEATS_BAKED, not the arc fill: peers never have the file.
++	# `mp8smokenofile` gives the arc fill alone.
++	# [MP8] The editor's file, read only in a test build: a shipped build plays the built-in layout (D116).
++	if not NetworkManager.mp8_development_tools_allowed() or not FileAccess.file_exists(MP8_SEAT_FILE):
++		return _mp8_baked_seats()
++	var f := FileAccess.open(MP8_SEAT_FILE, FileAccess.READ)
++	if f == null:
++		push_warning("[MP8] Smoke Break: cannot open %s, using the built-in seat table" % MP8_SEAT_FILE)
++		return _mp8_baked_seats()
++	var rows: Array = []
++	while not f.eof_reached():
++		var line: String = f.get_line().strip_edges()
++		if line.is_empty() or line.begins_with("#"):
++			continue
++		var c: PackedStringArray = line.split(",", false)
++		if c.size() < 3:
++			continue
++		var sx: String = c[0].strip_edges()
++		var sz: String = c[1].strip_edges()
++		var sy: String = c[2].strip_edges()
++		if not (sx.is_valid_float() and sz.is_valid_float() and sy.is_valid_float()):
++			continue
++		# Column 4 (has crate) is optional and defaults to a crate
++		var has: bool = true
++		if c.size() >= 4 and c[3].strip_edges().is_valid_int():
++			has = (int(c[3].strip_edges()) != 0)
++		var row := {"pos": Vector2(float(sx), float(sz)), "yaw": float(sy), "crate": has}
++		# Columns 5-8: a hand-placed crate position (x, y, z, yaw); without them the computed offset applies
++		if c.size() >= 8:
++			var cx: String = c[4].strip_edges()
++			var cy: String = c[5].strip_edges()
++			var cz: String = c[6].strip_edges()
++			var cw: String = c[7].strip_edges()
++			if cx.is_valid_float() and cy.is_valid_float() and cz.is_valid_float() and cw.is_valid_float():
++				row["crate_pos"] = Vector3(float(cx), float(cy), float(cz))
++				row["crate_yaw"] = float(cw)
++		rows.append(row)
++	f.close()
++
++	_mp8_seat_src = "seat file %s" % MP8_SEAT_FILE
++
++	# Fewer than 8 rows is ignored: a file of the 4 added seats alone would fill 8 seats and
++	# shift every one.
++	if rows.size() > 0 and rows.size() < MP8_MAX_PLAYERS:
++		push_warning("[MP8] Smoke Break: %s has only %d rows (old format, 8 needed), ignored; using the built-in seat table" % [
++			MP8_SEAT_FILE, rows.size()
++		])
++		print("[MP8] Smoke Break: the seat file is in the old format (%d rows), ignored. Place the seats again and press 0 to save over it." % rows.size())
++		return _mp8_baked_seats()
++
++	if rows.is_empty():
++		# No valid rows also gets the baked table, not the arc fill, or this peer would differ from the rest
++		push_warning("[MP8] Smoke Break: %s has no valid rows, using the built-in seat table" % MP8_SEAT_FILE)
++		return _mp8_baked_seats()
++
++	return rows
++
++
++# [MP8] MP8_SEATS_BAKED in _mp8_load_seats()'s row shape. Peers without the seat file use it,
++# so it must match the host's file.
++func _mp8_baked_seats() -> Array :
++
++	_mp8_seat_src = "built-in table MP8_SEATS_BAKED"
++	var rows: Array = []
++	for r in MP8_SEATS_BAKED:
++		var row := {"pos": r[0] as Vector2, "yaw": float(r[1]), "crate": bool(r[2])}
++		if r[3] != null:
++			row["crate_pos"] = r[3] as Vector3
++			row["crate_yaw"] = float(r[4])
++		rows.append(row)
++	return rows
++
++
++func _mp8_save_seats() -> bool :
++	var f := FileAccess.open(MP8_SEAT_FILE, FileAccess.WRITE)
++	if f == null:
++		push_warning("[MP8] Smoke Break: cannot write %s" % MP8_SEAT_FILE)
++		return false
++	f.store_line("# Smoke Break (mp8game=4) seat table - 8 lines, one per seat 1-8")
++	f.store_line("# Each line: x, z, yaw (degrees), crate (1/0)")
++	f.store_line("# Used only at 5+ players; at 4 or fewer the stock 4 seats are used unchanged.")
++	f.store_line("# The revolver angle is computed from the position and is reliable only within the stock seats' span:")
++	f.store_line("#    it must fall between %.0f° and %.0f°, or the gun misses (the editor shows yellow)." % [
++		MP8_AIM_MIN, MP8_AIM_MAX])
++	f.store_line("# Only the added seats have crates (the stock four are scene art and cannot change).")
++	f.store_line("# Delete this file to go back to the built-in seat table (MP8_SEATS_BAKED).")
++	f.store_line("# Saved %s" % Time.get_datetime_string_from_system())
++	f.store_line("")
++	for i in player_spawn_positions.size():
++		var n: Node3D = player_spawn_positions[i]
++		var crate = _mp8_crates.get(i)
++		var has: int = 0
++		var line: String = "%.2f, %.2f, %.1f" % [
++			n.global_position.x, n.global_position.z, rad_to_deg(n.global_rotation.y)
++		]
++		if crate != null and is_instance_valid(crate) and (crate as Node3D).visible:
++			has = 1
++			var c3: Node3D = crate
++			# The crate's absolute position (height included) is saved: it is placed by hand, and
++			# seat + offset would put it back at the computed spot
++			line += ", 1, %.2f, %.2f, %.2f, %.1f" % [
++				c3.global_position.x, c3.global_position.y, c3.global_position.z,
++				rad_to_deg(c3.global_rotation.y)
++			]
++		else:
++			line += ", %d" % has
++		f.store_line(line)
++	f.close()
++	print("[MP8] Smoke Break: seats saved -> %s" % ProjectSettings.globalize_path(MP8_SEAT_FILE))
++	return true
++
++
++# ---- In-game seat editor (the mp8smokeedit argument) ----
++
++func _mp8_edit_begin() -> void :
++
++	if player_spawn_positions.size() <= 4:
++		_mp8_edit_on = false
++		return
++
++	var lbl := Label.new()
++	lbl.name = "MP8SmokeEditPanel"
++	lbl.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
++	lbl.offset_left = 16.0
++	lbl.offset_top = -150.0
++	lbl.offset_right = 980.0
++	lbl.offset_bottom = -8.0
++	var f = load("res://fonts/Terminal F4.ttf")
++	if f != null:
++		lbl.add_theme_font_override("font", f)
++	lbl.add_theme_font_size_override("font_size", 20)
++	lbl.add_theme_color_override("font_color", Color(0.6, 0.95, 1.0))
++	lbl.add_theme_color_override("font_outline_color", Color.BLACK)
++	lbl.add_theme_constant_override("outline_size", 6)
++	lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	if _mp8_edit_canvas == null:
++		_mp8_edit_canvas = CanvasLayer.new()
++		_mp8_edit_canvas.layer = 100
++		add_child(_mp8_edit_canvas)
++	_mp8_edit_canvas.add_child(lbl)
++	_mp8_edit_panel = lbl
++
++	# A number tag above each seat: the seats are invisible Marker3Ds
++	for i in player_spawn_positions.size():
++		var tag := Label3D.new()
++		tag.name = "MP8SeatTag"
++		tag.billboard = BaseMaterial3D.BILLBOARD_ENABLED
++		tag.font_size = 90
++		tag.outline_size = 20
++		tag.outline_modulate = Color.BLACK
++		tag.no_depth_test = true
++		if f != null:
++			tag.font = f
++		player_spawn_positions[i].add_child(tag)
++		tag.position = Vector3(0.0, 1.6, 0.0)
++		_mp8_tags.append(tag)
++
++	_mp8_edit_sel = 4
++	# Start with the countdown frozen to leave time for placing; P releases it
++	mp8_edit_paused = true
++	_mp8_edit_refresh()
++	print("[MP8] Smoke Break: seat editor on - selection starts at seat %d of 0-%d, round countdown paused (P resumes)" % [
++		4, player_spawn_positions.size() - 1
++	])
++
++
++func _unhandled_key_input(event: InputEvent) -> void :
++
++	if not _mp8_edit_on or player_spawn_positions.size() <= 4:
++		return
++	var key := event as InputEventKey
++	if key == null or not key.pressed or key.echo:
++		return
++
++	var step: float = MP8_EDIT_STEPS[_mp8_edit_step_i]
++	var n: Node3D = player_spawn_positions[_mp8_edit_sel]
++
++	match key.keycode:
++		KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6, KEY_7, KEY_8:
++			# [MP8] Keys 1-8 select seat indexes 0-7; the panel and the tags show 1-8 to match
++			var want: int = key.keycode - KEY_1
++			if want >= player_spawn_positions.size():
++				return
++			_mp8_edit_sel = want
++			_mp8_edit_refresh()
++
++		KEY_X:
++			NetworkManager.mp8_rpc(self, &"mp8_toggle_crate_rpc", [_mp8_edit_sel])
++
++		KEY_C:
++			# Switch what I/K/J/L move: the seat (with its player) or its crate
++			var cr0 = _mp8_crates.get(_mp8_edit_sel)
++			if cr0 == null or not is_instance_valid(cr0):
++				print("[MP8] Smoke Break: seat %d has no crate to switch to" % (_mp8_edit_sel + 1))
++				return
++			_mp8_edit_crate = not _mp8_edit_crate
++			_mp8_edit_refresh()
++
++		KEY_I, KEY_K, KEY_J, KEY_L:
++			var dir: Vector2 = _mp8_screen_axis(key.keycode)
++			if dir == Vector2.ZERO:
++				return
++			if _mp8_edit_crate:
++				var cr1 = _mp8_crates.get(_mp8_edit_sel)
++				if cr1 == null or not is_instance_valid(cr1):
++					return
++				var cp := (cr1 as Node3D).global_position
++				NetworkManager.mp8_rpc(self, &"mp8_move_crate_rpc", [_mp8_edit_sel,
++					Vector3(cp.x + dir.y * step, cp.y, cp.z + dir.x * step),
++					rad_to_deg((cr1 as Node3D).global_rotation.y)])
++			else:
++				var p := n.global_position
++				NetworkManager.mp8_rpc(self, &"mp8_move_seat_rpc", [_mp8_edit_sel,
++					Vector2(p.x + dir.y * step, p.z + dir.x * step),
++					rad_to_deg(n.global_rotation.y)])
++
++		KEY_U, KEY_O:
++			var d: float = (-15.0 if key.keycode == KEY_U else 15.0)
++			if _mp8_edit_crate:
++				var cr2 = _mp8_crates.get(_mp8_edit_sel)
++				if cr2 == null or not is_instance_valid(cr2):
++					return
++				NetworkManager.mp8_rpc(self, &"mp8_move_crate_rpc", [_mp8_edit_sel,
++					(cr2 as Node3D).global_position,
++					rad_to_deg((cr2 as Node3D).global_rotation.y) + d])
++			else:
++				NetworkManager.mp8_rpc(self, &"mp8_move_seat_rpc", [_mp8_edit_sel,
++					Vector2(n.global_position.x, n.global_position.z),
++					rad_to_deg(n.global_rotation.y) + d])
++
++		KEY_Y:
++			# Crate height: the game's crate sits on the floor, and a rearranged seat may need it raised
++			if not _mp8_edit_crate:
++				return
++			var cr3 = _mp8_crates.get(_mp8_edit_sel)
++			if cr3 == null or not is_instance_valid(cr3):
++				return
++			var q := (cr3 as Node3D).global_position
++			NetworkManager.mp8_rpc(self, &"mp8_move_crate_rpc", [_mp8_edit_sel,
++				Vector3(q.x, q.y + (step if key.shift_pressed else - step), q.z),
++				rad_to_deg((cr3 as Node3D).global_rotation.y)])
++
++		KEY_M:
++			_mp8_edit_step_i = (_mp8_edit_step_i + 1) % MP8_EDIT_STEPS.size()
++			_mp8_edit_refresh()
++
++		KEY_P:
++			# Pause or resume the countdown through an RPC: the countdown loop runs only on the server,
++			# so a local flag would not reach it.
++			NetworkManager.mp8_rpc(self, &"mp8_set_pause_rpc", [not mp8_edit_paused])
++
++		KEY_0:
++			var ok: bool = _mp8_save_seats()
++			_mp8_edit_refresh()
++			if _mp8_edit_panel != null:
++				_mp8_edit_panel.text = ("[SAVED] the next game uses these seats\n" if ok
++					else "[SAVE FAILED] see the log\n") + _mp8_edit_panel.text
++
++		KEY_N:
++			var parts := PackedStringArray()
++			for i in range(4, player_spawn_positions.size()):
++				var q := player_spawn_positions[i].global_position
++				parts.append("seat%d(%.2f,%.2f) angle %.1f°" % [
++					i, q.x, q.z, _mp8_aim_for(q)])
++			print("[MP8] Smoke Break seat report: %s" % " | ".join(parts))
++
++		_:
++			return
++
++	get_viewport().set_input_as_handled()
++
++
++func _mp8_screen_axis(code: int) -> Vector2 :
++	var cam: Camera3D = get_viewport().get_camera_3d()
++	if cam == null:
++		return Vector2.ZERO
++	var right: Vector3 = cam.global_transform.basis.x
++	var fwd: Vector3 = - cam.global_transform.basis.z
++	var r2 := Vector2(right.x, right.z)
++	var f2 := Vector2(fwd.x, fwd.z)
++	if r2.length() < 0.001 or f2.length() < 0.001:
++		return Vector2.ZERO
++	r2 = r2.normalized()
++	f2 = f2.normalized()
++	match code:
++		KEY_L: return Vector2(r2.y, r2.x)
++		KEY_J: return - Vector2(r2.y, r2.x)
++		KEY_I: return Vector2(f2.y, f2.x)
++		KEY_K: return - Vector2(f2.y, f2.x)
++	return Vector2.ZERO
++
++
++# [MP8] any_peer + call_local: every peer moves it (seat markers, crates and tags are local nodes on each).
++func mp8_move_seat_rpc(slot: int, pos: Vector2, yaw_deg: float) -> void :
++
++	# [MP8] All eight seats can be moved. With 4 players or fewer the custom layout never runs
++	# (the player-count check in _mp8_setup_seats()).
++	if slot < 0 or slot >= player_spawn_positions.size():
++		return
++	var n: Node3D = player_spawn_positions[slot]
++	if n == null or not is_instance_valid(n):
++		return
++
++	var old: Vector3 = n.global_position
++	n.global_position = Vector3(pos.x, old.y, pos.y)
++	n.global_rotation = Vector3(0.0, deg_to_rad(yaw_deg), 0.0)
++
++	# The crate does not follow: crates stay put and seats are placed onto them.
++
++	# [MP8] The player in this seat moves with it, to judge spacing and facing. Only the server sends
++	# it: the setup is itself sent to every peer, and every peer re-sending from this handler would storm.
++	# The seat editor runs above four seats only, so the setup is always Extended's.
++	if multiplayer.is_server():
++		for p in players_node_parent.get_children():
++			if not (p is SmokeBreakPlayer):
++				continue
++			if (p as SmokeBreakPlayer).active_player_seat_index != slot:
++				continue
++			NetworkManager.mp8_rpc(p, &"mp8_setup_rpc", [
++				n.global_position, n.global_rotation, slot,
++				(mp8_death_anim_by_seat[slot] if slot < mp8_death_anim_by_seat.size() else "")
++			])
++			break
++
++	# Recompute the angle and hand it to the trolley
++	var trolley: Node = _mp8_find_trolley()
++	if trolley != null:
++		var rots = trolley.get("rot_by_seat_index_array")
++		if rots is Array and slot < (rots as Array).size():
++			var arr: Array[Vector3] = []
++			for r in (rots as Array):
++				arr.append(r as Vector3)
++			arr[slot] = Vector3(_mp8_aim_for(n.global_position), 0.0, 0.0)
++			trolley.set("rot_by_seat_index_array", arr)
++
++	_mp8_edit_refresh()
++
++
++# [MP8] Move a seat's crate (position and yaw); crates are local scene nodes, so every peer runs it.
++func mp8_move_crate_rpc(slot: int, pos: Vector3, yaw_deg: float) -> void :
++
++	var crate = _mp8_crates.get(slot)
++	if crate == null or not is_instance_valid(crate):
++		return
++	(crate as Node3D).global_position = pos
++	(crate as Node3D).global_rotation = Vector3(0.0, deg_to_rad(yaw_deg), 0.0)
++	_mp8_edit_refresh()
++
++
++# [MP8] Hide or show a seat's crate on every peer. visible rather than queue_free, so it can be
++# toggled back without restarting the round.
++func mp8_toggle_crate_rpc(slot: int) -> void :
++
++	var crate = _mp8_crates.get(slot)
++	if crate == null or not is_instance_valid(crate):
++		print("[MP8] Smoke Break: seat %d has no crate (the game's seats sit on scenery)" % (slot + 1))
++		_mp8_edit_refresh()
++		return
++
++	(crate as Node3D).visible = not (crate as Node3D).visible
++	print("[MP8] Smoke Break: seat %d crate %s" % [
++		slot + 1, ("shown" if (crate as Node3D).visible else "hidden")
++	])
++	_mp8_edit_refresh()
++
++
++# [MP8] Pause or resume the round countdown. Its loop runs on the server, so every peer gets it (call_local).
++func mp8_set_pause_rpc(paused: bool) -> void :
++	mp8_edit_paused = paused
++	_mp8_edit_refresh()
++	print("[MP8] Smoke Break: round countdown %s" % ("paused" if paused else "running"))
++
++
++func _mp8_edit_refresh() -> void :
++
++	for i in _mp8_tags.size():
++		var t: Label3D = _mp8_tags[i]
++		if t == null or not is_instance_valid(t):
++			continue
++		# [MP8] Tags show 1-8, matching keys 1-8
++		var sel: bool = (i == _mp8_edit_sel)
++		t.text = ("▼%d▼" % (i + 1)) if sel else str(i + 1)
++		t.modulate = (Color(1.0, 0.85, 0.2) if sel else Color(0.55, 0.75, 0.85))
++
++	if _mp8_edit_panel == null:
++		return
++
++	var n: Node3D = player_spawn_positions[_mp8_edit_sel]
++	var p := n.global_position
++	var aim: float = _mp8_aim_for(p)
++	var ok: bool = _mp8_aim_ok(aim)
++
++	# Distance to the nearest other seat (too small = too tight)
++	var gap: float = INF
++	for i in player_spawn_positions.size():
++		if i == _mp8_edit_sel:
++			continue
++		gap = minf(gap, Vector2(p.x - player_spawn_positions[i].global_position.x,
++			p.z - player_spawn_positions[i].global_position.z).length())
++
++	var crate = _mp8_crates.get(_mp8_edit_sel)
++	var crate_txt: String = "no crate (game seat)"
++	if crate != null and is_instance_valid(crate):
++		crate_txt = ("crate" if (crate as Node3D).visible else "crate removed")
++
++	var cr_now = _mp8_crates.get(_mp8_edit_sel)
++	var target: String = "▶ editing [seat/player]"
++	var line2: String = "pos x=%.2f z=%.2f  yaw %.0f°   nearest seat %.2f m %s" % [
++		p.x, p.z, rad_to_deg(n.global_rotation.y), gap, ("✓" if gap >= 0.9 else "⚠tight")]
++	if _mp8_edit_crate and cr_now != null and is_instance_valid(cr_now):
++		var c3: Node3D = cr_now
++		target = "▶ editing [crate]"
++		line2 = "crate x=%.2f y=%.2f z=%.2f  yaw %.0f°   (player at %.2f, %.2f)" % [
++			c3.global_position.x, c3.global_position.y, c3.global_position.z,
++			rad_to_deg(c3.global_rotation.y), p.x, p.z]
++
++	_mp8_edit_panel.text = "\n".join([
++		"[EDIT] seat %d / %d   %s   step %.2f m   %s   source %s" % [
++			_mp8_edit_sel + 1, player_spawn_positions.size(), target,
++			MP8_EDIT_STEPS[_mp8_edit_step_i], crate_txt, _mp8_seat_src],
++		line2,
++		"revolver angle %.1f°  %s" % [aim,
++			("✓ within the game's span, aims true" if ok
++			else "⚠️ outside the game's span %.0f°~%.0f°, this angle is unreliable and the gun may miss" % [
++				MP8_AIM_MIN, MP8_AIM_MAX])],
++		"countdown %s   1-8 seat  C seat/crate  I/K/J/L move  U/O turn  Y crate height (Shift up)  M step  X crate on/off  P pause  0 save" % [
++			("⏸ paused" if mp8_edit_paused else "▶ running")],
++	])
++
++
++# [MP8] Seat position -> revolver angle; see MP8_AIM_* (the fit is not unique).
++func _mp8_aim_for(pos: Vector3) -> float :
++	var b: float = rad_to_deg(atan2(pos.z - MP8_AIM_PIVOT.y, pos.x - MP8_AIM_PIVOT.x))
++	return MP8_AIM_K * b + MP8_AIM_C
++
++
++# Within the game's four-seat span? Inside is reliable, outside is not
++func _mp8_aim_ok(deg: float) -> bool :
++	return deg >= MP8_AIM_MIN - 0.5 and deg <= MP8_AIM_MAX + 0.5
++
++
++# [MP8] A crate for an added seat to sit on, copied from seat 3's and placed at seat 3's offset, so
++# it sits as in the game without knowing its absolute height. The game's own props are untouched.
++func _mp8_make_crate(seat_idx: int, seat_pos: Vector3) -> void :
++
++	# Only the seats in MP8_CRATE_SEATS
++	if not MP8_CRATE_SEATS.has(seat_idx):
++		return
++
++	var src: Node3D = get_node_or_null(MP8_CRATE_PATH) as Node3D
++	if src == null:
++		push_warning("[MP8] Smoke Break: crate %s not found, seat %d gets none" % [MP8_CRATE_PATH, seat_idx + 1])
++		return
++
++	var dup: Node3D = src.duplicate()
++	dup.name = "MP8Crate%d" % seat_idx
++	src.get_parent().add_child(dup)
++	# The offset is from seat 3 before it moved (_mp8_crate_offset); measured from a moved seat,
++	# each crate would shift by however far that seat had been moved.
++	dup.global_position = seat_pos + _mp8_crate_offset
++	_mp8_crates[seat_idx] = dup
++
++
++# An added seat takes the death animation (window / fan) of the nearest original seat
++func _mp8_nearest_vanilla_anim(p: Vector3) -> String :
++	var best: int = 0
++	var bd: float = INF
++	for i in mini(4, player_spawn_positions.size()):
++		var d: float = p.distance_to(player_spawn_positions[i].global_position)
++		if d < bd:
++			bd = d
++			best = i
++	return mp8_death_anim_by_seat[best]
++
++
++func _mp8_find_trolley() -> Node :
++	var t: Node = get_node_or_null("trolley gun main parent/trolley gun manager")
++	if t != null:
++		return t
++	# If the path changes, find the node that has the angle table rather than depend on the name
++	for c in find_children("*", "", true, false):
++		if c.get("rot_by_seat_index_array") != null:
++			return c
++	return null
++
++
+ func spawn_players():
+ 
++	# [MP8] A mixed room spawns as the game does (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_spawn_players()
++		return
++
++	var counter: int = 0
++	for key in PlayerManager.player_presences.keys():
++
++		var player_presence: PlayerPresence = PlayerManager.player_presences[key]
++		var player_character: SmokeBreakPlayer = player_scene.instantiate()
++
++		players_node_parent.add_child(player_character, true)
++
++		# [MP8] Bounds check: with too few seats, spawn one player fewer rather than overflow
++		if counter >= player_spawn_positions.size():
++			push_warning("[MP8] Smoke Break: only %d seats, player %d has no seat" % [
++				player_spawn_positions.size(), counter + 1
++			])
++			break
++
++		player_character.set_player_presence_rpc.rpc(player_presence.network_id)
++		var seat: Node3D = player_spawn_positions[counter]
++		# [MP8] Extended's setup adds the seat's death animation (anim_handler's match knows seats 0-3 only).
++		NetworkManager.mp8_rpc(player_character, &"mp8_setup_rpc", [
++			seat.global_position, seat.global_rotation, counter,
++			(mp8_death_anim_by_seat[counter] if counter < mp8_death_anim_by_seat.size() else "")
++		])
++		player_character.register_camera_offset_rpc.rpc(
++			camera_offset_parent.get_path()
++		)
++		player_character.cigarette_finished.connect(_on_player_finished)
++
++		player_characters[player_presence.network_id] = player_character
++		active_players.append(player_character)
++
++		player_scores[player_presence.network_id] = 0
++
++		counter += 1
++
++# The game's spawn_players, for a mixed room (D120).
++func _mp8_game_spawn_players():
++
+ 
+ 	var counter: int = 0
+ 	for key in PlayerManager.player_presences.keys():
+@@ -145,8 +920,33 @@ func _on_player_finished(network_id: int):
+ 	finished_players.append(player_character)
+ 
+ func player_disconnected(_network_id: int):
++	# [MP8] A mixed room keeps the game's own handler, its raw read included (D120).
++	var mp8_ext: bool = NetworkManager.mp8_room_extended()
+ 	super.player_disconnected(_network_id)
+ 
++	if not mp8_ext:
++		_mp8_game_player_disconnected_tail(_network_id)
++		return
++
++	# [MP8] .get() rather than the game's direct lookup: a player who left while loading was never
++	# spawned (spawn_players() runs from initialize()). This player_disconnected calls no end-of-round
++	# code, so no is_all_player_loaded guard is needed.
++	var player_instance = player_characters.get(_network_id, null)
++
++	if player_instance == null:
++		print("[MP8] Smoke Break: %d left before having a seat (the round has likely not started), clearing the reference only" % _network_id)
++		player_characters.erase(_network_id)
++		return
++
++	active_players.erase(player_instance)
++
++	finished_players.erase(player_instance)
++
++	player_instance.queue_free()
++
++# The game's player_disconnected after its super call, for a mixed room (D120).
++func _mp8_game_player_disconnected_tail(_network_id: int):
++
+ 	var player_instance = player_characters[_network_id]
+ 
+ 	active_players.erase(player_instance)

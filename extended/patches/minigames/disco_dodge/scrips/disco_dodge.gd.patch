@@ -1,0 +1,163 @@
+diff --git a/minigames/disco_dodge/scrips/disco_dodge.gd b/minigames/disco_dodge/scrips/disco_dodge.gd
+--- a/minigames/disco_dodge/scrips/disco_dodge.gd
++++ b/minigames/disco_dodge/scrips/disco_dodge.gd
+@@ -81,9 +81,24 @@ var game_end: bool = false
+ 
+ var ach_tile_limit: int = 10
+ 
++# [MP8] Stable Footing with 8 players: only the spawns change. spawn_tiles() lays the scene's 8 x 6 grid
++# of 4.0 tiles (not the script's 20 x 12 defaults) centred, and scoring walks the tiles, so both scale.
++# The shipped 4 spawns sit on the centre 2x2 tiles; 8 players get a 4 x 2 block. A bigger grid would
++# need the camera moved: it shows only about 1.6 units past the near edge.
++const MP8_MAX_PLAYERS: int = 8
++
++# network_manager's generic top-up skips this game. Set at declaration: the top-up may run before _ready().
++var mp8_owns_spawns: bool = true
++var mp8_player_count: int = 0
++
++
+ func _ready() -> void :
+ 	super._ready()
+ 
++	# [MP8] Before spawn_players(), which indexes player_spawn_positions by seat. Uses only the exported
++	# tile_rows / tile_columns / tile_size: the tiles themselves are laid later.
++	_mp8_setup_spawns()
++
+ 	if multiplayer.is_server():
+ 
+ 		multiplayer_synchronizer.set_multiplayer_authority(multiplayer.get_unique_id())
+@@ -156,6 +171,97 @@ func spawn_players():
+ 
+ 		counter += 1
+ 
++# [MP8] Adds spawns on the tile centres the shipped 4 do not take, one player per tile.
++# The shipped markers are untouched, and with 4 or fewer players nothing is added.
++func _mp8_setup_spawns() -> void :
++
++	# A mixed room keeps the game's 4 spawns (D120); they change above 4 players only.
++	if not NetworkManager.mp8_room_extended():
++		return
++
++	var mp8_args := NetworkManager.mp8_dev_args()
++	mp8_player_count = PlayerManager.player_presences.size()
++
++	if player_spawn_positions_node == null:
++		push_warning("[MP8] Stable Footing: no spawn container, cannot spread the spawns")
++		return
++
++	var have: int = player_spawn_positions_node.get_child_count()
++
++	print("[MP8] Stable Footing: runtime values - tiles %dx%d (%d) / size %.1f / %d removed per round / %d spawn points; %d players" % [
++		tile_rows, tile_columns, tile_rows * tile_columns, tile_size,
++		tiles_to_remove, have, mp8_player_count,
++	])
++
++	if mp8_args.has("mp8noexpand"):
++		print("[MP8] Stable Footing: mp8noexpand, spawns left as shipped (vanilla control run, use 4 players)")
++		return
++
++	if mp8_player_count <= 4:
++		print("[MP8] Stable Footing: %d players, using the shipped %d spawn points unchanged" % [mp8_player_count, have])
++		return
++
++	var want: int = mini(maxi(mp8_player_count, 5), MP8_MAX_PLAYERS)
++	if have >= want:
++		return
++
++	# Tile centres the shipped markers already take (local coordinates, half a tile's tolerance).
++	var taken: Array[Vector2] = []
++	for c in player_spawn_positions_node.get_children():
++		if c is Node3D:
++			taken.append(Vector2((c as Node3D).position.x, (c as Node3D).position.z))
++
++	var added := PackedStringArray()
++	for p in _mp8_tile_centers():
++		if player_spawn_positions_node.get_child_count() >= want:
++			break
++		var dup: bool = false
++		for t in taken:
++			if t.distance_to(p) < tile_size * 0.5:
++				dup = true
++				break
++		if dup:
++			continue
++		var m := Marker3D.new()
++		m.name = "MP8Spawn%d" % player_spawn_positions_node.get_child_count()
++		player_spawn_positions_node.add_child(m)
++		m.position = Vector3(p.x, 0.0, p.y)
++		taken.append(p)
++		added.append("(%.0f,%.0f)" % [p.x, p.y])
++
++	print("[MP8] Stable Footing: spawns %d -> %d, added on tile centres %s" % [
++		have, player_spawn_positions_node.get_child_count(), " ".join(added)
++	])
++
++
++# Every tile centre in local coordinates, as the shipped markers use (their parent's 0.03 z offset
++# applies to both). Sorted by |z| then |x|, so 8 players fill the central 4 x 2 block, spreading along x.
++func _mp8_tile_centers() -> Array[Vector2] :
++
++	var out: Array[Vector2] = []
++	var start_x: float = - (tile_rows * 0.5) * tile_size + tile_size * 0.5
++	var start_z: float = - (tile_columns * 0.5) * tile_size + tile_size * 0.5
++
++	for ix in tile_rows:
++		for iz in tile_columns:
++			out.append(Vector2(start_x + ix * tile_size, start_z + iz * tile_size))
++
++	out.sort_custom(func(a: Vector2, b: Vector2) -> bool:
++		var az: float = absf(a.y)
++		var bz: float = absf(b.y)
++		if not is_equal_approx(az, bz):
++			return az < bz
++		var ax: float = absf(a.x)
++		var bx: float = absf(b.x)
++		if not is_equal_approx(ax, bx):
++			return ax < bx
++		if not is_equal_approx(a.y, b.y):
++			return a.y < b.y
++		return a.x < b.x
++	)
++	return out
++
++
+ func spawn_tiles():
+ 
+ 	var start_columns: float = - (tile_columns * 0.5) * tile_size + (tile_size * 0.5)
+@@ -300,8 +406,36 @@ func calculate_score():
+ 
+ 		break
+ 
++	_mp8_log_scores()
++
+ 	player_scores_finalized.emit(player_scores)
+ 
++
++# [MP8] Logs the final ranks and scores; scoring stays vanilla's: the n-th to fall scores n - 1 and
++# the survivor player_count, so the winner leads by 2. player_count is the starting count, so after a
++# disconnect the survivor is overpaid. scoring_players is never appended to and holds no order.
++func _mp8_log_scores() -> void :
++
++	var rows := PackedStringArray()
++
++	for i in dead_players.size():
++		var id: int = dead_players[i]
++		rows.append("fall #%d %s %d pts" % [i + 1, _mp8_name(id), i])
++
++	for network_id in active_players.keys():
++		rows.append("survivor %s %d pts" % [_mp8_name(network_id), player_count])
++		break
++
++	print("[MP8] Stable Footing scores (%d at start / %d fell): %s" % [
++		player_count, dead_players.size(), " | ".join(rows)
++	])
++
++
++func _mp8_name(network_id: int) -> String :
++	if players.has(network_id) and is_instance_valid(players[network_id]):
++		return String(players[network_id].player_presence.network_name)
++	return str(network_id)
++
+ func finish_game():
+ 
+ 	await get_tree().create_timer(2.0).timeout

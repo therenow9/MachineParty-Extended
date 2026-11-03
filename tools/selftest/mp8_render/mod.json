@@ -1,0 +1,1 @@
+{ "id": "mp8_render", "name": "MP8 render", "version": "0.0.1", "entry": "main.gd", "priority": 1000, "requires": [] }

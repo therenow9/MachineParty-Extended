@@ -1,0 +1,9 @@
+{
+  "id": "mp8_support",
+  "name": "Machine Party: Extended",
+  "version": "1.0.0",
+  "author": "therenow9",
+  "entry": "main.gd",
+  "priority": -1000,
+  "requires": []
+}

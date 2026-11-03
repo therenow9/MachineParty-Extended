@@ -1,0 +1,152 @@
+diff --git a/minigames/spine_breaker/components/device/states/thrown_state.gd b/minigames/spine_breaker/components/device/states/thrown_state.gd
+--- a/minigames/spine_breaker/components/device/states/thrown_state.gd
++++ b/minigames/spine_breaker/components/device/states/thrown_state.gd
+@@ -60,6 +60,60 @@ func update(_delta: float) -> void :
+ 
+ func update_physics(_delta: float) -> void :
+ 
++	# [MP8] Before the room's dispatch: the rescue runs in every room (PD8, D155).
++	_mp8_unstick(_delta)
++
++	# [MP8] A mixed room runs the game's update_physics (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_update_physics(_delta)
++		return
++
++	var horizontal_velocity = owner.velocity
++	horizontal_velocity.y = 0.0
++	horizontal_velocity = horizontal_velocity.move_toward(
++		Vector3.ZERO, _delta * owner.throw_speed_decay
++	)
++
++	var vertical_velocity = owner.velocity.y
++	vertical_velocity -= owner.gravity * _delta
++
++	owner.velocity = horizontal_velocity
++	owner.velocity.y = vertical_velocity
++
++	owner.move_and_slide()
++
++	if owner.is_on_floor():
++
++		if not active:
++			return
++
++		var closest_distance: float = 999.9
++		var closest = null
++		for player in owner.players_node.get_children():
++
++			if not player.active:
++				continue
++
++			# [MP8] Skip players already carrying a device: _mp8_can_take would block the attach,
++			# and the device would chase someone it can never take, looking stuck.
++			if player.has_spine_breaker:
++				continue
++
++			var distance = owner.global_position.distance_to(player.global_position)
++			if distance < closest_distance:
++				closest_distance = distance
++				closest = player
++
++		if not closest:
++			closest = thrower
++
++		state_machine.transition_to(&"Follow", {
++			"target": closest,
++		})
++
++# The game's update_physics, for a mixed room (D120).
++func _mp8_game_update_physics(_delta: float) -> void :
++
+ 	var horizontal_velocity = owner.velocity
+ 	horizontal_velocity.y = 0.0
+ 	horizontal_velocity = horizontal_velocity.move_toward(
+@@ -98,14 +152,87 @@ func update_physics(_delta: float) -> void :
+ 			"target": closest, 
+ 		})
+ 
++# [MP8] A normal throw lands in under a second; past this the device counts as stuck in Thrown.
++const MP8_STUCK_S: float = 2.0
++
++# [MP8] PD8: Thrown ends only on a floor contact, and a device can hang on a vertical edge of the room's
++# hidden collision boxes, where move_and_slide reports a wall and never a floor. Stuck, it drops to the
++# nearest navmesh point, and this frame's landing code below picks its target. Server only: position replicates.
++func _mp8_unstick(delta: float) -> void :
++
++	state_time += delta
++	if state_time < MP8_STUCK_S or not multiplayer.is_server():
++		return
++	state_time = 0.0
++
++	# [MP8] Searched from the floor (y = 0), not from the device: above about 3.5 m the nearest point is on the
++	# navmesh's upper layer, the box tops at y = 6.5, which no player reaches.
++	var from: Vector3 = owner.global_position
++	var to: Vector3 = NavigationServer3D.map_get_closest_point(owner.navigation_agent.get_navigation_map(), Vector3(from.x, 0.0, from.z))
++	owner.global_position = to
++	owner.velocity = Vector3.ZERO
++	print("[MP8] Spine Breaker: device %d stuck in Thrown at %s, moved to the navmesh at %s" % [owner.mp8_index, from, to])
++
+ func clear_thrower_exception(delay):
+ 
+ 	await get_tree().create_timer(delay)
+ 
+ 	owner.thrown_collision_exceptions.clear()
+ 
++
++# [MP8] One device per player. A thrown device attaches here, not through follow_state's guard,
++# and the game attaches to any SpineBreakerPlayer it hits; two devices on one victim double-count
++# mp8_claim_retire() and leave one device stuck in BreakSpine. Same test as follow_state's
++# `_mp8_can_take`. A refused hit still goes to Follow; `_mp8_check_dead_end` retargets from there.
++func _mp8_can_attach(p) -> bool :
++
++	if p == null or not is_instance_valid(p):
++		return false
++	if not (p is SpineBreakerPlayer):
++		return false
++	if not p.active:
++		return false
++	if p.has_spine_breaker:
++		return false
++	return true
++
++
+ func _on_player_attach_entered(body):
+ 
++	# [MP8] A mixed room runs the game's _on_player_attach_entered (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_on_player_attach_entered(body)
++		return
++
++	if not active:
++		return
++
++	if body is not SpineBreakerPlayer:
++		return
++
++	if owner.thrown_collision_exceptions.has(body):
++		return
++
++	# [MP8] See `_mp8_can_attach`.
++	if not _mp8_can_attach(body):
++		if multiplayer.is_server():
++			var why: String = "dead" if not body.active else "already carrying a device"
++			print("[MP8] Spine Breaker: device %d hit %s but does not attach - %s (following instead)" % [
++				owner.mp8_index, String(body.name), why
++			])
++		# Returning here would leave the thrown device frozen in mid-air.
++		state_machine.transition_to(&"Follow", {
++			"target": body,
++		})
++		return
++
++	state_machine.transition_to(&"Attached", {
++		"target": body
++	})
++
++# The game's _on_player_attach_entered, for a mixed room (D120).
++func _mp8_game_on_player_attach_entered(body):
++
+ 	if not active:
+ 		return
+ 

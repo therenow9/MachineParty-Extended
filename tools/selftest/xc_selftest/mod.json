@@ -1,0 +1,1 @@
+{ "id": "xc_selftest", "name": "XC selftest", "version": "0.0.1", "entry": "main.gd", "priority": 99, "requires": [] }

@@ -1,0 +1,215 @@
+diff --git a/minigames/dvd_roomba/scripts/dvd_roomba.gd b/minigames/dvd_roomba/scripts/dvd_roomba.gd
+--- a/minigames/dvd_roomba/scripts/dvd_roomba.gd
++++ b/minigames/dvd_roomba/scripts/dvd_roomba.gd
+@@ -37,9 +37,20 @@ var finished: bool = false
+ var player_count: int = 0
+ var roomba_spawned_count: int = 0
+ 
++
++# [MP8] The 4 shipped markers are a square's corners stored diagonally, so network_manager's
++# _mp8_topup (midpoints of neighbours) would put two new ones together at the centre. This game
++# keeps the corners and adds 4 between them, a regular octagon taken from the shipped markers.
++var mp8_owns_spawns: bool = true
++
++
+ func _ready() -> void :
+ 	super._ready()
+ 
++	# Before spawn_players() reads the markers. Runs on every peer, but only the server reads
++	# them (positions go out in teleport_rpc).
++	_mp8_topup_spawns()
++
+ 	camera.current = true
+ 
+ 	if multiplayer.is_server():
+@@ -114,6 +125,126 @@ func spawn_players():
+ 
+ 		counter += 1
+ 
++# [MP8] Server-side log of the final ranks and scores; changes none. The starting count and the
++# deaths are both printed: a difference above 1 means someone disconnected.
++func _mp8_log_scores() -> void :
++
++	if not multiplayer.is_server():
++		return
++
++	var keys: Array = player_scores.keys()
++	keys.sort_custom(func(a, b): return player_scores[a] > player_scores[b])
++
++	var parts: PackedStringArray = []
++	for i in keys.size():
++		var nid = keys[i]
++		var nm: String = "id%d" % nid
++		if PlayerManager.player_presences.has(nid):
++			nm = String(PlayerManager.player_presences[nid].network_name)
++		parts.append("#%d %s %d pts" % [i + 1, nm, player_scores[nid]])
++
++	print("[MP8] Lethal Rebound scores (%d at start / %d dead / survivor scores %d): %s" % [
++		player_count, dead_players.size(), _mp8_survivor_score(), " / ".join(parts)
++	])
++
++
++# [MP8] dead_players.size() + 1, not vanilla's player_count: remove_player_rpc only erases a
++# disconnected player from active_players, never adds them to dead_players, so player_count would
++# overpay the winner. The + 1 keeps vanilla's 2-point lead. A mixed room runs the game's check_game_end (D120).
++func _mp8_survivor_score() -> int :
++	return dead_players.size() + 1
++
++
++# [MP8] Tops the spawns up to 8 as a regular octagon computed from the shipped markers, which stay
++# untouched. Adds only what is missing, so a scene that has 8 is left alone.
++func _mp8_topup_spawns() -> void :
++
++	# The room is latched before this scene's add_child (game.gd). A mixed room keeps the game's 4 (D116).
++	if not NetworkManager.mp8_room_extended():
++		print("[MP8] Lethal Rebound: a mixed room, the game's spawns unchanged")
++		return
++
++	if player_spawn_parent_node == null:
++		push_warning("[MP8] Lethal Rebound: no spawn container, not expanding to 8")
++		return
++
++	var originals: Array = []
++	for c in player_spawn_parent_node.get_children():
++		if c is Node3D:
++			originals.append(c)
++
++	var n: int = originals.size()
++	if n == 0 or n >= 8:
++		return
++
++	# Centre: the shipped markers' centroid; radius: their mean distance from it.
++	var center: Vector3 = Vector3.ZERO
++	for o in originals:
++		center += o.position
++	center /= float(n)
++
++	var radius: float = 0.0
++	for o in originals:
++		radius += Vector2(o.position.x - center.x, o.position.z - center.z).length()
++	radius /= float(n)
++
++	# Each new point lies on the bisector of two angle-adjacent shipped markers.
++	var angles: Array = []
++	for o in originals:
++		angles.append(atan2(o.position.z - center.z, o.position.x - center.x))
++	angles.sort()
++
++	var added := PackedStringArray()
++
++	for i in angles.size():
++
++		if originals.size() + added.size() >= 8:
++			break
++
++		var a: float = angles[i]
++		var b: float = float(angles[(i + 1) % angles.size()])
++		if b <= a:
++			b += TAU                       # across the -pi/pi seam, or the bisector points the wrong way
++		var mid: float = (a + b) * 0.5
++
++		var p: Vector3 = Vector3(
++			center.x + cos(mid) * radius,
++			originals[0].position.y,
++			center.z + sin(mid) * radius
++		)
++
++		# Duplicated from the nearest shipped marker, so rotation, scale and script follow it.
++		var tmpl: Node3D = originals[0]
++		var best: float = INF
++		for o in originals:
++			var d: float = o.position.distance_to(p)
++			if d < best:
++				best = d
++				tmpl = o
++
++		var dup: Node3D = tmpl.duplicate()
++		dup.name = "MP8Spawn%d" % (n + added.size())
++		player_spawn_parent_node.add_child(dup)
++		dup.position = p
++		added.append("(%.2f, %.2f)" % [p.x, p.z])
++
++	# Logs the smallest gap: coincident points are how this kind of top-up fails, and the count alone
++	# would not show it.
++	var pts: Array = []
++	for c in player_spawn_parent_node.get_children():
++		if c is Node3D:
++			pts.append(c.position)
++
++	var min_d: float = INF
++	for i in pts.size():
++		for j in range(i + 1, pts.size()):
++			min_d = minf(min_d, Vector2(pts[i].x - pts[j].x, pts[i].z - pts[j].z).length())
++
++	print("[MP8] Lethal Rebound: spawns %d -> %d (centre (%.2f, %.2f) radius %.2f, smallest gap %.2f m) added %s" % [
++		n, pts.size(), center.x, center.z, radius, min_d, " ".join(added)
++	])
++
++
+ func spawn_roomba():
+ 	var spawn_positions = roomba_spawn_parent_node.get_children()
+ 	var position = spawn_positions.pick_random()
+@@ -137,6 +268,40 @@ func spawn_roomba():
+ 
+ func check_game_end():
+ 
++	# [MP8] A mixed room ends and scores as the game does (D116, D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_check_game_end()
++		return
++
++	if finished:
++		return
++
++	if active_players.size() > 1:
++		return
++
++	finished = true
++
++	for i in dead_players.size():
++		player_scores[dead_players[i]] = i
++
++	for network_id in active_players.keys():
++
++		player_scores[network_id] = _mp8_survivor_score()
++
++		break
++
++	_mp8_log_scores()
++	player_scores_finalized.emit(player_scores)
++
++	await get_tree().create_timer(2.0).timeout
++	set_minigame_sfx_linear_volume_rpc.rpc(0.0)
++
++	state_machine.transition_to_rpc.rpc(&"Finished")
++	set_effects_visibility_rpc.rpc(false)
++
++# The game's check_game_end, for a mixed room (D120).
++func _mp8_game_check_game_end():
++
+ 	if finished:
+ 		return
+ 
+@@ -183,6 +348,9 @@ func remove_player_rpc(_network_id: int):
+ 
+ 
+ func player_disconnected(_network_id: int):
++	# [MP8] The room is read before the await, which can outlast this minigame's latch. A mixed room
++	# keeps the game's own end check (D116).
++	var mp8_ext: bool = NetworkManager.mp8_room_extended()
+ 	super.player_disconnected(_network_id)
+ 
+ 	if not multiplayer.is_server():
+@@ -191,6 +359,12 @@ func player_disconnected(_network_id: int):
+ 	remove_player_rpc.rpc(_network_id)
+ 	await get_tree().create_timer(1.0).timeout
+ 
++	# [MP8] Before everyone has loaded, spawn_players() has not run and active_players is empty, so
++	# check_game_end() would end a game that never started. The cleanup above still runs.
++	if mp8_ext and not is_all_player_loaded:
++		print("[MP8] Lethal Rebound: %d disconnected before the game started, skipping the end check" % _network_id)
++		return
++
+ 	check_game_end()
+ 
+ func _on_countdown_expired():

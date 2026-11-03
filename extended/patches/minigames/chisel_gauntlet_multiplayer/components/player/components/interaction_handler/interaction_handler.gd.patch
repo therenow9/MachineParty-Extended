@@ -1,0 +1,247 @@
+diff --git a/minigames/chisel_gauntlet_multiplayer/components/player/components/interaction_handler/interaction_handler.gd b/minigames/chisel_gauntlet_multiplayer/components/player/components/interaction_handler/interaction_handler.gd
+--- a/minigames/chisel_gauntlet_multiplayer/components/player/components/interaction_handler/interaction_handler.gd
++++ b/minigames/chisel_gauntlet_multiplayer/components/player/components/interaction_handler/interaction_handler.gd
+@@ -269,6 +269,58 @@ func prevent_reset_button_spam():
+ 
+ func process_controller_input(_delta: float):
+ 
++	# [MP8] A mixed room runs the game's process_controller_input (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_process_controller_input(_delta)
++		return
++
++	if not active:
++		return
++
++	var using_controller = GameManager.is_using_controller()
++	if GameManager.local_game:
++		using_controller = using_joystick
++
++	if not using_controller:
++		return
++
++	# A stick press still settling steps before A cuts, as it did when every step was instant.
++	if _mp8_press_age >= 0.0 and DynamicInput.is_action_just_pressed(device_id, "action_1"):
++		_mp8_step(_mp8_stick_press(_delta, true))
++
++	if DynamicInput.is_action_just_pressed(device_id, "action_1"):
++		match (highlighted_segment.index):
++
++			SUBMIT_VALUE:
++				player_submit_cube()
++				if highlighted_segment:
++					highlighted_segment.actual_mesh.set_instance_shader_parameter("strength", 0.0)
++				highlighted_segment = null
++
++				return
++
++			RESET_VALUE:
++				player_reset_cube()
++
++				return
++
++			_:
++
++				if highlighted_segment and highlighted_segment.active:
++
++					play_chisel_sound_rpc.rpc(highlighted_segment.global_position)
++					highlighted_segment.set_active(false)
++					set_segment_visibility_rpc.rpc(
++						highlighted_segment.index, false
++					)
++					chiseled_segment.emit()
++					return
++
++	_mp8_step(_mp8_stick_press(_delta))
++
++# The game's process_controller_input, for a mixed room (D120).
++func _mp8_game_process_controller_input(_delta: float):
++
+ 	if not active:
+ 		return
+ 
+@@ -356,6 +408,52 @@ func process_controller_input(_delta: float):
+ 		highlighted_segment = segments_by_id[target_index]
+ 		highlighted_segment.actual_mesh.set_instance_shader_parameter("strength", highlight_strength)
+ 
++func _mp8_step(stick: Vector2) -> void:
++	var controller_input: Vector2 = mp8_snap_8(stick)
++
++	if controller_input.length() > Globals.Epsilon:
++
++		var target_index: int = _mp8_screen_target(highlighted_segment, controller_input)
++		var cardinal: Vector2 = mp8_cardinal(stick)
++		if target_index == MP8_NO_TARGET and cardinal != controller_input:
++			target_index = _mp8_screen_target(highlighted_segment, cardinal)
++		controller_input = cardinal
++		var temp_index: int = -1
++		var index = highlighted_segment.index
++		var valid = target_index != MP8_NO_TARGET
++		while not valid:
++
++			if not segment_matrix.has(index):
++				return
++
++			var possible = segment_matrix[index]
++			if not possible.has(controller_input):
++				return
++
++			if typeof(possible[controller_input]) == TYPE_ARRAY:
++				for check_index in possible[controller_input]:
++					if segments_by_id[check_index].active:
++						temp_index = check_index
++						break
++				if temp_index < 0:
++					temp_index = possible[controller_input][0]
++			else:
++				temp_index = possible[controller_input]
++
++			var segment = segments_by_id[temp_index]
++
++			if not segment.active:
++				index = temp_index
++			else:
++				target_index = temp_index
++				valid = true
++
++		if highlighted_segment:
++			highlighted_segment.actual_mesh.set_instance_shader_parameter("strength", 0.0)
++
++		highlighted_segment = segments_by_id[target_index]
++		highlighted_segment.actual_mesh.set_instance_shader_parameter("strength", highlight_strength)
++
+ func process_mouse_and_keyboard_input(_delta: float) -> void :
+ 
+ 	var using_controller = GameManager.is_using_controller()
+@@ -394,6 +492,19 @@ func process_local_mouse_and_keyboard_input(_delta: float):
+ 	if not active:
+ 		return
+ 
++	# TextureRect placement is not encoded in a SubViewport's screen transform.
++	# Use the same rectangle as the handler and reject stale highlights outside it
++	# before testing action_1, including keyboard seats away from the top-left.
++	var screen_rect: Rect2 = local_viewport.get_meta("mp8_input_rect", Rect2())
++	var mouse_position: Vector2 = ChiselGauntletLocalHandler.mp8_screen_to_view(
++		get_viewport().get_mouse_position(), screen_rect, Vector2(local_viewport.size))
++	if mouse_position.x < 0:
++		if is_instance_valid(highlighted_segment):
++			highlighted_segment.actual_mesh.set_instance_shader_parameter("strength", 0.0)
++		highlighted_segment = null
++		left_interactable.emit()
++		return
++
+ 	if DynamicInput.is_action_just_pressed(device_id, "action_1"):
+ 		if highlighted_segment:
+ 			match (highlighted_segment.index):
+@@ -416,8 +527,6 @@ func process_local_mouse_and_keyboard_input(_delta: float):
+ 						chiseled_segment.emit()
+ 						return
+ 
+-	var mouse_position = get_viewport().get_mouse_position()
+-	mouse_position = local_viewport.get_screen_transform().affine_inverse() * mouse_position
+ 
+ 	var origin = local_camera.project_ray_origin(mouse_position)
+ 	var end = origin + local_camera.project_ray_normal(mouse_position) * 5.0
+@@ -466,6 +575,9 @@ func _process(_delta: float) -> void :
+ 		return
+ 
+ 	if GameManager.local_game:
++		var presence = PlayerManager.player_presences.get(device_id)
++		if presence == null or not presence.local_controller_connected:
++			return
+ 		if not using_joystick:
+ 			process_local_mouse_and_keyboard_input(_delta)
+ 			return
+@@ -594,3 +706,92 @@ func _on_input_device_changed(input_device: GameManager.InputDevice):
+ 			CursorManager.set_active(true)
+ 			CursorManager.set_mouse_mode(Input.MouseMode.MOUSE_MODE_VISIBLE)
+ 			CursorManager.set_cursor(true, true)
++
++# A pad press steps to the active cube, or SUBMIT or RESET, that lies that way on
++# this seat's screen; the game's table (segment_matrix) is the fallback. On the
++# corner view its top-face links point 61-64 degrees off their stick direction.
++func _mp8_screen_target(from: Node3D, direction: Vector2) -> int:
++	var cam: Camera3D = local_camera if is_instance_valid(local_camera) else player_camera
++	if not is_instance_valid(cam) or not is_instance_valid(from) or cam.is_position_behind(from.global_position):
++		return MP8_NO_TARGET
++	var at: Dictionary = {}
++	for id in segments_by_id:
++		var node: Node3D = segments_by_id[id]
++		if node == from or not is_instance_valid(node) or cam.is_position_behind(node.global_position):
++			continue
++		if id >= 0 and not node.active:
++			continue
++		at[id] = cam.unproject_position(node.global_position)
++	return mp8_pick_screen_target(cam.unproject_position(from.global_position), at, direction)
++
++# The block is a honeycomb on screen: two of each cube's six neighbours lie
++# diagonally on each side, so a stick press steps in 8 directions. A press waits
++# until the stick is MP8_SETTLE_LENGTH out or MP8_SETTLE_S has passed, so the
++# second axis of a diagonal flick has crossed its deadzone; the d-pad is at once.
++const MP8_SETTLE_S: float = 0.08
++const MP8_SETTLE_LENGTH: float = 0.6
++var _mp8_press_age: float = -1.0
++var _mp8_press_last: Vector2 = Vector2.ZERO
++var _mp8_press_frame: int = -1
++
++# The stick's furthest reading since the press, once it has settled (ZERO until then):
++# raw strengths follow the stick below the deadzone, so its spring back must not steer.
++func _mp8_stick_press(delta: float, settle_now: bool = false) -> Vector2:
++	var frame: int = Engine.get_process_frames()
++	if _mp8_press_age >= 0.0 and frame - _mp8_press_frame > 1:
++		_mp8_press_age = -1.0
++	_mp8_press_frame = frame
++	if _mp8_press_age < 0.0:
++		for action in [&"up", &"right", &"down", &"left"]:
++			if DynamicInput.is_action_just_pressed(device_id, action):
++				_mp8_press_age = 0.0
++				_mp8_press_last = Vector2.ZERO
++		if _mp8_press_age < 0.0:
++			return Vector2.ZERO
++	else:
++		_mp8_press_age += delta
++	var v := Vector2(
++		DynamicInput.get_action_raw_strength(device_id, &"right") - DynamicInput.get_action_raw_strength(device_id, &"left"),
++		DynamicInput.get_action_raw_strength(device_id, &"down") - DynamicInput.get_action_raw_strength(device_id, &"up"))
++	if v.length() > _mp8_press_last.length():
++		_mp8_press_last = v
++	if not settle_now and v.length() > Globals.Epsilon and v.length() < MP8_SETTLE_LENGTH and _mp8_press_age < MP8_SETTLE_S:
++		return Vector2.ZERO
++	_mp8_press_age = -1.0
++	return _mp8_press_last
++
++# One of the 8 unit directions nearest v (diagonals normalised); ZERO for ZERO.
++static func mp8_snap_8(v: Vector2) -> Vector2:
++	if v.length() <= Globals.Epsilon:
++		return Vector2.ZERO
++	var step: int = int(roundf(v.angle() / (PI / 4.0)))
++	return Vector2.from_angle(step * PI / 4.0).round().normalized()
++
++# The game's table knows only the four sticks: the nearer one to the unsnapped stick v.
++static func mp8_cardinal(v: Vector2) -> Vector2:
++	if absf(v.x) > absf(v.y):
++		return Vector2(signf(v.x), 0.0)
++	return Vector2(0.0, signf(v.y))
++
++const MP8_SCREEN_CONE_DEG: float = 65.0
++# SUBMIT_VALUE and RESET_VALUE are -1 and -2, so "nothing that way" needs its own id.
++const MP8_NO_TARGET: int = -3
++
++# The nearest candidate within MP8_SCREEN_CONE_DEG of direction, a straighter one
++# preferred (distance times 1 + 2 * angle / 45); MP8_NO_TARGET when none lies that way.
++static func mp8_pick_screen_target(origin: Vector2, candidates: Dictionary, direction: Vector2) -> int:
++	var best: int = MP8_NO_TARGET
++	var best_cost: float = INF
++	for id in candidates:
++		var v: Vector2 = candidates[id] - origin
++		var along: float = v.dot(direction)
++		if along <= 0.0:
++			continue
++		var angle: float = rad_to_deg(atan2(absf(v.cross(direction)), along))
++		if angle > MP8_SCREEN_CONE_DEG:
++			continue
++		var cost: float = v.length() * (1.0 + 2.0 * angle / 45.0)
++		if cost < best_cost:
++			best_cost = cost
++			best = id
++	return best

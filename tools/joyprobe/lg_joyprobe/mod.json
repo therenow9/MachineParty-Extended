@@ -1,0 +1,1 @@
+{ "id": "lg_joyprobe", "name": "joypad probe", "version": "0.0.1", "entry": "main.gd", "priority": 99, "requires": [] }

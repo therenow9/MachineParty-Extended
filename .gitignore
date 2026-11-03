@@ -1,0 +1,14 @@
+# Bulk game data stays out, for size: the pck, compiled scripts, dumps
+*.pck
+*.gdc
+dump/
+decompiled/
+__pycache__/
+.save-backup/
+dist/
+
+# Trailer scratch: footage, music, cards and renders made from the owner's files
+build/
+
+# A clone's own game folder for the runners (tools/run_selftest.sh)
+tools/local.env

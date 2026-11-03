@@ -1,0 +1,1 @@
+{ "id": "gcs_render", "name": "GCS render", "version": "0.0.1", "entry": "main.gd", "priority": 1000, "requires": [] }

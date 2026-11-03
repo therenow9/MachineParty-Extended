@@ -1,0 +1,182 @@
+diff --git a/minigames/escalator_pit/scripts/escalator_pit.gd b/minigames/escalator_pit/scripts/escalator_pit.gd
+--- a/minigames/escalator_pit/scripts/escalator_pit.gd
++++ b/minigames/escalator_pit/scripts/escalator_pit.gd
+@@ -42,6 +42,149 @@ var camera_progress: float = PI + (PI * 0.5)
+ 
+ var collective_speed: float = 0.0
+ 
++
++# [MP8] Tells network_manager's generic spawn fill-in that this minigame places its own spawns.
++var mp8_owns_spawns: bool = true
++
++
++# In `_enter_tree()`, not `_ready()`: children's `_ready()` runs before the root's, and
++# `StairHandler._ready()` copies `paths_parent.get_children()` into its own array, so lanes added
++# in the root's `_ready()` would never be seen.
++func _enter_tree() -> void :
++	# machine-party-8p's design: the vanilla arena, belt and scoring, eight strips in the four troughs.
++	# A mixed room keeps the game's four (D120); the room is latched before add_child.
++	if NetworkManager.mp8_room_extended() and PlayerManager.player_presences.size() > MP8V_VANILLA_LANES:
++		_mp8v_build_eight_lanes()
++
++
++# ---------------- [MP8] eight strips in the vanilla arena ----------------
++# Adapted from machine-party-8p's escalator_pit.gd. Each trough holds two strips at +/-1.6: the stairs
++# are procedural (one shared Curve3D and MultiMesh), so a strip is a Path3D duplicate at a new x.
++# `base platform` bakes the four housings into one mesh, so eight full-width lanes would hang off it.
++const MP8V_VANILLA_LANES: int = 4
++const MP8V_LANES: int = 8
++const MP8V_STRIP_OFFSET: float = 1.6
++const MP8V_SPAWN_Y: float = -2.0
++const MP8V_FLOOR_DROP: float = 0.75
++# Hidden while expanded: the dividers between troughs (players stand 1.6 from them) and the handrail
++# assembly `Plane_003`, which spans every lane at mid-height and is clipped at the strip spacing.
++const MP8V_HIDDEN: Array[String] = ["cylinder", "plane_003"]
++
++
++func _mp8v_build_eight_lanes() -> void :
++
++	if stair_handler == null or stair_handler.paths_parent == null:
++		push_warning("[MP8] Wrong Way 8p: stair_handler/paths_parent missing; lanes unchanged")
++		return
++
++	var parent: Node3D = stair_handler.paths_parent
++	var originals: Array[Path3D] = []
++	for child in parent.get_children():
++		if child is Path3D:
++			originals.append(child)
++	if originals.size() != MP8V_VANILLA_LANES or player_spawn_positions.size() != MP8V_VANILLA_LANES:
++		push_warning("[MP8] Wrong Way 8p: %d stair paths and %d spawns, expected 4 each; lanes unchanged" % [
++			originals.size(), player_spawn_positions.size()])
++		return
++
++	# spawn_players() walks player_spawn_positions in order: players 1-4 take the inner strips, 5-8 the outer.
++	var outers: Array[Node3D] = []
++	for i in originals.size():
++		var src: Path3D = originals[i]
++		var centre_x: float = src.position.x
++		var clone: Path3D = src.duplicate()
++		clone.name = "%s_MP8V%d" % [src.name, MP8V_VANILLA_LANES + i + 1]
++		parent.add_child(clone)
++		src.position.x = centre_x - MP8V_STRIP_OFFSET
++		clone.position.x = centre_x + MP8V_STRIP_OFFSET
++
++		var marker: Node3D = player_spawn_positions[i]
++		var outer: Node3D = marker.duplicate()
++		outer.name = "%s_MP8V%d" % [marker.name, MP8V_VANILLA_LANES + i + 1]
++		marker.get_parent().add_child(outer)
++		# Position only: spawn_players() teleports to global_position and never reads a marker's basis.
++		var lane_z: float = marker.position.z
++		marker.position = Vector3(src.position.x, MP8V_SPAWN_Y, lane_z)
++		outer.position = Vector3(clone.position.x, MP8V_SPAWN_Y, lane_z)
++		outers.append(outer)
++	player_spawn_positions.append_array(outers)
++
++	var screens: int = _mp8v_split_crts()
++	var hidden: int = 0
++	for hint in MP8V_HIDDEN:
++		for n in _mp8v_named(self, hint):
++			n.visible = false
++			hidden += 1
++	for n in _mp8v_named(self, "base platform"):
++		n.position.y -= MP8V_FLOOR_DROP
++
++	print("[MP8] Wrong Way 8p: %d strips, %d spawns, %d screens, %d nodes hidden" % [
++		parent.get_child_count(), player_spawn_positions.size(), screens, hidden])
++
++
++# Matched by name, not by path: a path that moves returns null silently and the build becomes a no-op.
++func _mp8v_named(node: Node, hint: String) -> Array[Node3D] :
++	var out: Array[Node3D] = []
++	for child in node.get_children():
++		if child is Node3D and hint in String(child.name).to_lower():
++			out.append(child)
++		else:
++			out.append_array(_mp8v_named(child, hint))
++	return out
++
++
++# The CRT screens are the only separable per-lane art; each splits with its trough's strips.
++func _mp8v_split_crts() -> int :
++
++	var crts: Array[Node3D] = _mp8v_named(self, "crt1_")
++	if crts.size() != MP8V_VANILLA_LANES:
++		push_warning("[MP8] Wrong Way 8p: expected 4 CRT screens, found %d; screens unchanged" % crts.size())
++		return crts.size()
++	var holder: Node = crts[0].get_parent()
++	for c in crts:
++		if c.get_parent() != holder:
++			push_warning("[MP8] Wrong Way 8p: CRT screens do not share a parent; screens unchanged")
++			return crts.size()
++
++	crts.sort_custom(func(a, b): return a.position.x < b.position.x)
++	for i in crts.size():
++		var src: Node3D = crts[i]
++		var clone: Node3D = src.duplicate()
++		clone.name = "%s_MP8V%d" % [src.name, MP8V_VANILLA_LANES + i + 1]
++		holder.add_child(clone)
++		src.position.x -= MP8V_STRIP_OFFSET
++		clone.position.x += MP8V_STRIP_OFFSET
++	return MP8V_LANES
++
++
++# [MP8] Self-screenshots for the `mp8shot` command-line switch: the game saves PNGs itself.
++# Broadcast by RPC because `countdown_state.expired` is connected only on the server (see _ready).
++func mp8_shot_rpc() -> void :
++	_mp8_shot(1.0)
++	_mp8_shot(5.0)
++	_mp8_shot(12.0)
++
++
++func _mp8_shot(delay: float) -> void :
++
++	if not NetworkManager.mp8_dev_args().has("mp8shot"):
++		return
++
++	await get_tree().create_timer(delay, false).timeout
++	if not is_inside_tree():
++		return
++	await RenderingServer.frame_post_draw
++
++	var me: int = multiplayer.get_unique_id() if multiplayer.has_multiplayer_peer() else 0
++	var who: String = "p%d" % me
++	if PlayerManager.player_presences.has(me):
++		who = String(PlayerManager.player_presences[me].network_name)
++
++	var img: Image = get_viewport().get_texture().get_image()
++	if img != null:
++		img.save_png("user://mp8_esc_t%d_%s.png" % [int(delay), who])
++
++
+ func _ready() -> void :
+ 	super._ready()
+ 
+@@ -177,6 +320,15 @@ func player_disconnected(_network_id: int):
+ 		player_instance.queue_free()
+ 
+ 	if multiplayer.is_server():
++
++		# [MP8] A disconnect before the round starts (someone still loading) must not end it:
++		# check_game_end() returns early only while `active_players.size() > 1`, and before the start
++		# the array is empty, so it would score and finish the round.
++		# This handler has no await, so it reaches here in the same frame as the disconnect.
++		if NetworkManager.mp8_room_extended() and not is_all_player_loaded:
++			print("[MP8] Wrong Way: %d disconnected before the round started; skipping the end check" % _network_id)
++			return
++
+ 		check_game_end()
+ 
+ 
+@@ -195,6 +347,12 @@ func _on_countdown_expired():
+ 		player.set_active_rpc.rpc(true)
+ 	state_machine.transition_to_rpc.rpc(&"Play")
+ 
++	# [MP8] Shots at 1, 5 and 12 s (only with `mp8shot`): one player per strip, no overlap.
++	# Idle instances press nothing, so escalator_speed stays 0 and nobody moves: this checks only
++	# the opening layout. Sent only while the host has the switch, so a shipped build sends nothing.
++	if NetworkManager.mp8_dev_args().has("mp8shot"):
++		NetworkManager.mp8_rpc(self, &"mp8_shot_rpc")
++
+ func _on_finish_area_entered(body):
+ 
+ 	if body.owner is EscalatorPitPlayer:

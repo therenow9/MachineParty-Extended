@@ -1,0 +1,345 @@
+diff --git a/minigames/spine_breaker/components/device/states/follow_state.gd b/minigames/spine_breaker/components/device/states/follow_state.gd
+--- a/minigames/spine_breaker/components/device/states/follow_state.gd
++++ b/minigames/spine_breaker/components/device/states/follow_state.gd
+@@ -3,6 +3,25 @@ extends State
+ var target: SpineBreakerPlayer
+ var elapsed: float = 0.0
+ 
++# [MP8] Stuck -> sidestep. A player carrying one device can't be taken by the other
++# (`_mp8_can_take`), so they can body-block it in place. Re-pathing does not help: the navigation
++# mesh has no players or devices in it, so the device slides sideways around the block instead.
++const MP8_STUCK_RATIO: float = 0.35   # moved less than this fraction of the intended distance = blocked
++const MP8_STUCK_SECS: float = 0.5     # blocked this long counts as stuck (a brush does not)
++const MP8_DODGE_SECS: float = 0.8     # duration of one sidestep
++
++var _mp8_stuck: float = 0.0
++var _mp8_dodge_left: float = 0.0
++var _mp8_dodge_dir: Vector3 = Vector3.ZERO
++var _mp8_dodge_count: int = 0
++
++# [MP8] Dead-end target: a target that can never be taken (already carrying a device) is never
++# dropped. update_proximity_check skips them and retargets only to another takeable player nearby
++# (`target_distance` is always INF); request_new_target only follows a kill. So the device asks the
++# host for a new target, on a cooldown: `_mp8_pick_prey()` may return null and must be asked again.
++const MP8_DEADEND_RETRY: float = 4.0   # longer than the longest MP8_DEVICE_WAIT (3 s), so it does not race the reassignment
++var _mp8_deadend_cd: float = 0.0
++
+ func init() -> void :
+ 
+ 	owner.navigation_update_timer.timeout.connect(_on_navigation_timer_timeout)
+@@ -17,6 +36,32 @@ func can_enter() -> bool:
+ 	return true
+ 
+ func enter(_msg: Dictionary = {}) -> void :
++
++	# [MP8] A mixed room runs the game's enter (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_enter(_msg)
++		return
++	owner.is_following = true
++	state_time = 0.0
++	elapsed = 0.0
++
++	# [MP8] Sidestep and dead-end state is per chase; otherwise it carries over to the new target.
++	_mp8_stuck = 0.0
++	_mp8_dodge_left = 0.0
++	_mp8_dodge_count = 0
++	_mp8_deadend_cd = 0.0
++
++	var new_target = _msg.get("target", null)
++	var is_new_target: bool = _msg.get("new_target", false)
++
++	if not new_target:
++		state_machine.transition_to(&"Idle")
++	else:
++		set_target(new_target, is_new_target)
++		_on_navigation_timer_timeout()
++
++# The game's enter, for a mixed room (D120).
++func _mp8_game_enter(_msg: Dictionary = {}) -> void :
+ 	owner.is_following = true
+ 	state_time = 0.0
+ 	elapsed = 0.0
+@@ -39,6 +84,46 @@ func update(_delta: float) -> void :
+ 
+ func update_physics(_delta: float) -> void :
+ 
++	# [MP8] Before the room's dispatch: the rescue runs in every room (PD8, D155).
++	_mp8_unstick(_delta)
++
++	# [MP8] A mixed room runs the game's update_physics (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_update_physics(_delta)
++		return
++
++	# [MP8] Runs first: after update_proximity_check() transitions to Attached the rest of the frame
++	# still runs with `target.has_spine_breaker` already true, and a fresh attach would read as a dead end.
++	_mp8_check_dead_end(_delta)
++
++	var increase_ratio = elapsed / owner.speed_increase_duration
++	var elapsed_speed = increase_ratio * owner.speed_increase_over_time
++
++	var vertical_velocity = owner.velocity.y
++	vertical_velocity -= owner.gravity * _delta
++
++	var current_agent_position: Vector3 = owner.global_position
++	var next_path_position: Vector3 = owner.navigation_agent.get_next_path_position()
++
++	var dir: Vector3 = current_agent_position.direction_to(next_path_position)
++
++	# [MP8] While sidestepping, the sidestep direction replaces the path direction.
++	if _mp8_dodge_left > 0.0:
++		_mp8_dodge_left -= _delta
++		dir = _mp8_dodge_dir
++
++	owner.velocity = dir * (owner.speed + elapsed_speed)
++	owner.velocity.y = vertical_velocity
++
++	var before: Vector3 = owner.global_position
++	owner.move_and_slide()
++	_mp8_check_stuck(_delta, before, dir)
++
++	update_proximity_check()
++
++# The game's update_physics, for a mixed room (D120).
++func _mp8_game_update_physics(_delta: float) -> void :
++
+ 	var increase_ratio = elapsed / owner.speed_increase_duration
+ 	var elapsed_speed = increase_ratio * owner.speed_increase_over_time
+ 
+@@ -55,8 +140,164 @@ func update_physics(_delta: float) -> void :
+ 
+ 	update_proximity_check()
+ 
++
++# [MP8] PD8: a throw starts 3 m up and 1.5 m ahead of the thrower, which can be inside one of the room's
++# hidden collision boxes, and a device that lands in there chases on the spot. Still for MP8_STILL_S and over
++# MP8_STILL_M from the floor's navmesh (eroded by its 0.75 m agent radius: only a device inside a box is that
++# far), it drops to that navmesh. Server only: position replicates.
++const MP8_STILL_S: float = 3.0
++const MP8_STILL_M: float = 0.5
++
++var _mp8_still_at: Vector3 = Vector3.ZERO
++
++# [MP8] `state_time` counts the window: the StateMachine zeroes it on every transition, so each chase starts fresh.
++func _mp8_unstick(delta: float) -> void :
++
++	var pos: Vector3 = owner.global_position
++	if state_time == 0.0 or Vector2(pos.x - _mp8_still_at.x, pos.z - _mp8_still_at.z).length() > MP8_STILL_M:
++		_mp8_still_at = pos
++		state_time = 0.0
++	state_time += delta
++	if state_time < MP8_STILL_S or not multiplayer.is_server():
++		return
++	state_time = 0.0
++
++	# [MP8] Searched from the floor (y = 0): from higher up the nearest point can be on the navmesh's upper
++	# layer, the box tops at y = 6.5, which no player reaches.
++	var to: Vector3 = NavigationServer3D.map_get_closest_point(owner.navigation_agent.get_navigation_map(), Vector3(pos.x, 0.0, pos.z))
++	if Vector2(to.x - pos.x, to.z - pos.z).length() <= MP8_STILL_M:
++		return
++	owner.global_position = to
++	owner.velocity = Vector3.ZERO
++	_mp8_still_at = to
++	print("[MP8] Spine Breaker: device %d stuck while chasing at %s, moved to the navmesh at %s" % [owner.mp8_index, pos, to])
++
++
++# [MP8] Blocked = moved far less than intended this frame. Displacement, not velocity:
++# move_and_slide keeps the velocity against a wall.
++func _mp8_check_stuck(_delta: float, before: Vector3, dir: Vector3) -> void :
++
++	if _mp8_dodge_left > 0.0:      # let the current sidestep finish
++		return
++
++	var want: float = Vector2(owner.velocity.x, owner.velocity.z).length() * _delta
++	var got: float = Vector2(
++		owner.global_position.x - before.x, owner.global_position.z - before.z
++	).length()
++
++	if want <= 0.001 or got >= want * MP8_STUCK_RATIO:
++		_mp8_stuck = 0.0
++		return
++
++	_mp8_stuck += _delta
++	if _mp8_stuck < MP8_STUCK_SECS:
++		return
++
++	_mp8_stuck = 0.0
++	_mp8_dodge_dir = _mp8_pick_dodge(dir)
++	_mp8_dodge_left = MP8_DODGE_SECS
++	_mp8_dodge_count += 1
++
++	# Logged once per chase.
++	if _mp8_dodge_count == 1 and multiplayer.is_server():
++		print("[MP8] Spine Breaker: device %d is blocked, sidestepping (target %s)" % [
++			owner.mp8_index, (String(target.name) if target != null else "?")
++		])
++
++
++# Sidestep along the blocking surface's tangent, the one that does not go backwards.
++# With no wall normal (wedged between two bodies), the perpendicular of the current direction.
++func _mp8_pick_dodge(dir: Vector3) -> Vector3 :
++
++	var n: Vector3 = Vector3.ZERO
++	for i in owner.get_slide_collision_count():
++		var cn: Vector3 = owner.get_slide_collision(i).get_normal()
++		if absf(cn.y) < 0.7:        # vertical surfaces only, not the floor
++			n = cn
++			break
++
++	var side: Vector3 = (n.cross(Vector3.UP) if n != Vector3.ZERO else dir.cross(Vector3.UP))
++	side.y = 0.0
++	if side.length() < 0.01:
++		return dir
++	side = side.normalized()
++
++	if side.dot(dir) < 0.0:         # the tangent on the same side as the path direction
++		side = - side
++
++	# Part path direction, so the sidestep rejoins the path once past the block.
++	return (side * 0.8 + dir * 0.4).normalized()
++
++
++# [MP8] Can this device attach to p? The game attaches unconditionally, which with two devices
++# lets both take one victim (the second then breaks a corpse's spine), and players_in_proximity
++# is a hand-kept array that can hold a dead player after a missed exit signal.
++func _mp8_can_take(p) -> bool :
++
++	if p == null or not is_instance_valid(p):
++		return false
++	if not (p is SpineBreakerPlayer):
++		return false
++	if not p.active:
++		return false
++	if p.has_spine_breaker:
++		return false
++	return true
++
++
++# [MP8] Can this device make p its target? `_mp8_can_take`, and not a player the other device is
++# chasing, or update_proximity_check()'s nearest-player retarget converges both devices on one player.
++# Contact (distance < 1.45) ignores this: a device that touches a player and does not attach looks broken.
++func _mp8_can_target(p) -> bool :
++
++	var gi = owner.game_instance
++	if gi != null and gi.has_method("mp8_is_claimed_by_other"):
++		if gi.mp8_is_claimed_by_other(p, owner):
++			return false
++	return true
++
++
+ func update_proximity_check():
+ 
++	# [MP8] A mixed room runs the game's update_proximity_check (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_update_proximity_check()
++		return
++
++	var target_distance: float = INF
++
++	var closest = null
++	var closest_distance = target_distance
++	for p in owner.players_in_proximity:
++
++		if not _mp8_can_take(p):        # [MP8]
++			continue
++
++		var distance = owner.global_position.distance_to(p.global_position)
++
++		# [MP8] Contact check ahead of `_mp8_can_target` (see its comment). Outside `if distance < closest_distance`
++		# it is equivalent: a nearer player would already be < 1.45 and returned.
++		if distance < 1.45:
++			state_machine.transition_to(&"Attached", {
++				"target": p
++			})
++			return
++
++		if not _mp8_can_target(p):      # [MP8] ownership matters only for retargeting
++			continue
++
++		if distance < closest_distance:
++
++			closest_distance = distance
++			closest = p
++
++	if closest != target:
++		if closest_distance < target_distance:
++			set_target(closest, false)
++
++# The game's update_proximity_check, for a mixed room (D120).
++func _mp8_game_update_proximity_check():
++
+ 	var target_distance: float = INF
+ 
+ 	var closest = null
+@@ -78,6 +319,42 @@ func update_proximity_check():
+ 		if closest_distance < target_distance:
+ 			set_target(closest, false)
+ 
++# [MP8] See MP8_DEADEND_RETRY. `_mp8_can_take` also covers dead targets and freed references.
++# Server only: spine_breaker.gd connects `request_new_target` only on the server.
++# Inactive means this frame already left Follow.
++func _mp8_check_dead_end(_delta: float) -> void :
++
++	if not active:
++		return
++
++	if _mp8_deadend_cd > 0.0:
++		_mp8_deadend_cd -= _delta
++		return
++
++	if target == null:
++		return
++	if _mp8_can_take(target):
++		return
++
++	_mp8_deadend_cd = MP8_DEADEND_RETRY
++
++	if not multiplayer.is_server():
++		return
++
++	var who: String = "?"
++	var why: String = "reference freed"
++	if is_instance_valid(target):
++		who = String(target.name)
++		if target.has_spine_breaker:
++			why = "already carrying a device"
++		elif not target.active:
++			why = "dead"
++	print("[MP8] Spine Breaker: device %d is chasing %s but can never take them (%s) - requesting a new target" % [
++		owner.mp8_index, who, why
++	])
++	owner.request_new_target.emit()
++
++
+ func set_target(_target: SpineBreakerPlayer, new_target: bool):
+ 	target = _target
+ 
+@@ -101,6 +378,27 @@ func _on_navigation_timer_timeout():
+ 
+ func _on_player_attach_entered(body):
+ 
++	# [MP8] A mixed room runs the game's _on_player_attach_entered (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_on_player_attach_entered(body)
++		return
++
++	if not active:
++		return
++
++	if body is not SpineBreakerPlayer:
++		return
++
++	if not _mp8_can_take(body):        # [MP8] not a player carrying a device, nor a dead one
++		return
++
++	state_machine.transition_to(&"Attached", {
++		"target": body
++	})
++
++# The game's _on_player_attach_entered, for a mixed room (D120).
++func _mp8_game_on_player_attach_entered(body):
++
+ 	if not active:
+ 		return
+ 

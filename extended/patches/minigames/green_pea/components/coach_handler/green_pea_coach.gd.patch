@@ -1,0 +1,198 @@
+diff --git a/minigames/green_pea/components/coach_handler/green_pea_coach.gd b/minigames/green_pea/components/coach_handler/green_pea_coach.gd
+--- a/minigames/green_pea/components/coach_handler/green_pea_coach.gd
++++ b/minigames/green_pea/components/coach_handler/green_pea_coach.gd
+@@ -24,6 +24,29 @@ class_name GreenPeaCoach extends Node3D
+ 
+ signal execution_finished()
+ 
++# [MP8] Seat -> which `coach_shoot_position_N` animation. Filled on every peer by green_pea.gd's
++# `_mp8_map_animations()`, since `shoot_player` plays on each. Empty = the seat itself (identical up to 4).
++var mp8_anim_by_seat: Array = []
++
++
++func _mp8_anim_index(seat: int) -> int :
++
++	if seat >= 0 and seat < mp8_anim_by_seat.size():
++		return int(mp8_anim_by_seat[seat])
++
++	return seat
++
++# [MP8] The stock loops await a random 0-0.3 s per player, so the last seat's pause/resume lags by
++# the sum of every earlier delay and grows with the player count. Each step gets budget / players,
++# so the whole ramp stays as long as the stock 4-player one. `players.size()`, not the living count:
++# both loops walk the whole array.
++const MP8_STAGGER_BUDGET: float = 1.2   # the stock 4-player ramp: 4 x 0.3
++
++
++func _mp8_stagger() -> float :
++
++	return randf_range(0.0, MP8_STAGGER_BUDGET / float(maxi(players.size(), 1)))
++
+ var is_first_newspaper_sound = true
+ 
+ func _ready() -> void :
+@@ -62,6 +85,40 @@ func play_newspaper_sound():
+ 
+ func shoot_player(seat_position_to_shoot: int):
+ 
++	# [MP8] A mixed room runs the game's shoot_player (D120).
++	if not NetworkManager.mp8_room_extended():
++		await _mp8_game_shoot_player(seat_position_to_shoot)
++		return
++
++	if multiplayer.is_server():
++		pause_eating_for_players(seat_position_to_shoot)
++
++	speaker_ready_up.play()
++
++	speaker_drone.play()
++	anim_coach.play("coach_deagle_ready_up")
++	anim_tree_coach.active = false
++	anim_coach.play("coach_deagle_ready_up", 0.5)
++	await get_tree().create_timer(1.1, false).timeout
++
++	# [MP8] Only `coach_shoot_position_0..3` exist; seats 4-7 borrow the nearest one on their side.
++	# A missing animation does not hang (fixed timers follow), but the coach never aims.
++	var anim_name = "coach_shoot_position_" + str(_mp8_anim_index(seat_position_to_shoot))
++	anim_coach.play(anim_name, 0.2)
++	gun_shot_visuals(seat_position_to_shoot)
++	await get_tree().create_timer(4, false).timeout
++
++	if multiplayer.is_server():
++		continue_eating_for_players()
++
++	anim_tree_coach.set("parameters/reading blend/blend_amount", 0)
++	anim_tree_coach.active = true
++
++	execution_finished.emit()
++
++# The game's shoot_player, for a mixed room (D120).
++func _mp8_game_shoot_player(seat_position_to_shoot: int):
++
+ 	if multiplayer.is_server():
+ 		pause_eating_for_players(seat_position_to_shoot)
+ 
+@@ -86,7 +143,73 @@ func shoot_player(seat_position_to_shoot: int):
+ 
+ 	execution_finished.emit()
+ 
++# [MP8] Two catches from one glance (coach_handler.gd), shot back to back in the order caught: the game's
++# draw once, then each seat's aim. An aim fires at 0.93 s, recoils until about 1.6 s and lowers from about
++# 2 s, so the next aim starts here; the draw racked the first shot, the second re-racks.
++const MP8_NEXT_SHOT: float = 1.6
++
++
++func mp8_shoot_players(seats: PackedInt32Array):
++
++	if multiplayer.is_server():
++		_mp8_pause_eating_except(seats)
++
++	speaker_ready_up.play()
++
++	speaker_drone.play()
++	anim_coach.play("coach_deagle_ready_up")
++	anim_tree_coach.active = false
++	anim_coach.play("coach_deagle_ready_up", 0.5)
++	await get_tree().create_timer(1.1, false).timeout
++
++	for i in seats.size():
++		if i > 0:
++			await get_tree().create_timer(MP8_NEXT_SHOT, false).timeout
++			deagle_slide_forward()
++			speaker_drone.play()
++		anim_coach.play("coach_shoot_position_" + str(_mp8_anim_index(seats[i])), 0.2)
++		gun_shot_visuals(seats[i])
++	await get_tree().create_timer(4, false).timeout
++
++	if multiplayer.is_server():
++		continue_eating_for_players()
++
++	anim_tree_coach.set("parameters/reading blend/blend_amount", 0)
++	anim_tree_coach.active = true
++
++	execution_finished.emit()
++
+ func gun_shot_visuals(seat_position_to_shoot: int):
++
++	# [MP8] A mixed room runs the game's gun_shot_visuals (D120).
++	if not NetworkManager.mp8_room_extended():
++		await _mp8_game_gun_shot_visuals(seat_position_to_shoot)
++		return
++	await get_tree().create_timer(0.93, false).timeout
++	deagle_slide_back()
++	speaker_drone.stop()
++	speaker_shoot.play()
++
++	if multiplayer.is_server():
++		for player in players:
++			if player and player.player_seat_position == seat_position_to_shoot:
++				player.execute_rpc.rpc()
++
++	for player: GreenPeaPlayer in player_spawn_parent.get_children():
++		if player.player_seat_position == seat_position_to_shoot:
++			anim_gun_fire.play("shoot")
++			shaker_camera.force_stop_shake()
++			shaker_camera.play_shake()
++			# [MP8] The stock array has 4 entries; the minigame extends it to 8. If that failed, skip the
++			# decal rather than error out before `blood_decal_parent` is shown.
++			if seat_position_to_shoot < decals_by_seat_index.size():
++				var dec = decals_by_seat_index[seat_position_to_shoot]
++				if dec != null:
++					dec.visible = true
++			player.blood_decal_parent.visible = true
++
++# The game's gun_shot_visuals, for a mixed room (D120).
++func _mp8_game_gun_shot_visuals(seat_position_to_shoot: int):
+ 	await get_tree().create_timer(0.93, false).timeout
+ 	deagle_slide_back()
+ 	speaker_drone.stop()
+@@ -106,14 +229,49 @@ func gun_shot_visuals(seat_position_to_shoot: int):
+ 			player.blood_decal_parent.visible = true
+ 
+ func pause_eating_for_players(position_being_shot: int):
++
++	# [MP8] A mixed room runs the game's pause_eating_for_players (D120).
++	if not NetworkManager.mp8_room_extended():
++		await _mp8_game_pause_eating_for_players(position_being_shot)
++		return
++	if multiplayer.is_server():
++		for player in players:
++			if player and !player.is_dead && player.player_seat_position != position_being_shot:
++				player.pause_eating_rpc.rpc()
++			# [MP8] Same budget as `continue_eating_for_players`, so the two ramps stay matched.
++			await get_tree().create_timer(_mp8_stagger()).timeout
++
++# The game's pause_eating_for_players, for a mixed room (D120).
++func _mp8_game_pause_eating_for_players(position_being_shot: int):
+ 	if multiplayer.is_server():
+ 		for player in players:
+ 			if player and !player.is_dead && player.player_seat_position != position_being_shot:
+ 				player.pause_eating_rpc.rpc()
+ 			await get_tree().create_timer(randf_range(0, 0.3)).timeout
+ 
++# [MP8] `pause_eating_for_players` for everyone but the victims, who were each paused at their catch.
++func _mp8_pause_eating_except(seats: PackedInt32Array):
++
++	for player in players:
++		if player and !player.is_dead && not seats.has(player.player_seat_position):
++			player.pause_eating_rpc.rpc()
++		await get_tree().create_timer(_mp8_stagger()).timeout
++
+ func continue_eating_for_players():
+ 
++	# [MP8] A mixed room runs the game's continue_eating_for_players (D120).
++	if not NetworkManager.mp8_room_extended():
++		await _mp8_game_continue_eating_for_players()
++		return
++
++	if multiplayer.is_server():
++		for player in players:
++			player.continue_eating_rpc.rpc()
++			await get_tree().create_timer(_mp8_stagger()).timeout
++
++# The game's continue_eating_for_players, for a mixed room (D120).
++func _mp8_game_continue_eating_for_players():
++
+ 	if multiplayer.is_server():
+ 		for player in players:
+ 			player.continue_eating_rpc.rpc()

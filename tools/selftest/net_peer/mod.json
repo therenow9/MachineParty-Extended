@@ -1,0 +1,1 @@
+{ "id": "net_peer", "name": "Net peer (dev)", "version": "0.0.1", "entry": "main.gd", "priority": 99, "requires": [] }

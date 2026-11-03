@@ -1,0 +1,288 @@
+<title>More Cosmetics Art Review</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a single review bench, one column of decision blocks; every render
+   sits on black, so the page commits to one dark look rather than two themes. */
+:root {
+  color-scheme: dark;
+  --bench: #141210;
+  --plate: #1d1a17;
+  --rule: #3a342d;
+  --ink: #ece6dc;
+  --dim: #a59c8f;
+  --brass: #d1a253;
+  --sink: #e2795a;
+  --ok: #8fbf7a;
+  --display: "Chakra Petch", "Bahnschrift", "Segoe UI", sans-serif;
+  --body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+body { background: var(--bench); color: var(--ink); font: 15px/1.55 var(--body); }
+main { max-width: 1180px; margin: 0 auto; padding-inline: clamp(16px, 4vw, 40px); padding-block: 32px 64px; display: grid; gap: 48px; }
+h1, h2, h3 { font-family: var(--display); font-weight: 600; text-wrap: balance; margin: 0; letter-spacing: 0.01em; }
+h1 { font-size: clamp(26px, 4vw, 38px); }
+h2 { font-size: 22px; }
+h3 { font-size: 17px; }
+p { margin: 0; max-width: 68ch; }
+.lede { color: var(--dim); }
+.eyebrow { font: 500 12px/1 var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--brass); }
+header, section { display: grid; gap: 16px; }
+.id { font-family: var(--mono); font-size: 13px; color: var(--brass); }
+.block { display: grid; gap: 14px; padding: 18px; background: var(--plate); border: 1px solid var(--rule); border-radius: 6px; }
+.row-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; }
+.facts { font: 13px/1.4 var(--mono); color: var(--dim); font-variant-numeric: tabular-nums; }
+.shots { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+figure { margin: 0; display: grid; gap: 4px; min-width: 0; }
+figure img { width: 100%; aspect-ratio: 1; object-fit: cover; background: #000; border-radius: 3px; display: block; }
+figcaption { font: 12px/1.3 var(--mono); color: var(--dim); }
+.pair { display: grid; grid-template-columns: 1fr 160px; gap: 16px; align-items: start; }
+.pair > div { display: grid; gap: 10px; min-width: 0; }
+.tex img { width: 100%; image-rendering: pixelated; border-radius: 3px; display: block; }
+.label { font: 500 12px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--dim); }
+.choice { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; border: 0; padding: 0; margin: 0; }
+.choice legend { float: left; margin-right: 6px; font: 500 13px/1 var(--body); color: var(--ink); }
+.choice label { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border: 1px solid var(--rule); border-radius: 999px; cursor: pointer; font-size: 14px; }
+.choice input { accent-color: var(--brass); margin: 0; }
+.choice label:has(input:checked) { border-color: var(--brass); color: var(--brass); }
+.choice label:focus-within { outline: 2px solid var(--brass); outline-offset: 2px; }
+input[type=text], textarea { width: 100%; box-sizing: border-box; background: var(--bench); color: var(--ink); border: 1px solid var(--rule); border-radius: 4px; padding: 8px 10px; font: 14px/1.4 var(--body); }
+input[type=text]:focus, textarea:focus { outline: 2px solid var(--brass); outline-offset: 1px; }
+.gib-stat { font: 13px/1.4 var(--mono); font-variant-numeric: tabular-nums; }
+.gib-stat b { font-weight: 500; }
+.sinks { color: var(--sink); }
+.clear { color: var(--ok); }
+.lineup-wrap { overflow-x: auto; }
+.lineup { display: grid; grid-template-columns: repeat(13, minmax(72px, 1fr)); gap: 6px; min-width: 960px; }
+.lineup figure img { aspect-ratio: 9 / 16; object-position: 50% 45%; }
+.lineup .ours figcaption { color: var(--brass); }
+.cands { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.cands figure img { aspect-ratio: 9 / 14; object-position: 50% 45%; }
+.swatch { display: inline-block; width: 12px; height: 12px; border-radius: 2px; vertical-align: -1px; margin-right: 6px; border: 1px solid var(--rule); }
+table { border-collapse: collapse; font: 13px/1.5 var(--mono); font-variant-numeric: tabular-nums; }
+td { padding: 4px 16px 4px 0; border-bottom: 1px solid var(--rule); vertical-align: top; }
+.picks { display: grid; gap: 10px; padding: 18px; border: 1px solid var(--brass); border-radius: 6px; background: var(--plate); }
+.picks textarea[readonly] { font: 13px/1.5 var(--mono); min-height: 360px; resize: vertical; }
+.bar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+button { font: 600 14px/1 var(--body); padding: 10px 18px; border-radius: 4px; border: 0; background: var(--brass); color: var(--bench); cursor: pointer; }
+button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.status { font: 13px var(--mono); color: var(--dim); }
+@media (max-width: 640px) { .pair { grid-template-columns: 1fr; } .tex { max-width: 200px; } }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<main>
+  <header>
+    <span class="eyebrow" id="batch">More Cosmetics</span>
+    <h1>More Cosmetics art review</h1>
+    <p class="lede">Every picture is a screenshot from the game, in the local lobby's own lighting, taken by the <span class="id">xc_render</span> dev mod. Our items are drawn with a copy of the vanilla anchor's material, so what you see is what players see. Pick below; the block at the bottom restates every pick for you to paste back.</p>
+  </header>
+
+  <section id="items">
+    <span class="eyebrow">Items</span>
+    <h2>Ours above, the vanilla item it is judged against below</h2>
+    <p class="lede">Each pair is framed by the same box, so the sizes compare. The texture is the 512 × 512 file the mod ships, shown with the game's nearest filtering.</p>
+    <div id="pairs" style="display:grid;gap:16px"></div>
+  </section>
+
+  <section id="combo" hidden>
+    <span class="eyebrow">Together</span>
+    <h2>Hats and glasses worn together</h2>
+    <p class="lede">Pairs that could clip: a band, strap or brim against the other item.</p>
+    <div id="combo-blocks" style="display:grid;gap:16px"></div>
+  </section>
+
+  <section id="gibs">
+    <span class="eyebrow">Hat gib</span>
+    <h2>Knocked off: in flight and on the floor</h2>
+    <p class="lede">Minigames throw the hat as a rigid body whose only collider is a sphere of radius 0.5, the same for every hat. A hat bigger than the sphere dips through the floor; a smaller one rests on the sphere and floats. Each hat here is thrown by the game's own code with a fixed seed, over a floor at the character's feet. The numbers track how far the mesh dips under that floor every physics frame from 1 s to 4 s. Sideways speed was cut to a quarter so the hat stays in the seat's light; the spin and the fall are the game's.</p>
+    <div id="gib-blocks" style="display:grid;gap:16px"></div>
+    <div class="block">
+      <fieldset class="choice" id="gib-choice">
+        <legend>Gib collider for our hats</legend>
+        <label><input type="radio" name="gib_collider" id="gib-accept" value="accept"> Accept the 0.5 sphere</label>
+        <label><input type="radio" name="gib_collider" id="gib-swap" value="swap"> Swap in a collider sized to our hat while it is shown</label>
+      </fieldset>
+      <p class="lede">Swapping is new code in a later step, not part of this batch.</p>
+    </div>
+  </section>
+
+  <section id="suits">
+    <span class="eyebrow">Suit colours</span>
+    <h2>All 13 suits, ours at the shade you pick</h2>
+    <p class="lede">The eight on the left are the lobby's own list with Overtime installed. Ours are painted at runtime from the game's red suit, keeping its shading. Pick a candidate per colour, or drop it; the lineup redraws.</p>
+    <div class="block lineup-wrap"><div class="lineup" id="lineup"></div></div>
+    <div id="color-blocks" style="display:grid;gap:16px"></div>
+  </section>
+
+  <section id="measures">
+    <span class="eyebrow">Measured in this run</span>
+    <h2>Recolor cost under the real renderer</h2>
+    <p class="lede">A new colour is painted once, then cached. These timings are from this PC, windowed, Forward+.</p>
+    <div class="block" style="overflow-x:auto"><table id="measure-table"></table></div>
+  </section>
+
+  <section id="your-picks">
+    <span class="eyebrow">Your picks</span>
+    <h2>Copy this back</h2>
+    <div class="picks">
+      <label class="label" for="notes">Notes</label>
+      <textarea id="notes" rows="3" placeholder="Anything else: shapes, wear, colours to try"></textarea>
+      <label class="label" for="picks-out">Picks</label>
+      <textarea id="picks-out" readonly></textarea>
+      <div class="bar"><button type="button" id="copy">Copy picks</button><span class="status" id="copy-status" role="status"></span></div>
+    </div>
+  </section>
+</main>
+
+<script>
+const DATA = /*%%DATA%%*/null;
+const NAMES = { xc_chef_hat: "Chef's hat", xc_diving_helmet: "Diving helmet", xc_eyepatch_glasses: "Eyepatch",
+  xc_propeller_beanie: "Propeller beanie", xc_army_helmet: "Army helmet", xc_captain_hat: "Captain's hat",
+  xc_sombrero: "Sombrero", xc_head_mirror: "Head mirror",
+  xc_disguise_glasses: "Disguise", xc_cyclops_glasses: "Cyclops visor", xc_monocle_glasses: "Monocle",
+  xc_fez: "Fez", xc_kippah: "Kippah", xc_trapper_hat: "Trapper hat", xc_tanning_glasses: "Tanning goggles",
+  xc_football_helmet: "Football helmet", xc_beret: "Beret", xc_dragonborn_helmet: "Dragonborn helmet",
+  xc_scuba_glasses: "Scuba mask (open lenses, strap)", xc_scuba_glasses_painted: "Scuba mask, painted lenses",
+  xc_scuba_glasses_nostrap: "Scuba mask, no strap", xc_scuba_glasses_painted_nostrap: "Scuba mask, painted lenses, no strap",
+  tophat: "Top hat", maska_helmet: "Maska helmet", sunglasses: "Sunglasses", cap_blade: "Cap",
+  hard_hat: "Hard hat", drill_sgt_hat: "Drill sergeant's hat", reading_glasses: "Reading glasses",
+  xc_teal: "Teal", xc_pink: "Pink", xc_white: "Off-white", xc_brown: "Brown", xc_orange: "Orange" };
+const el = (tag, attrs = {}, kids = []) => {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "text") n.textContent = v; else if (k === "html") n.innerHTML = v; else n.setAttribute(k, v);
+  }
+  for (const k of [].concat(kids)) if (k) n.append(k);
+  return n;
+};
+// The head's front-to-back length in the hat anchor's space, from common.HEAD_IN_TOPHAT.
+const HEAD_LENGTH = 0.567;
+// Higher than this at its lowest, a resting gib reads as floating; vanilla's top hat gets to 0.03.
+const FLOAT = 0.08;
+const nameOf = id => NAMES[id] || id;
+document.getElementById("batch").textContent = "More Cosmetics · " + DATA.batch;
+document.getElementById("combo").hidden = DATA.combos.length === 0;
+document.getElementById("suits").hidden = DATA.colors.length === 0;
+const fig = (src, cap) => el("figure", {}, [el("img", { src, alt: cap, loading: "lazy" }), el("figcaption", { text: cap })]);
+const choice = (name, legend, options) => el("fieldset", { class: "choice" }, [el("legend", { text: legend })].concat(
+  options.map(([value, text]) => el("label", {}, [el("input", { type: "radio", name, id: name + "-" + value, value }), " " + text]))));
+
+const buildPick = id => id + "_build";
+for (const p of DATA.pairs) {
+  // Extents in the anchor's axes: a hat's x is front to back and y is up; a
+  // pair of glasses' x is down and y is front to back. z is across for both.
+  const [x, y, z] = p.size;
+  const [length, tall] = p.ours.includes("glasses") ? [y, x] : [x, y];
+  const size = p.ours.startsWith("xc_sombrero")
+    ? `brim ${length.toFixed(2)} across = ${(length / HEAD_LENGTH).toFixed(2)}× the head's ${HEAD_LENGTH} front to back`
+    : `${length.toFixed(2)} × ${z.toFixed(2)} × ${tall.toFixed(2)} (front–back × across × tall)`;
+  const verdict = p.candidateFor
+    ? choice(buildPick(p.candidateFor), "Which build ships", [["shipped", nameOf(p.candidateFor) + " as it ships now"], [p.ours, "This candidate"]])
+    : choice(p.ours, "Verdict", [["accept", "Accept"], ["rework", "Rework"]]);
+  const left = el("div", {}, [
+    el("div", { class: "row-head" }, [el("h3", { text: nameOf(p.ours) }), el("span", { class: "id", text: p.ours }),
+      el("span", { class: "facts", text: p.tris + " triangles · vanilla items run 212–2,478 · " + size })]),
+    p.candidateFor ? el("p", { class: "lede", text: "A candidate, not in the mod: another build from the same generator, shown beside the one that ships now." }) : null,
+    el("span", { class: "label", text: p.candidateFor ? "Candidate" : "Ours" }),
+    el("div", { class: "shots" }, p.oursShots.map(([a, s]) => fig(s, a))),
+    el("span", { class: "label", text: (p.ref.startsWith("xc_") ? "Ours now · " : "Vanilla · ") + nameOf(p.ref) }),
+    el("div", { class: "shots" }, p.refShots.map(([a, s]) => fig(s, a))),
+    p.beforeShots ? el("span", { class: "label", text: "Before this rework · " + nameOf(p.ours) }) : null,
+    p.beforeShots ? el("div", { class: "shots" }, p.beforeShots.map(([a, s]) => fig(s, a))) : null,
+    verdict,
+    p.candidateFor ? null : el("input", { type: "text", id: p.ours + "-notes", placeholder: "What to change, if anything", "aria-label": nameOf(p.ours) + " notes" }),
+  ]);
+  const tex = el("div", { class: "tex" }, [el("span", { class: "label", text: "Texture 512²" }), el("img", { src: p.texture, alt: p.ours + " texture" })]);
+  document.getElementById("pairs").append(el("div", { class: "block pair" }, [left, tex]));
+}
+for (const c of DATA.combos) {
+  document.getElementById("combo-blocks").append(el("div", { class: "block" }, [
+    el("div", { class: "row-head" }, [el("h3", { text: nameOf(c.hat) + " with the " + nameOf(c.glasses).toLowerCase() }),
+      el("span", { class: "id", text: c.hat + " + " + c.glasses })]),
+    el("div", { class: "shots" }, c.shots.map(([a, s]) => fig(s, a))),
+  ]));
+}
+
+for (const g of DATA.gibs) {
+  // A hat smaller than the gib's sphere rests on the sphere, above the floor.
+  const dips = g.below > 0, floats = g.deepest > FLOAT;
+  const verdict = dips ? "dips under the floor" : floats ? `floats ${g.deepest.toFixed(2)} above the floor` : "rests on the floor";
+  document.getElementById("gib-blocks").append(el("div", { class: "block" }, [
+    el("div", { class: "row-head" }, [el("h3", { text: nameOf(g.id) + (g.ours ? "" : " (vanilla)") }), el("span", { class: "id", text: g.id })]),
+    el("div", { class: "gib-stat", html:
+      `<b class="${dips || floats ? "sinks" : "clear"}">${verdict}</b> · the mesh's lowest point, at its lowest: ${g.deepest.toFixed(3)} (negative is under the floor) · below it in ${g.below} of ${g.frames} frames · at ${g.until} s still rolling at ${g.speed.toFixed(2)} m/s` }),
+    el("div", { class: "shots" }, g.shots.map(([a, s]) => fig(s, a))),
+  ]));
+}
+
+const picks = {};
+const lineup = document.getElementById("lineup");
+function drawLineup() {
+  lineup.replaceChildren(...DATA.vanilla.map(([n, s]) => fig(s, n)));
+  for (const c of DATA.colors) {
+    const k = picks[c.id];
+    if (k === "drop") continue;
+    const cand = c.candidates.find(x => String(x.k) === k);
+    const f = fig(cand.src, nameOf(c.id) + " " + k);
+    f.classList.add("ours");
+    lineup.append(f);
+  }
+  lineup.style.gridTemplateColumns = `repeat(${lineup.children.length}, minmax(72px, 1fr))`;
+}
+for (const c of DATA.colors) {
+  picks[c.id] = "2";
+  const cands = el("div", { class: "cands" }, c.candidates.map(x =>
+    el("figure", {}, [el("img", { src: x.src, alt: nameOf(c.id) + " candidate " + x.k, loading: "lazy" }),
+      el("figcaption", { html: `<span class="swatch" style="background:#${x.hex}"></span>${x.k} · #${x.hex}${x.k === 2 ? " · in the mod now" : ""}` })])));
+  const block = el("div", { class: "block" }, [
+    el("div", { class: "row-head" }, [el("h3", { text: nameOf(c.id) }), el("span", { class: "id", text: c.id })]),
+    cands,
+    choice(c.id, "Shade", [["1", "1 darker"], ["2", "2 as now"], ["3", "3 lighter"], ["drop", "Drop this colour"]]),
+  ]);
+  document.getElementById("color-blocks").append(block);
+}
+for (const c of DATA.colors) document.getElementById(c.id + "-2").checked = true;
+// Only picks already made are preset: the gib collider (D27). Items start unpicked.
+document.getElementById("gib-accept").checked = true;
+
+const table = document.getElementById("measure-table");
+for (const line of DATA.timing.concat(DATA.scene)) {
+  const i = line.indexOf(":");
+  table.append(el("tr", {}, [el("td", { text: i > 0 ? line.slice(0, i) : line }), el("td", { text: i > 0 ? line.slice(i + 1).trim() : "" })]));
+}
+
+const out = document.getElementById("picks-out");
+function value(name) { const r = document.querySelector(`input[name="${name}"]:checked`); return r ? r.value : "(no pick)"; }
+function render() {
+  const lines = [];
+  // An item with several candidates has one pick: their radios share a name.
+  const built = new Set();
+  for (const p of DATA.pairs) {
+    if (p.candidateFor) {
+      if (!built.has(p.candidateFor)) lines.push(`${buildPick(p.candidateFor)}: ${value(buildPick(p.candidateFor))}`);
+      built.add(p.candidateFor);
+      continue;
+    }
+    lines.push(`${p.ours}: ${value(p.ours)}`);
+    lines.push(`${p.ours}_notes: ${document.getElementById(p.ours + "-notes").value.trim()}`);
+  }
+  lines.push(`gib_collider: ${value("gib_collider")}`);
+  for (const c of DATA.colors) {
+    picks[c.id] = value(c.id);
+    const cand = c.candidates.find(x => String(x.k) === picks[c.id]);
+    lines.push(`${c.id}: ${picks[c.id]}${cand ? " #" + cand.hex : ""}`);
+  }
+  lines.push(`notes: ${document.getElementById("notes").value.trim()}`);
+  out.value = lines.join("\n");
+  drawLineup();
+}
+document.addEventListener("change", render);
+document.addEventListener("input", e => { if (e.target.id !== "picks-out") render(); });
+document.getElementById("copy").addEventListener("click", () => {
+  const status = document.getElementById("copy-status");
+  navigator.clipboard.writeText(out.value).then(() => { status.textContent = "Copied"; })
+    .catch(() => { out.focus(); out.select(); status.textContent = "Selected: press Ctrl+C"; });
+});
+render();
+</script>

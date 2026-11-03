@@ -1,0 +1,133 @@
+diff --git a/modules/minigame/components/overlay/scripts/minigame_overlay.gd b/modules/minigame/components/overlay/scripts/minigame_overlay.gd
+--- a/modules/minigame/components/overlay/scripts/minigame_overlay.gd
++++ b/modules/minigame/components/overlay/scripts/minigame_overlay.gd
+@@ -32,7 +32,69 @@ func set_round_label(_round: int, _total: int):
+ 
+ 	round_label.text = tr("LOC_IM_ROUND") % [_round, _total]
+ 
++# [MP8] ===== Countdown customisation (empty by default) =====
++# Every minigame shares this overlay: empty fields change nothing; a minigame fills them
++# (duck_hunt.gd's _mp8_setup_countdown). Each machine renders the countdown from the bare tokens
++# "3"/"2"/"1"/"GO!", so ducks and the hunter can see different text with no extra RPC.
++var mp8_go_text: String = ""        # non-empty: replaces the "GO!" text (red, one size larger)
++var mp8_one_text: String = ""       # non-empty: replaces the countdown's "1" entirely (red)
++var mp8_shake_on_go: bool = false
++
++const MP8_RED: Color = Color(1.0, 0.18, 0.18)
++const MP8_GO_FONT_SCALE: float = 1.18   # one size larger
++const MP8_SHAKE_AMPLITUDE: float = 34.0 # pixels
++const MP8_SHAKE_STEPS: int = 16
++
++var _mp8_label_base_color: Color = Color.WHITE
++var _mp8_label_base_size: int = 128
++var _mp8_label_base_saved: bool = false
++var _mp8_label_base_position: Vector2 = Vector2.ZERO
++var _mp8_shake_tween: Tween = null
++
++
+ func set_countdown(text: String, _with_fade: bool = true, _fade_time: float = 0.5):
++
++	# [MP8] A mixed room shows the game's countdown, whatever a minigame filled in (D120).
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_set_countdown(text, _with_fade, _fade_time)
++		return
++	var is_valid_string = false
++	var mp8_token: String = text  # [MP8] the raw token: the match below translates "GO!" in place
++	match text:
++		"3":
++			is_valid_string = true
++			pass
++		"2":
++			is_valid_string = true
++			pass
++		"1":
++			is_valid_string = true
++			pass
++		"GO!":
++			text = tr("LOC_IM_GO")
++			is_valid_string = true
++			pass
++	if is_valid_string:
++		if mp8_token == "GO!" and mp8_go_text != "":
++			countdown_label.text = mp8_go_text
++		elif mp8_token == "1" and mp8_one_text != "":
++			countdown_label.text = mp8_one_text
++		else:
++			countdown_label.text = tr(text)
++	else:
++		print("Invalid string found for countdown label. Skipping text assignment.")
++		countdown_label.text = ""
++
++	_mp8_apply_countdown_style(mp8_token)
++
++	anim_countdown_show.play("RESET")
++	anim_countdown_show.play("show")
++
++	if mp8_token == "GO!" and mp8_shake_on_go:
++		_mp8_shake_countdown()
++
++# The game's set_countdown, for a mixed room (D120).
++func _mp8_game_set_countdown(text: String, _with_fade: bool = true, _fade_time: float = 0.5):
+ 	var is_valid_string = false
+ 	match text:
+ 		"3":
+@@ -57,6 +119,59 @@ func set_countdown(text: String, _with_fade: bool = true, _fade_time: float = 0.
+ 	anim_countdown_show.play("RESET")
+ 	anim_countdown_show.play("show")
+ 
++
++# [MP8] Countdown colour and size: a replaced "1" or "GO!" is red, and only the "GO!" slogan is
++# enlarged; anything else gets the stock colour and size back.
++func _mp8_apply_countdown_style(token: String) -> void :
++
++	# Master switch: a minigame that set no MP8 field returns here without a single theme
++	# override, so it behaves exactly like stock.
++	if not (mp8_shake_on_go or mp8_go_text != "" or mp8_one_text != ""):
++		return
++
++	if countdown_label == null:
++		return
++
++	if not _mp8_label_base_saved:
++		_mp8_label_base_color = countdown_label.get_theme_color("font_color")
++		_mp8_label_base_position = countdown_label.position
++		var s: int = countdown_label.get_theme_font_size("font_size")
++		if s > 0:
++			_mp8_label_base_size = s
++		_mp8_label_base_saved = true
++
++	var red: bool = (token == "GO!" and mp8_go_text != "") or (token == "1" and mp8_one_text != "")
++	countdown_label.add_theme_color_override(
++		"font_color", MP8_RED if red else _mp8_label_base_color
++	)
++
++	# Only the GO slogan grows; a replaced "1" keeps the stock size, or it would not fit on one line.
++	var size: int = _mp8_label_base_size
++	if token == "GO!" and mp8_go_text != "":
++		size = int(_mp8_label_base_size * MP8_GO_FONT_SCALE)
++	countdown_label.add_theme_font_size_override("font_size", size)
++
++
++# [MP8] Shakes the label's position on GO; the tween must end at the base position or the next
++# countdown starts off-centre.
++func _mp8_shake_countdown() -> void :
++
++	if countdown_label == null:
++		return
++	if _mp8_shake_tween != null and _mp8_shake_tween.is_valid():
++		_mp8_shake_tween.kill()
++
++	var base: Vector2 = _mp8_label_base_position
++	_mp8_shake_tween = create_tween()
++	for i in MP8_SHAKE_STEPS:
++		var amount: float = MP8_SHAKE_AMPLITUDE * (1.0 - float(i) / float(MP8_SHAKE_STEPS))
++		_mp8_shake_tween.tween_property(
++			countdown_label, "position",
++			base + Vector2(randf_range(-amount, amount), randf_range(-amount, amount)),
++			0.03
++		)
++	_mp8_shake_tween.tween_property(countdown_label, "position", base, 0.05)
++
+ func set_screens_visibility(_visibility: bool):
+ 
+ 	for s in screens:
