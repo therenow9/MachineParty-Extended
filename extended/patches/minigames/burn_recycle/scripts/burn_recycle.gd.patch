@@ -1,7 +1,7 @@
 diff --git a/minigames/burn_recycle/scripts/burn_recycle.gd b/minigames/burn_recycle/scripts/burn_recycle.gd
 --- a/minigames/burn_recycle/scripts/burn_recycle.gd
 +++ b/minigames/burn_recycle/scripts/burn_recycle.gd
-@@ -62,9 +62,109 @@ var spark_ratio: float = 0.01
+@@ -62,9 +62,139 @@ var spark_ratio: float = 0.01
  signal player_item_queues_cleared
  signal elimination_finished
  
@@ -108,28 +108,6 @@ diff --git a/minigames/burn_recycle/scripts/burn_recycle.gd b/minigames/burn_rec
 +	if not _mp8_show_frames:
 +		_mp8_set_frames_visible(false)
 +
- 	multiplayer_synchronizer.set_multiplayer_authority(1)
- 
- 	if multiplayer.is_server():
-@@ -77,6 +177,11 @@ func _ready() -> void :
- 		player_item_queues_cleared.connect(_on_player_item_queues_cleared)
- 		elimination_finished.connect(_on_elimination_finished)
- 
-+	# [MP8] The layout editor (`mp8burnedit`). Station parts are looked up on each key press, so it is
-+	# safe before the players spawn.
-+	if _mp8_edit_on:
-+		_mp8_edit_begin()
-+
- 	if GameManager.local_game:
- 		await get_tree().create_timer(1.0).timeout
- 		local_root_node.visible = true
-@@ -87,6 +192,45 @@ func _ready() -> void :
- 		var particle_mesh: Mesh = spark_particles.get_draw_pass_mesh(0)
- 		particle_mesh.size = local_spark_particles_size
- 
-+# The game's _ready after its super call, for a mixed room (D120).
-+func _mp8_game_ready_tail():
-+
 +	multiplayer_synchronizer.set_multiplayer_authority(1)
 +
 +	if multiplayer.is_server():
@@ -142,6 +120,11 @@ diff --git a/minigames/burn_recycle/scripts/burn_recycle.gd b/minigames/burn_rec
 +		player_item_queues_cleared.connect(_on_player_item_queues_cleared)
 +		elimination_finished.connect(_on_elimination_finished)
 +
++	# [MP8] The layout editor (`mp8burnedit`). Station parts are looked up on each key press, so it is
++	# safe before the players spawn.
++	if _mp8_edit_on:
++		_mp8_edit_begin()
++
 +	if GameManager.local_game:
 +		await get_tree().create_timer(1.0).timeout
 +		local_root_node.visible = true
@@ -152,6 +135,16 @@ diff --git a/minigames/burn_recycle/scripts/burn_recycle.gd b/minigames/burn_rec
 +		var particle_mesh: Mesh = spark_particles.get_draw_pass_mesh(0)
 +		particle_mesh.size = local_spark_particles_size
 +
++# The game's _ready after its super call, for a mixed room (D120).
++func _mp8_game_ready_tail():
++
+ 	multiplayer_synchronizer.set_multiplayer_authority(1)
+ 
+ 	if multiplayer.is_server():
+@@ -87,6 +217,20 @@ func _ready() -> void :
+ 		var particle_mesh: Mesh = spark_particles.get_draw_pass_mesh(0)
+ 		particle_mesh.size = local_spark_particles_size
+ 
 +func _process(_delta: float) -> void :
 +
 +	_mp8_follow_idle_tile_views()
@@ -422,7 +415,7 @@ diff --git a/minigames/burn_recycle/scripts/burn_recycle.gd b/minigames/burn_rec
  
  
  func _on_item_launched(_rotation: Vector3, _type: BurnRecycleMinigame.ItemTypes):
-@@ -446,5 +787,1383 @@ func _on_countdown_expired():
+@@ -446,5 +787,1402 @@ func _on_countdown_expired():
  		player.set_active_rpc.rpc(true)
  
  	start_round_timer()
@@ -1033,17 +1026,36 @@ diff --git a/minigames/burn_recycle/scripts/burn_recycle.gd b/minigames/burn_rec
 +	# With `mp8burndebug` the network id is listed too, to match the log.
 +	var with_id: bool = NetworkManager.mp8_dev_args().has("mp8burndebug")
 +
-+	# A no-break space keeps each name with its count when the line wraps.
-+	var nbsp: String = String.chr(0xA0)
 +	var parts := PackedStringArray()
++	var out: String = NetworkManager.mp8_text("OUT", "已淘汰", "已淘汰")
 +	for r in rows:
 +		var n: int = int(r[0])
 +		var tail: String = " (%d)" % int(r[2]) if with_id else ""
-+		parts.append("%s%s%s%s" % [String(r[1]), tail, nbsp, "OUT" if n < 0 else str(n)])
++		parts.append("%s%s %s" % [String(r[1]), tail, out if n < 0 else str(n)])
 +
 +	_mp8_score_build()
 +	if _mp8_score_panel != null:
-+		_mp8_score_panel.text = "SCORE   " + "  ·  ".join(parts)
++		_mp8_score_panel.text = _mp8_score_lines(NetworkManager.mp8_text("SCORE   ", "得分   ", "得分   "), parts)
++
++
++# [MP8] The board's lines, broken only between players. Godot's own wrap breaks at a no-break space and
++# between any two Chinese characters, which split a name from its 已淘汰. Out of the tree: one line.
++func _mp8_score_lines(head: String, parts: PackedStringArray) -> String:
++	var sep: String = "  ·  "
++	var width: float = _mp8_score_panel.get_viewport_rect().size.x - 20.0 if _mp8_score_panel.is_inside_tree() else 0.0
++	var font: Font = _mp8_score_panel.get_theme_font("font")
++	var size: int = _mp8_score_panel.get_theme_font_size("font_size")
++	var lines := PackedStringArray()
++	var line: String = head
++	for i in parts.size():
++		var longer: String = line + (sep if i > 0 and not line.is_empty() else "") + parts[i]
++		if width > 0.0 and i > 0 and not line.is_empty() and font.get_string_size(longer, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x > width:
++			lines.append(line)
++			line = parts[i]
++		else:
++			line = longer
++	lines.append(line)
++	return "\n".join(lines)
 +
 +
 +# [MP8] Server side: sends this round's counts, -1 for an eliminated player. Walks `players`, not
@@ -1075,7 +1087,7 @@ diff --git a/minigames/burn_recycle/scripts/burn_recycle.gd b/minigames/burn_rec
 +	if _mp8_score_panel != null:
 +		return
 +
-+	# One line across the top of the screen, in Duck Hunt's tile-label style; it wraps when names are long.
++	# One line across the top of the screen, in Duck Hunt's tile-label style; more when names are long.
 +	var lbl := Label.new()
 +	lbl.name = "MP8BurnScoreBoard"
 +	lbl.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
@@ -1083,7 +1095,7 @@ diff --git a/minigames/burn_recycle/scripts/burn_recycle.gd b/minigames/burn_rec
 +	lbl.offset_right = -10.0
 +	lbl.offset_top = 190.0 if NetworkManager.mp8_dev_args().has("mp8burndebug") else 6.0
 +	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-+	lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
++	lbl.autowrap_mode = TextServer.AUTOWRAP_OFF
 +	lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
 +	var font = load("res://fonts/Terminal F4.ttf")
 +	if font != null:

@@ -5,6 +5,8 @@ extends Node
 const MOD_ID := "mp8_support"
 const PACK := "mp8_support_overlay.zip"
 const MANIFEST := "vanilla_md5.json"
+# The online tag's prefix (network_manager's MP8_VERSION_TAG); the build writes it into the manifest too.
+const TAG_PREFIX := "mp-extended-"
 const SENTINELS := [
 	"res://modules/multiplayer/network_manager.gd",
 	"res://scripts/scenes/game/game.gd",
@@ -46,7 +48,7 @@ func _valid_manifest(parsed) -> bool:
 		return false
 	if typeof(parsed.get("files")) != TYPE_DICTIONARY or parsed["files"].is_empty():
 		return false
-	if typeof(parsed.get("game_version")) != TYPE_STRING or not parsed["game_version"].begins_with("mp8-"):
+	if typeof(parsed.get("game_version")) != TYPE_STRING or not parsed["game_version"].begins_with(TAG_PREFIX):
 		return false
 	if typeof(parsed.get("overlay_sha256")) != TYPE_STRING:
 		return false
@@ -241,7 +243,7 @@ static func _installed_folder(mods_dir: String, id: String, skip: String = "") -
 	return ""
 
 func _normalized_version(value: String) -> String:
-	value = value.trim_prefix("mp8-")
+	value = value.trim_prefix(TAG_PREFIX)
 	var pieces := value.split("-", true, 1)
 	var numbers := pieces[0].split(".")
 	if numbers.size() == 3 and numbers[2] == "0":
@@ -262,7 +264,7 @@ func _mod_ready(loader) -> void:
 	get_tree().root.add_child.call_deferred(relay)
 	var nm = get_tree().root.get_node_or_null("NetworkManager")
 	var actual: String = str(nm.get("MP8_VERSION_TAG")) if nm != null else "?"
-	if not actual.begins_with("mp8-") or declared == "?" or _normalized_version(actual) != _normalized_version(declared):
+	if not actual.begins_with(TAG_PREFIX) or declared == "?" or _normalized_version(actual) != _normalized_version(declared):
 		_fail(loader, "VERSION_MISMATCH", declared + " / " + actual)
 	else:
 		loader.note("mp8_support: [READY] " + _text("READY") + " " + actual)

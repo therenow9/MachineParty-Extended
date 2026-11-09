@@ -182,14 +182,29 @@ func _check_duplicates() -> void:
 		return
 	note("%s; %s" % [problem, _duplicate_hint()])
 	if config["warn_duplicates"]:
-		show_toast("GameCube adapter: %s.\nTo fix: %s." % [problem, _duplicate_hint()], WARN_SECONDS)
+		var lang := _lang()
+		show_toast(duplicate_toast(lang, gc_input.current_problem(lang)), WARN_SECONDS)
+
+# what: duplicate_problem()'s text, in the same language.
+func duplicate_toast(lang: String, what: String) -> String:
+	return _pick(lang, "GameCube adapter: %s.\nTo fix: %s.", "GameCube 适配器：%s。\n解决方法：%s。",
+		"GameCube 轉接器：%s。\n解決方法：%s。") % [what, _duplicate_hint(lang)]
 
 # The .bat sits in this mod's folder: mods/gamecube_support, or inside Extended's bundle folder.
-func _duplicate_hint() -> String:
+func _duplicate_hint(lang := "EN") -> String:
 	var folder := _dir.get_file()
 	if has_meta("mpml_dir"):
 		folder = _dir.get_base_dir().get_file().path_join(folder)
-	return "run fix-gamecube-adapter.bat in the mods/%s folder, then fully restart Steam" % folder
+	return _pick(lang, "run fix-gamecube-adapter.bat in the mods/%s folder, then fully restart Steam",
+		"运行 mods/%s 文件夹中的 fix-gamecube-adapter.bat，然后完全重启 Steam",
+		"執行 mods/%s 資料夾中的 fix-gamecube-adapter.bat，然後完全重新啟動 Steam") % folder
+
+# The game's language for the toasts; English if gc_input, which holds the mapping, failed to load.
+func _lang() -> String:
+	return gc_input.lang_of(TranslationServer.get_locale()) if gc_input != null else "EN"
+
+func _pick(lang: String, en: String, zhs: String, zht: String) -> String:
+	return gc_input.pick(lang, en, zhs, zht) if gc_input != null else en
 
 func _make(file: String) -> Node:
 	var s: GDScript = _loader.compile(_dir.path_join(file))
@@ -403,12 +418,15 @@ func set_layout(layout: String, persist := true) -> bool:
 
 func cycle_style() -> void:
 	set_style(STYLES[(STYLES.find(config["style"]) + 1) % STYLES.size()])
-	show_toast("Button prompts: " + _style_label())
+	show_toast(style_toast(_lang()))
 
-func _style_label() -> String:
-	var showing := "GameCube" if is_showing_gamecube() else "vanilla"
+func style_toast(lang: String) -> String:
+	return _pick(lang, "Button prompts: ", "按键提示：", "按鍵提示：") + _style_label(lang)
+
+func _style_label(lang := "EN") -> String:
+	var showing := "GameCube" if is_showing_gamecube() else _pick(lang, "vanilla", "原版", "原版")
 	if config["style"] == "auto":
-		return "auto (now %s)" % showing
+		return _pick(lang, "auto (now %s)", "自动（当前 %s）", "自動（目前 %s）") % showing
 	return showing
 
 func get_status() -> Dictionary:
@@ -475,6 +493,10 @@ func show_toast(text: String, seconds := TOAST_SECONDS) -> void:
 		_toast = Label.new()
 		_toast.set_anchors_preset(Control.PRESET_TOP_WIDE)
 		_toast.offset_top = 24
+		# The adapter warning is longer than the screen is wide, in every language.
+		_toast.offset_left = 24
+		_toast.offset_right = -24
+		_toast.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		_toast.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		_toast.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		_toast.add_theme_font_size_override("font_size", 22)

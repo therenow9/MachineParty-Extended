@@ -40,8 +40,9 @@ foreach ($needed in @($Godot, $OriginalPack, (Join-Path $root 'src'), (Join-Path
     if (-not (Test-Path -LiteralPath $needed)) { throw "Missing build input: $needed" }
 }
 # A mixed room with vanilla peers calls RPCs by table index (D115), and a shipped build must read no dev
-# switch (D116): either difference refuses the build, test builds included.
-foreach ($check in @('check_rpc_tables.ps1','check_dev_switches.ps1')) {
+# switch (D116), and a text triple whose languages differ in shape empties its label (D173): any of them
+# refuses the build, test builds included.
+foreach ($check in @('check_rpc_tables.ps1','check_dev_switches.ps1','check_text_triples.ps1')) {
     $report = & pwsh -NoProfile -File (Join-Path $PSScriptRoot $check) -Vanilla (Join-Path $root 'src') -Patched (Join-Path $root 'patch') 2>&1
     if ($LASTEXITCODE -ne 0) { $report | ForEach-Object { Write-Host $_ }; throw "$check found differences (exit $LASTEXITCODE); no build" }
 }
@@ -83,7 +84,7 @@ foreach ($source in $sources) {
 }
 foreach ($inputPath in @($OriginalPack, (Join-Path $root 'mpml\mp8_support\main.gd'), (Join-Path $root 'mpml\mp8_support\mp8_net.gd'), (Join-Path $root 'mpml\mp8_support\mod.json'), (Join-Path $root 'mpml\mp8_support\title_extended.png'), (Join-Path $root 'tools\probe\build_mpml_mod.gd'))) { $inputs[$inputPath] = Hash-File $inputPath }
 $network = Get-Content -LiteralPath (Join-Path $root 'patch\modules\multiplayer\network_manager.gd') -Raw -Encoding UTF8
-$match = [regex]::Match($network, 'const MP8_VERSION_TAG:\s*String\s*=\s*"mp8-([A-Za-z0-9.-]+)"')
+$match = [regex]::Match($network, 'const MP8_VERSION_TAG:\s*String\s*=\s*"mp-extended-([A-Za-z0-9.-]+)"')
 if (-not $match.Success) { throw 'Cannot read safe version tag' }
 $version = $match.Groups[1].Value
 $mod = Get-Content -LiteralPath (Join-Path $root 'mpml\mp8_support\mod.json') -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -159,10 +160,10 @@ try {
     }
     $manifest = Get-Content -LiteralPath (Join-Path $stagedPackage 'vanilla_md5.json') -Raw -Encoding UTF8 | ConvertFrom-Json
     $overlay = Join-Path $stagedPackage 'mp8_support_overlay.zip'
-    if ($manifest.schema -ne 1 -or $manifest.game_version -ne ('mp8-' + $version) -or $manifest.overlay_size -ne (Get-Item -LiteralPath $overlay).Length -or $manifest.overlay_sha256 -ne (Hash-File $overlay)) { throw 'Staged overlay integrity metadata does not match' }
+    if ($manifest.schema -ne 1 -or $manifest.game_version -ne ('mp-extended-' + $version) -or $manifest.overlay_size -ne (Get-Item -LiteralPath $overlay).Length -or $manifest.overlay_sha256 -ne (Hash-File $overlay)) { throw 'Staged overlay integrity metadata does not match' }
     if (@($manifest.files.PSObject.Properties).Count -ne $sources.Count) { throw 'Staged original-file manifest has wrong count' }
     $info = [ordered]@{
-        schema=1; mod_tag=('mp8-' + $version); built_utc=[DateTime]::UtcNow.ToString('o')
+        schema=1; mod_tag=('mp-extended-' + $version); built_utc=[DateTime]::UtcNow.ToString('o')
         original_pack_sha256=$inputs[$OriginalPack]; files=$records; test_build=[bool]$TestBuild
         verification_note='Source/bytecode hashes and freshness checks record these inputs; they do not prove how bytecode was compiled.'
     }

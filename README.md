@@ -31,6 +31,7 @@ AI assisted: written with Claude (Anthropic's AI model) under my direction and t
 - **A cleaner split-screen HUD.** No device list, and in Chisel Gauntlet, The Filter and Inside Job each screen's tag is just the player's name.
 - **Faster split screen with the same picture.** Views nobody could see are no longer drawn, and Chisel Gauntlet's and Inside Job's split-screen shadows cost about half the work.
 - **EXTENDED on the title screen,** in green down the right edge of the logo.
+- **Chinese, Simplified and Traditional:** with the game set to either, Extended's own text is in that language too: the lobby cards, The Filter's scoreboard, Duck Hunt's hunter lines and HUD, and the online refusal messages.
 - **Three of the game's own bugs fixed, in every room,** also one with players without Extended. Leaving Debris Platforms while a deck is blinking no longer freezes the game, leaving any minigame as its 3-2-1 countdown ticks no longer crashes it, and a Spine Breaker spider thrown into a pillar no longer stalls the round.
 
 ## The minigames
@@ -175,7 +176,7 @@ To check it loaded, look for `mp8_support: [READY]` in the game log. To uninstal
 
 ## Online play
 
-Machine Party: Extended players need the same version as each other. The main menu shows it after the game version (`v2.1.2+mp8-1.0`); a player on another version is refused, and the game says which versions differ. Players on Overtime can't join.
+Machine Party: Extended players need the same version as each other. The main menu shows it after the game version in the bottom corner (`v2.1.2+mp-extended-1.1`); a player on another version, 1.0 included, is refused, and the game says which versions differ. Players on Overtime can't join.
 
 Players without the mod can join a Machine Party: Extended room, and Extended players a room without it, while it has 4 players or fewer. Rooms of 5 to 8 need Extended for everyone. While anyone in the room lacks Extended, every minigame plays as the game's own (apart from Extended's fixes for three of the game's own bugs), the lobby has the game's 4 seats, and a 5th player is refused. A player joining or leaving counts from the next minigame.
 

@@ -6,7 +6,7 @@ extends Node
 # steps; with Overtime
 # installed too, that mp8_support refused and Overtime runs as itself.
 
-const TAG := "mp8-1.0"
+const TAG := "mp-extended-1.1"
 const HUNTER := "res://minigames/duck_hunt/components/hunter_player/hunter_player.tscn"
 const INTERMISSION := "res://minigames/intermission_new/intermission_new.tscn"
 const WHEAT_FIELD := "res://minigames/cutscene_test/cutscene_test.tscn"
@@ -85,6 +85,8 @@ func _title_word() -> void:
 	ok("main menu up", menu != null, get_tree().current_scene.name)
 	if menu == null:
 		return
+	var corner = menu.get("version_label")
+	ok("the corner shows the game version and the tag (D173)", corner is Label and corner.text == Globals.game_version + "+" + TAG, corner.text if corner is Label else corner)
 	var logo: Control = menu.find_child("logo", true, false)
 	var words := func() -> Array: return logo.get_parent().find_children("mp8_extended", "", false, false)
 	ok("one word", words.call().size() == 1, words.call().size())
@@ -153,12 +155,15 @@ func _clear_scratch() -> void:
 
 func _mounted(log_text: String, nm: Node) -> void:
 	say("step: mp8_support alone")
+	# The rows below read English words; the owner's save may name another language.
+	var locale_before := TranslationServer.get_locale()
+	TranslationServer.set_locale("EN")
 	ok("overlay mounted, once", log_text.count("mp8_support: [MOUNTED]") == 1, log_text.count("mp8_support: [MOUNTED]"))
 	ok("ready", log_text.contains("mp8_support: [READY]"))
 	ok("no load-order error", not log_text.contains("LOAD_ORDER"))
 	ok("no mp8_support failure note", not log_text.contains("mp8_support: [MP8:"))
 	ok("tag", nm.get("MP8_VERSION_TAG") == TAG, nm.get("MP8_VERSION_TAG"))
-	ok("game_version is vanilla's: no tag on the wire", not str(Globals.game_version).contains("+mp8-"), Globals.game_version)
+	ok("game_version is vanilla's: no tag on the wire", not str(Globals.game_version).contains("+"), Globals.game_version)
 	ok("the shown version ends in the tag", str(nm.call("mp8_full_version")).ends_with("+" + TAG), nm.call("mp8_full_version"))
 	ok("8 players", nm.get("MAX_PLAYERS") == 8, nm.get("MAX_PLAYERS"))
 	_relay(nm)
@@ -166,6 +171,8 @@ func _mounted(log_text: String, nm: Node) -> void:
 	await _shared_rows(nm)
 	_dev_switches(nm)
 	var forms := [
+		["v2.1.2+mp-extended-1.1", "mp-extended-1.1", "v2.1.2"],
+		["v2.1.2+mp8-1.0", "mp8-1.0", "v2.1.2"],
 		["v2.1.2+mp8-0.1", "mp8-0.1", "v2.1.2"],
 		["v2.1.2+mp8-0.2", "mp8-0.2", "v2.1.2"],
 		["v2.1.2+overtime-1.7", "overtime-1.7", "v2.1.2"],
@@ -189,6 +196,8 @@ func _mounted(log_text: String, nm: Node) -> void:
 		["host on 8 Player Support 0.7", "v2.1.2+mp8-0.7", [TAG, "mp8-0.7"]],
 		["host on 8 Player Support 0.8", "v2.1.2+mp8-0.8", [TAG, "mp8-0.8"]],
 		["host on 8 Player Support 0.9", "v2.1.2+mp8-0.9", [TAG, "mp8-0.9"]],
+		["host on Extended 1.0", "v2.1.2+mp8-1.0", [TAG, "mp8-1.0"]],
+		["host on a later Extended", "v2.1.2+mp-extended-1.2", [TAG, "mp-extended-1.2"]],
 	]
 	for d in dialogs:
 		nm.set("_mp8_host_version", d[1])
@@ -200,6 +209,8 @@ func _mounted(log_text: String, nm: Node) -> void:
 	_hunter_hud(true)
 	_hunter_hud(false)
 	_text_checks()
+	_chinese(nm)
+	TranslationServer.set_locale(locale_before)
 	await _intro_rack(4)
 	await _intro_rack(8)
 	await _intro_rack(4, true)
@@ -349,6 +360,7 @@ func _join_rules(nm: Node) -> void:
 		["an Extended 5th is refused while a vanilla player is in", 4, ext, false, full],
 		["an Extended 4th joins a mixed room", 3, ext, false, -1],
 		["another Extended version is refused", 2, {"game_version": Globals.game_version, "mp8": "mp8-0.21"}, true, mismatch],
+		["Extended 1.0 is refused", 2, {"game_version": Globals.game_version, "mp8": "mp8-1.0"}, true, mismatch],
 		["a key that is no String counts as vanilla at 5", 4, {"game_version": Globals.game_version, "mp8": 22}, true, full],
 		["a key that is no String counts as vanilla at 4", 3, {"game_version": Globals.game_version, "mp8": 22}, true, -1],
 	]
@@ -1971,6 +1983,69 @@ func _hunter_hud(local: bool) -> void:
 	presence.free()
 	GameManager.local_game = was_local
 
+# 1.1.0's Chinese (D173): the language read as the game sets it, and a sample of each script's strings in
+# ZHS and ZHT. extended/tools/check_text_triples.ps1 checks every triple's shape at build time.
+func _chinese(nm: Node) -> void:
+	say("step: Chinese text")
+	var langs := {"EN": "EN", "ZHS": "ZHS", "ZHT": "ZHT", "zh_CN": "ZHS", "zh-Hans": "ZHS", "zh_TW": "ZHT", "zh_HK": "ZHT", "DE": "EN", "JA": "EN"}
+	var wrong := langs.keys().filter(func(k): return nm.call("mp8_locale", k) != langs[k])
+	ok("the game's language read as EN, ZHS or ZHT", wrong.is_empty(), wrong)
+	var host_before = nm.get("_mp8_host_version")
+	for lang in ["ZHS", "ZHT"]:
+		TranslationServer.set_locale(lang)
+		ok("mp8_locale() follows the game (%s)" % lang, nm.call("mp8_locale") == lang, nm.call("mp8_locale"))
+		var duck: Node = load("res://minigames/duck_hunt/scripts/duck_hunt.gd").new()
+		duck.set("mp8_hunter_names", ["theo", "marc"])
+		var two := str(duck.call("mp8_hunters_line"))
+		ok("reveal line, two hunters, %s" % lang, two.begins_with("THEO") and two.contains("MARC") and _has_cjk(two), two)
+		duck.free()
+		var burn: Node = load("res://minigames/burn_recycle/scripts/burn_recycle.gd").new()
+		burn.call("_mp8_score_board_rpc", PackedInt32Array([901, 902]), PackedInt32Array([-1, 12]))
+		var panel = burn.get("_mp8_score_panel")
+		var board: String = panel.text if panel is Label else ""
+		ok("board text, %s" % lang, board.begins_with("得分") and board.contains("12") and board.contains("已淘汰"), board)
+		burn.free()
+		nm.set("_mp8_host_version", "v2.1.2+mp8-1.0")
+		var refusal := str(nm.call("mp8_mismatch_text"))
+		ok("refusal text, a 1.0 host, %s: both builds, 2 lines" % lang, refusal.contains(TAG) and refusal.contains("mp8-1.0") and refusal.split("\n").size() == 2 and _has_cjk(refusal), refusal.c_escape())
+		var host := str(nm.call("_mp8_blocked_text_for_host", "v2.1.2+mp8-1.0"))
+		ok("host's line, %s" % lang, host.contains(TAG) and host.contains("mp8-1.0") and _has_cjk(host), host)
+		var full := str(nm.call("mp8_room_full_text"))
+		ok("room-full text, %s, 2 lines" % lang, full.split("\n").size() == 2 and _has_cjk(full), full.c_escape())
+	nm.set("_mp8_host_version", host_before)
+	_board_lines()
+	TranslationServer.set_locale("EN")
+	ok("room-full text in English is the const", nm.call("mp8_room_full_text") == nm.get("MP8_ROOM_FULL_TEXT"))
+
+# The Filter's board in the tree, 8 long names in ZHS: lines break only at a separator, so each name stays
+# with its count or 已淘汰 (Godot's own wrap split them).
+func _board_lines() -> void:
+	var burn: Node = load("res://minigames/burn_recycle/scripts/burn_recycle.gd").new()
+	var panel := Label.new()
+	add_child(panel)
+	panel.add_theme_font_override("font", load("res://fonts/Terminal F4.ttf"))
+	panel.add_theme_font_size_override("font_size", 16)
+	burn.set("_mp8_score_panel", panel)
+	var sep := "  ·  "
+	var parts := PackedStringArray()
+	for i in 8:
+		parts.append("PLAYERNAME%d %s" % [i, "已淘汰" if i > 3 else str(40 - i)])
+	var text: String = burn.call("_mp8_score_lines", "得分   ", parts)
+	var lines := text.split("\n")
+	var width: float = panel.get_viewport_rect().size.x - 20.0
+	var whole := Array(parts).all(func(p): return Array(lines).any(func(l): return l.contains(p)))
+	ok("board lines join back to one line at the separators", sep.join(lines) == "得分   " + sep.join(parts), text.c_escape())
+	ok("board lines keep every name with its status", whole and lines.size() > 1, [lines.size(), width])
+	burn.set("_mp8_score_panel", null)
+	panel.free()
+	burn.free()
+
+func _has_cjk(text: String) -> bool:
+	for c in text:
+		if c.unicode_at(0) >= 0x3000:
+			return true
+	return false
+
 # The 0.7.0 strings (D88), on bare script instances: Duck Hunt's online reveal line, The Filter's board.
 func _text_checks() -> void:
 	var duck: Node = load("res://minigames/duck_hunt/scripts/duck_hunt.gd").new()
@@ -1984,8 +2059,7 @@ func _text_checks() -> void:
 	var burn: Node = load("res://minigames/burn_recycle/scripts/burn_recycle.gd").new()
 	burn.call("_mp8_score_board_rpc", PackedInt32Array([901, 902, 903]), PackedInt32Array([-1, 12, 30]))
 	var panel = burn.get("_mp8_score_panel")
-	var nb := String.chr(0xA0)
-	var want := "SCORE   903" + nb + "30  ·  902" + nb + "12  ·  901" + nb + "OUT"
+	var want := "SCORE   903 30  ·  902 12  ·  901 OUT"
 	ok("board text: best first, OUT last", panel is Label and panel.text == want, (panel.text if panel is Label else "no label").c_escape())
 	burn.call("_mp8_score_board_rpc", PackedInt32Array(), PackedInt32Array())
 	ok("board clears", panel is Label and panel.text == "", "")

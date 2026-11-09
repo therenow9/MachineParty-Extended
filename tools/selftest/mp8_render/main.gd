@@ -11,12 +11,13 @@ extends Node
 #   MP8_RENDER=intro:outro              the build's own intro, then the session end's camera move over the rack
 #   MP8_RENDER=intro:dump               the same, and the rack panel and every mesh over its slot block to panel.json
 #   MP8_RENDER=intro:explore            the same, and at the 5th insert the camera pulled back and panned, the racks logged
-#   MP8_RENDER=snap[:<every s>[:<count>]]  a shot every 1.5 s (40 shots) from the first minigame's load;
-#                                      MP8_LOCALE=EN|ZHS|ZHT sets the game's language then, MP8_TAG=<x> names the folder
+#   MP8_RENDER=snap[:<every s>[:<count>]]  a shot every 1.5 s (40 shots) from the first minigame's load, or from the
+#                                      local lobby's with MP8_SNAP_FROM=lobby; MP8_TAG=<x> names the folder
+#   MP8_LOCALE=EN|ZHS|ZHT              any mode: the game's language from the start (and again at snap's first shot)
 #   MP8_RENDER=text                    Duck Hunt (8 players): the online role reveal for one, two and two long names,
-#                                      and the shouts, in the game's EN then ZHS
+#                                      and the shouts, in the game's EN, ZHS and ZHT
 #   MP8_RENDER=refusal[:<wait s>]      alone (run_selftest.sh mp8_render --windowed --overtime=mp8): each refusal dialog on the main
-#                                      menu, EN then ZHS, then quits
+#                                      menu, then GameCube Controller Support's two toasts, in EN, ZHS and ZHT, then quits
 #   MP8_RENDER=title[:<wait s>]        alone, like refusal: the main menu without the splash, then each candidate of
 #                                      tools/make_title.py (MP8_TITLE_ART=<folder>, default %TEMP%/.../title_art) placed
 #                                      just after the logo, one shot each, then quits
@@ -33,6 +34,7 @@ const DIALOG_SCRIPT := "dialog_message_handler.gd"
 const INTRO_SCRIPT := "intermission_cutscene_intro.gd"
 const MAIN_MENU_SCRIPT := "scenes/main_menu/scripts/main_menu.gd"
 const LOCAL_GAME := "res://scenes/local_game/local_game.tscn"
+const LOCAL_LOBBY := "res://scenes/local_lobby/local_lobby.tscn"
 const LB := "hires/controller_left_shoulder_button_wide_2x.png"
 const RB := "hires/controller_right_shoulder_button_wide_2x.png"
 const LAYOUTS := ["squeeze", "half", "neighbour"]
@@ -71,6 +73,7 @@ var _snap_t := -1.0
 var _snaps := 0
 var _junk: Node = null
 var _junk_round := 0
+var _own_locale := false   # refusal and text set the language themselves once they start
 
 func say(msg: String) -> void:
 	if _out == null:
@@ -95,16 +98,23 @@ func _mod_ready(loader) -> void:
 	DirAccess.make_dir_recursive_absolute(_dir)
 	get_tree().node_added.connect(_on_node_added)
 	say("mp8_render %s" % name)
+	if OS.get_environment("MP8_LOCALE") != "":
+		TranslationServer.set_locale(OS.get_environment("MP8_LOCALE"))
 	if _mode == "title":
 		Globals.splash_screen_viewed = true
 
 func _on_node_added(node: Node) -> void:
+	# The game applies its saved language after the mods start; keep ours over it.
+	var want := OS.get_environment("MP8_LOCALE")
+	if want != "" and TranslationServer.get_locale() != want and not _own_locale:
+		TranslationServer.set_locale(want)
 	if node.scene_file_path == LOCAL_GAME and _mode == "intro":
 		Globals.skipping_intro_cutscene = false
 		say("intro not skipped")
 	if _mode == "fade" and node is Minigame and "junk_handler" in node:
 		_junk = node
-	if _mode == "snap" and node is Minigame and _snap_t < 0.0:
+	var from_lobby := OS.get_environment("MP8_SNAP_FROM") == "lobby"
+	if _mode == "snap" and _snap_t < 0.0 and (node.scene_file_path == LOCAL_LOBBY if from_lobby else node is Minigame):
 		_snap_t = 0.0
 		say("snap from %s" % node.name)
 		if OS.get_environment("MP8_LOCALE") != "":
@@ -209,10 +219,11 @@ func _wait(s: float) -> void:
 	await get_tree().create_timer(s).timeout
 
 func _text() -> void:
+	_own_locale = true
 	var locale := TranslationServer.get_locale()
 	await _wait(3.0)
 	await shot("tiles")
-	for loc in ["EN", "ZHS"]:
+	for loc in ["EN", "ZHS", "ZHT"]:
 		TranslationServer.set_locale(loc)
 		await _reveals(loc)
 		await _shouts(loc)
@@ -261,6 +272,7 @@ func _shouts(loc: String) -> void:
 	await _wait(1.5)
 
 func _refusal() -> void:
+	_own_locale = true
 	var locale := TranslationServer.get_locale()
 	# The dialog's node is in the tree during the studio intro, before the menu shows.
 	await _wait(float(_rack) if _rack != "" else 20.0)
@@ -268,22 +280,42 @@ func _refusal() -> void:
 	var mine: String = nm.mp8_full_version()
 	# "roomfull" is the MP8RoomFull dialog (lobby_scene.gd), not a version case.
 	var cases := [["unreported", ""], ["same", mine], ["base", "v9.9.9+" + nm._mp8_tag_of(mine)],
-		["differ", nm._mp8_base_of(mine) + "+mp8-0.23"], ["roomfull", ""]]
-	for loc in ["EN", "ZHS"]:
+		["differ", nm._mp8_base_of(mine) + "+mp8-1.0"], ["roomfull", ""]]
+	for loc in ["EN", "ZHS", "ZHT"]:
 		TranslationServer.set_locale(loc)
 		for c in cases:
 			nm._mp8_host_version = c[1]
-			GameManager.main_menu_dialog_message = nm.MP8_ROOM_FULL_TEXT if c[0] == "roomfull" else nm.mp8_mismatch_text()
+			GameManager.main_menu_dialog_message = nm.mp8_room_full_text() if c[0] == "roomfull" else nm.mp8_mismatch_text()
 			_dialog.check_for_message()
 			await _wait(1.0)
 			await shot("refusal_%s_%s" % [c[0], loc])
-		say("host notice %s: %s" % [loc, nm._mp8_blocked_text_for_host(nm._mp8_base_of(mine) + "+mp8-0.21")])
+		say("host notice %s: %s" % [loc, nm._mp8_blocked_text_for_host(nm._mp8_base_of(mine) + "+mp8-1.0")])
 	nm._mp8_host_version = ""
 	_dialog.root.visible = false
+	await _gc_toasts()
 	TranslationServer.set_locale(locale)
 	_done = true
 	say("DONE")
 	get_tree().quit()
+
+# GameCube Controller Support's toasts, as the F9 hotkey and a doubled adapter (16 pads) show them.
+func _gc_toasts() -> void:
+	var gc = _loader.get_node_or_null("gamecube_support")
+	if gc == null or gc.gc_input == null:
+		say("no gamecube_support: its toasts not shot")
+		return
+	var pads := []
+	for i in 16:
+		pads.append({"name": "Nintendo GameCube Controller", "guid": "x"})
+	for loc in ["EN", "ZHS", "ZHT"]:
+		TranslationServer.set_locale(loc)
+		gc.show_toast(gc.style_toast(loc))
+		await _wait(0.3)
+		await shot("gc_style_%s" % loc)
+		gc.show_toast(gc.duplicate_toast(loc, gc.gc_input.duplicate_problem(pads, false, loc)), 5.0)
+		await _wait(0.3)
+		await shot("gc_adapter_%s" % loc)
+	gc.show_toast("", 0.0)
 
 func _title() -> void:
 	await _wait(float(_rack) if _rack != "" else 6.0)

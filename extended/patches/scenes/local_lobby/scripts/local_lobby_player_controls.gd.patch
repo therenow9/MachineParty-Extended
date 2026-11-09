@@ -86,7 +86,7 @@ diff --git a/scenes/local_lobby/scripts/local_lobby_player_controls.gd b/scenes/
  
  	name_entry_selector.set_inactive()
  	name_accept_button.visible = false
-@@ -514,3 +500,10 @@ func _on_name_confirmed(_name):
+@@ -514,3 +500,15 @@ func _on_name_confirmed(_name):
  
  	active = true
  	can_control = true
@@ -94,6 +94,11 @@ diff --git a/scenes/local_lobby/scripts/local_lobby_player_controls.gd b/scenes/
 +func _mp8_refresh_identity() -> void:
 +	if assigned_player_id < 0:
 +		return
-+	var device_text: String = "PAD %d" % (device + 1) if is_joystick else "KEYBOARD"
++	var device_text: String = NetworkManager.mp8_text("PAD %d", "手柄 %d", "手把 %d") % (device + 1) if is_joystick \
++		else NetworkManager.mp8_text("KEYBOARD", "键盘", "鍵盤")
++	# READY's Chinese is the game's own LOC_READY; the key itself isn't used, since in other languages it
++	# is the intermission's "Ready?" prompt.
++	var ready_text: String = NetworkManager.mp8_text("READY", "准备", "準備完成") if is_ready \
++		else NetworkManager.mp8_text("NOT READY", "未准备", "未準備")
 +	# Three lines: on two, "KEYBOARD  NOT READY" runs into the next card's text.
-+	name_label.text = "P%d  %s\n%s\n%s" % [assigned_player_id + 1, player_name, device_text, "READY" if is_ready else "NOT READY"]
++	name_label.text = "P%d  %s\n%s\n%s" % [assigned_player_id + 1, player_name, device_text, ready_text]

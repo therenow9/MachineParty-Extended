@@ -139,7 +139,7 @@ have="$(stat -c %s "$GAME/Machine Party.pck")"
 tag=""
 if [[ " ${roles[*]} " == *" ext "* ]]; then
   [ -n "$MP8" ] && [ -f "$MP8/mod.json" ] && [ -f "$MP8/mp8_support_overlay.zip" ] || die "ext peers: set MP_MP8_BUILD to a build (extended/dist/<build>/mp8_support)"
-  tag="$(grep -o '"mod_tag": *"[^"]*"' "$MP8/BUILDINFO.json" | grep -o 'mp8-[0-9.]*')"
+  tag="$(grep -o '"mod_tag": *"[^"]*"' "$MP8/BUILDINFO.json" | grep -o 'mp-extended-[0-9.]*')"
   [ -n "$tag" ] || die "no mod_tag in $MP8/BUILDINFO.json"
 fi
 

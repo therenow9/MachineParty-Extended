@@ -128,12 +128,12 @@ diff --git a/minigames/duck_hunt/scripts/duck_hunt.gd b/minigames/duck_hunt/scri
 +var mp8_total_players: int = 0
 +
 +
-+# [MP8] The online reveal: the game's own line for one hunter. Two hunters get an English plural line:
-+# the game's translations are compiled OptimizedTranslation resources and take no new keys.
++# [MP8] The online reveal: the game's own line for one hunter. Two hunters get our own triple: the game's
++# translations are compiled OptimizedTranslation resources and take no new keys.
 +func mp8_hunters_line() -> String:
 +	var names: Array = mp8_hunter_names.map(func(n): return String(n).to_upper())
 +	if names.size() >= 2:
-+		return "%s AND %s ARE THE HUNTERS." % [names[0], names[1]]
++		return NetworkManager.mp8_text("%s AND %s ARE THE HUNTERS.", "%s 和 %s 为猎人。", "%s 和 %s 擔任獵人。") % [names[0], names[1]]
 +	return tr("LOC_CONTROL_HUNTER_NAME") % (names[0] if names.size() == 1 else hunter_name.to_upper())
 +
 +
@@ -351,7 +351,7 @@ diff --git a/minigames/duck_hunt/scripts/duck_hunt.gd b/minigames/duck_hunt/scri
 +	var duck_seats := PackedStringArray()
 +	for id in local_duck_players.keys():
 +		duck_seats.append("P%d" % (_mp8_local_seat(PlayerManager.player_presences[id]) + 1))
-+	labels.append("Ducks · " + " / ".join(duck_seats))
++	labels.append(NetworkManager.mp8_text("Ducks · ", "鸭群 · ", "鴨群 · ") + " / ".join(duck_seats))
 +	var ordered: Array = hunter_players.duplicate()
 +	ordered.sort_custom(func(a, b): return _mp8_local_seat(a.player_presence) < _mp8_local_seat(b.player_presence))
 +	for i in ordered.size():
@@ -359,7 +359,7 @@ diff --git a/minigames/duck_hunt/scripts/duck_hunt.gd b/minigames/duck_hunt/scri
 +		hunter.mp8_setup_local_view(i)
 +		views.append(hunter.local_viewport)
 +		labels.append("P%d · %s · %s" % [_mp8_local_seat(hunter.player_presence) + 1,
-+			hunter.player_presence.network_name, "Hunter"])
++			hunter.player_presence.network_name, NetworkManager.mp8_text("Hunter", "猎人", "獵人")])
 +	local_handler.setup(local_multiplayer_camera_viewport, views, labels, ui_role_label.get_theme_font("font"))
 +
 +func _mp8_configure_duck_camera(camera: Camera3D) -> void:
@@ -443,7 +443,7 @@ diff --git a/minigames/duck_hunt/scripts/duck_hunt.gd b/minigames/duck_hunt/scri
  @rpc("authority", "call_local", "reliable")
  func duck_player_added_rpc(_network_id):
  
-@@ -368,8 +738,75 @@ func set_hunter_rpc(_network_id):
+@@ -368,8 +738,79 @@ func set_hunter_rpc(_network_id):
  
  	acknowledge_role_rpc.rpc(multiplayer.get_unique_id())
  
@@ -480,15 +480,19 @@ diff --git a/minigames/duck_hunt/scripts/duck_hunt.gd b/minigames/duck_hunt/scri
 +
 +	minigame_overlay.mp8_shake_on_go = true
 +
-+	if is_hunter:
-+		minigame_overlay.mp8_go_text = "HUNT THEM ALL!" if lone else "HUNT!"
++	if is_hunter and lone:
++		minigame_overlay.mp8_go_text = NetworkManager.mp8_text("HUNT THEM ALL!", "尽情狩猎吧！", "盡情狩獵吧！")
++	elif is_hunter:
++		minigame_overlay.mp8_go_text = NetworkManager.mp8_text("HUNT!", "狩猎吧！", "狩獵吧！")
++	elif lone:
++		minigame_overlay.mp8_go_text = NetworkManager.mp8_text("RUN FOR YOUR LIFE!", "夺命狂奔吧！", "奪命狂奔吧！")
 +	else:
-+		minigame_overlay.mp8_go_text = "RUN FOR YOUR LIFE!" if lone else "RUN!"
++		minigame_overlay.mp8_go_text = NetworkManager.mp8_text("RUN!", "狂奔吧！", "狂奔吧！")
 +
 +	# Only the lone hunter round replaces the "1"; other rounds keep the game's white "1"
 +	minigame_overlay.mp8_one_text = ""
 +	if lone:
-+		minigame_overlay.mp8_one_text = "HUNTER GREATLY BUFFED"
++		minigame_overlay.mp8_one_text = NetworkManager.mp8_text("HUNTER GREATLY BUFFED", "猎人已大幅增强", "獵人已大幅增強")
 +
  @rpc("any_peer", "call_local", "reliable")
  func acknowledge_role_rpc(_network_id: int):
@@ -519,7 +523,7 @@ diff --git a/minigames/duck_hunt/scripts/duck_hunt.gd b/minigames/duck_hunt/scri
  	if not multiplayer.is_server():
  		return
  
-@@ -418,6 +855,36 @@ func remove_spectate_player_rpc(_network_id: int) -> void :
+@@ -418,6 +859,36 @@ func remove_spectate_player_rpc(_network_id: int) -> void :
  @rpc("any_peer", "call_local", "reliable")
  func remove_player_rpc(_network_id: int):
  
@@ -556,7 +560,7 @@ diff --git a/minigames/duck_hunt/scripts/duck_hunt.gd b/minigames/duck_hunt/scri
  	var player_instance = null
  	for p in players:
  		if p.player_presence.network_id == _network_id:
-@@ -441,6 +908,9 @@ func remove_player_rpc(_network_id: int):
+@@ -441,6 +912,9 @@ func remove_player_rpc(_network_id: int):
  
  
  func player_disconnected(_network_id: int):
@@ -566,7 +570,7 @@ diff --git a/minigames/duck_hunt/scripts/duck_hunt.gd b/minigames/duck_hunt/scri
  	super.player_disconnected(_network_id)
  
  	if not multiplayer.is_server():
-@@ -450,6 +920,14 @@ func player_disconnected(_network_id: int):
+@@ -450,6 +924,14 @@ func player_disconnected(_network_id: int):
  
  	if multiplayer.is_server():
  		await get_tree().create_timer(1.0).timeout
@@ -581,7 +585,7 @@ diff --git a/minigames/duck_hunt/scripts/duck_hunt.gd b/minigames/duck_hunt/scri
  		check_game_end()
  
  func _on_duck_player_spectate(_network_id):
-@@ -493,6 +971,35 @@ func _on_finish_area_entered(body):
+@@ -493,6 +975,35 @@ func _on_finish_area_entered(body):
  
  func _on_player_finished(_network_id: int):
  
@@ -617,7 +621,7 @@ diff --git a/minigames/duck_hunt/scripts/duck_hunt.gd b/minigames/duck_hunt/scri
  	if GameManager.local_game:
  		if local_duck_players.has(_network_id):
  			local_duck_players.erase(_network_id)
-@@ -510,6 +1017,35 @@ func _on_player_finished(_network_id: int):
+@@ -510,6 +1021,35 @@ func _on_player_finished(_network_id: int):
  
  func _on_player_died(_network_id: int):
  
@@ -653,7 +657,7 @@ diff --git a/minigames/duck_hunt/scripts/duck_hunt.gd b/minigames/duck_hunt/scri
  	if GameManager.local_game:
  		if local_duck_players.has(_network_id):
  			local_duck_players.erase(_network_id)
-@@ -526,6 +1062,42 @@ func _on_player_died(_network_id: int):
+@@ -526,6 +1066,42 @@ func _on_player_died(_network_id: int):
  
  	check_game_end()
  
@@ -696,7 +700,7 @@ diff --git a/minigames/duck_hunt/scripts/duck_hunt.gd b/minigames/duck_hunt/scri
  func _on_countdown_expired():
  	super._on_countdown_expired()
  
-@@ -534,3 +1106,85 @@ func _on_countdown_expired():
+@@ -534,3 +1110,85 @@ func _on_countdown_expired():
  func _on_unpaused():
  
  	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED

@@ -19,6 +19,12 @@ var _loader
 var api
 var sw
 
+func _has_cjk(text: String) -> bool:
+	for c in text:
+		if c.unicode_at(0) >= 0x3000:
+			return true
+	return false
+
 func say(msg: String) -> void:
 	if out == null:
 		out = FileAccess.open(OS.get_executable_path().get_base_dir().path_join("mods/gcs_selftest/result.txt"), FileAccess.WRITE)
@@ -320,6 +326,16 @@ func _run() -> void:
 		var clean := [{"name": "GameCube Controller Adapter"}, {"name": "GameCube Controller Adapter"}, {"name": "GameCube Controller Adapter"}, {"name": "GameCube Controller Adapter"}, {"name": "XInput Controller"}]
 		ok("4 adapter ports + 8BitDo fine", G.duplicate_problem(clean, true).is_empty())
 		say("INFO duplicate check here: '%s'" % gi.current_problem())
+		var langs := {"EN": "EN", "ZHS": "ZHS", "ZHT": "ZHT", "zh_CN": "ZHS", "zh-Hans": "ZHS", "zh_TW": "ZHT", "zh_HK": "ZHT", "DE": "EN", "JA": "EN"}
+		var wrong := langs.keys().filter(func(k): return G.lang_of(k) != langs[k])
+		ok("the game's language read as EN, ZHS or ZHT", wrong.is_empty(), wrong)
+		# 15 adapter pads and an 8BitDo: 15 duplicates with the fix off, 16 controllers (the limit) with it on.
+		var mixed: Array = dup16.slice(0, 15) + [{"name": "XInput Controller"}]
+		for lang in ["EN", "ZHS", "ZHT"]:
+			for fixed in [false, true]:
+				var text: String = G.duplicate_problem(mixed, fixed, lang)
+				var count := "16" if fixed else "15"
+				ok("duplicate problem in %s, fix %s, names %s" % [lang, fixed, count], text.contains(count) and _has_cjk(text) == (lang != "EN"), text)
 
 		# The live loop, on a fake device: _raw() stands in for SDL's events.
 		var fd := 15
@@ -422,6 +438,21 @@ func _run() -> void:
 	var hint: String = api._duplicate_hint()
 	var where := "mods/machine_party_extended/gamecube_support" if api.has_meta("mpml_dir") else "mods/gamecube_support"
 	ok("the hint names this mod's folder (%s)" % where, hint.contains("in the %s folder" % where), hint)
+
+	say("step: the toasts follow the game's language (D173)")
+	var sixteen := []
+	for i in 16:
+		sixteen.append({"name": "Nintendo GameCube Controller", "guid": "x"})
+	for lang in ["EN", "ZHS", "ZHT"]:
+		var style: String = api.style_toast(lang)
+		ok("the prompt toast in %s" % lang, not style.is_empty() and _has_cjk(style) == (lang != "EN"), style)
+		var what: String = api.gc_input.duplicate_problem(sixteen, false, lang) if api.gc_input != null else ""
+		var warn: String = api.duplicate_toast(lang, what)
+		ok("the adapter toast in %s: the problem, the folder, two lines" % lang, warn.contains("16") and warn.contains(where) and warn.split("\n").size() == 2 and _has_cjk(warn) == (lang != "EN"), warn.c_escape())
+	ok("the console's style line stays English", not _has_cjk(api._style_label()), api._style_label())
+	api.show_toast("", 0.0)
+	var toast: Label = api.get("_toast")
+	ok("the toast wraps inside a margin (D173)", toast != null and toast.autowrap_mode != TextServer.AUTOWRAP_OFF and toast.offset_left > 0 and toast.offset_right < 0, [toast.autowrap_mode, toast.offset_left, toast.offset_right] if toast != null else null)
 
 	say("step: console")
 	var con = _loader.get_node_or_null("console")

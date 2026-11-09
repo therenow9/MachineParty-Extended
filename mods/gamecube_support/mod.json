@@ -1,7 +1,7 @@
 {
   "id": "gamecube_support",
   "name": "GameCube Controller Support",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "entry": "main.gd",
   "priority": 20,
   "requires": []

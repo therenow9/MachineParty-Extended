@@ -76,7 +76,7 @@ diff --git a/scenes/lobby/scripts/lobby_scene.gd b/scenes/lobby/scripts/lobby_sc
  			message = tr("LOC_ROOM_DISBANDED")
 +		NetworkManager.RefuseReason.MP8RoomFull:
 +			# [MP8] Sent only by an Extended host; a vanilla joiner shows its own fallback for it (D117).
-+			message = NetworkManager.MP8_ROOM_FULL_TEXT
++			message = NetworkManager.mp8_room_full_text()
  
  	GameManager.main_menu_dialog_message = message
  	if not is_inside_tree():

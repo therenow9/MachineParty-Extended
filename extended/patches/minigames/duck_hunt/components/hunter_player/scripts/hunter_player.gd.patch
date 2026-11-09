@@ -175,9 +175,9 @@ diff --git a/minigames/duck_hunt/components/hunter_player/scripts/hunter_player.
 +	var cyc: float = _mp8_effective_cycle()
 +
 +	_mp8_id_label.text = "[right]%s%s%s[/right]" % [
-+		_mp8_buff_line("MAG", _mp8_sign(float(mag - base_mag))),
++		_mp8_buff_line(NetworkManager.mp8_text("MAG", "弹夹", "彈匣"), _mp8_sign(float(mag - base_mag))),
 +		"  " if in_tile else "\n",
-+		_mp8_buff_line("RATE", _mp8_sign(base_cycle - cyc)),
++		_mp8_buff_line(NetworkManager.mp8_text("RATE", "射速", "射速"), _mp8_sign(base_cycle - cyc)),
 +	]
 +
 +
@@ -195,13 +195,13 @@ diff --git a/minigames/duck_hunt/components/hunter_player/scripts/hunter_player.
 +func _mp8_buff_line(what: String, direction: int) -> String:
 +
 +	var color: String = "#4dff6a"
-+	var word: String = "NORMAL"
++	var word: String = NetworkManager.mp8_text("NORMAL", "无效果", "無效果")
 +	if direction > 0:
 +		color = "#ff2d2d"
-+		word = "BUFFED"
++		word = NetworkManager.mp8_text("BUFFED", "增强", "增強")
 +	elif direction < 0:
 +		color = "#3fa9ff"
-+		word = "NERFED"
++		word = NetworkManager.mp8_text("NERFED", "削弱", "削弱")
 +
 +	return "[color=%s]%s %s[/color]" % [color, what, word]
 +

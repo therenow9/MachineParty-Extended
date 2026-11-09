@@ -63,7 +63,7 @@ foreach ($needed in @('mpml_dir', 'INSTALLED_TWICE')) {
 if ($manifest.overlay_sha256 -ne (Get-FileHash -LiteralPath (Join-Path $Mp8Build 'mp8_support_overlay.zip') -Algorithm SHA256).Hash.ToLower()) { throw "$Mp8Build's overlay does not match its vanilla_md5.json" }
 $mp8Version = [string]$mp8Mod.version
 # The build script's own normalisation (build_mpml_mod.ps1): x.y.0 is tagged x.y, a suffix kept.
-if ($info.mod_tag -ne ('mp8-' + ($mp8Version -replace '^(\d+\.\d+)\.0(?=-|$)', '$1'))) { throw "$Mp8Build is tagged $($info.mod_tag) but its mod.json says $mp8Version" }
+if ($info.mod_tag -ne ('mp-extended-' + ($mp8Version -replace '^(\d+\.\d+)\.0(?=-|$)', '$1'))) { throw "$Mp8Build is tagged $($info.mod_tag) but its mod.json says $mp8Version" }
 
 # --- Everything that goes in a zip comes from a committed tree: our mods' tracked files, the READMEs and notices ---
 $inputs = @('mods/README.md','LICENSE','NOTICE.md','README.md','extended/LICENSE','extended/NOTICE') + @($mods.Keys | ForEach-Object { "mods/$_" })

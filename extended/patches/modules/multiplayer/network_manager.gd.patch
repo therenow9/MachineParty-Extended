@@ -1,7 +1,7 @@
 diff --git a/modules/multiplayer/network_manager.gd b/modules/multiplayer/network_manager.gd
 --- a/modules/multiplayer/network_manager.gd
 +++ b/modules/multiplayer/network_manager.gd
-@@ -1,14 +1,36 @@
+@@ -1,14 +1,55 @@
  extends Node
  
 -const MAX_PLAYERS: int = 4
@@ -12,8 +12,8 @@ diff --git a/modules/multiplayer/network_manager.gd b/modules/multiplayer/networ
 +
 +# [MP8] The mod's tag. It travels as "mp8" in each player's join data (multiplayer_backend.gd), never in
 +# Globals.game_version, which stays vanilla's so vanilla players can join. Keep it short: the main menu
-+# corner shows mp8_full_version().
-+const MP8_VERSION_TAG: String = "mp8-1.0"
++# corner shows mp8_full_version(), and the refusal texts cut a version past 18 characters.
++const MP8_VERSION_TAG: String = "mp-extended-1.1"
 +# [MP8] build_mpml_mod.ps1 -TestBuild compiles this line as true (D119); the shipped build reads no dev switch.
 +const MP8_TEST_BUILD: bool = false
 +
@@ -26,6 +26,25 @@ diff --git a/modules/multiplayer/network_manager.gd b/modules/multiplayer/networ
 +# in a test build or the editor, empty otherwise, so a shipped build takes each switch's default (D116).
 +func mp8_dev_args() -> PackedStringArray:
 +	return OS.get_cmdline_args() if mp8_development_tools_allowed() else PackedStringArray()
++
++
++# [MP8] The game's language as "EN", "ZHS" or "ZHT". The game sets its loc sheet's codes (Globals.settings
++# ["language"]); the zh_* forms are taken too. Its compiled translations take no new keys, so each of our
++# strings is an EN/ZHS/ZHT triple, read when shown. Language never takes part in the handshake.
++func mp8_locale(raw: String = "") -> String :
++	var value: String = (TranslationServer.get_locale() if raw.is_empty() else raw).to_upper().replace("-", "_")
++	if value == "ZHT" or value == "ZH_TW" or value == "ZH_HK" or value == "ZH_MO" or value.begins_with("ZH_HANT"):
++		return "ZHT"
++	if value == "ZHS" or value == "ZH" or value == "ZH_CN" or value == "ZH_SG" or value.begins_with("ZH_HANS"):
++		return "ZHS"
++	return "EN"
++
++
++func mp8_text(en: String, zhs: String, zht: String) -> String :
++	match mp8_locale():
++		"ZHS": return zhs
++		"ZHT": return zht
++	return en
 +
  
  enum NetworkBackendType{
@@ -40,7 +59,7 @@ diff --git a/modules/multiplayer/network_manager.gd b/modules/multiplayer/networ
  }
  
  var active_backend: MultiplayerBackend
-@@ -18,7 +40,49 @@ var game_scene: PackedScene
+@@ -18,7 +59,49 @@ var game_scene: PackedScene
  
  var players: Dictionary
  var players_loaded: Array
@@ -91,7 +110,7 @@ diff --git a/modules/multiplayer/network_manager.gd b/modules/multiplayer/networ
  
  signal backend_ready()
  signal on_server_created()
-@@ -43,13 +107,610 @@ signal player_removed_from_join_queue(network_id)
+@@ -43,13 +126,610 @@ signal player_removed_from_join_queue(network_id)
  func _ready() -> void :
  
  	var args = Array(OS.get_cmdline_args())
@@ -704,7 +723,7 @@ diff --git a/modules/multiplayer/network_manager.gd b/modules/multiplayer/networ
  func is_active() -> bool:
  
  	if not multiplayer:
-@@ -81,6 +742,14 @@ func set_game_scene(_game_scene: PackedScene):
+@@ -81,6 +761,14 @@ func set_game_scene(_game_scene: PackedScene):
  
  func create_backend():
  
@@ -719,7 +738,7 @@ diff --git a/modules/multiplayer/network_manager.gd b/modules/multiplayer/networ
  	if active_backend:
  
  		active_backend.free()
-@@ -269,3 +938,342 @@ func remove_player_rpc(_network_id: int):
+@@ -269,3 +957,360 @@ func remove_player_rpc(_network_id: int):
  		var player_info = active_backend.connected_players[_network_id]
  		active_backend.disconnected_players[_network_id] = player_info
  		active_backend.connected_players.erase(_network_id)
@@ -889,12 +908,17 @@ diff --git a/modules/multiplayer/network_manager.gd b/modules/multiplayer/networ
 +
 +const MP8_ROOM_FULL_TEXT: String = "Room full: a player without Extended\nis in, so it holds 4."
 +
++
++func mp8_room_full_text() -> String:
++	return mp8_text(MP8_ROOM_FULL_TEXT, "房间已满：有玩家未安装 Extended，\n房间上限为 4 人。", "房間已滿：有玩家未安裝 Extended，\n房間上限為 4 人。")
++
 +var _mp8_host_version: String = ""              # client side: the host's full version (Steam lobby data), when known
 +var _mp8_peers_accepted: Dictionary = {}        # host side: peers that passed the version check
 +var _mp8_refused: Dictionary = {}               # host side: peers a backend refused, already told
 +
 +
-+# "v2.1.2+mp8-1.0": what this build shows and compares; the wire carries only vanilla's version.
++# "v2.1.2+mp-extended-1.1": what this build compares and Steam's lobby data carries; the join data
++# carries vanilla's version and the tag apart.
 +func mp8_full_version() -> String:
 +	return Globals.game_version + "+" + MP8_VERSION_TAG
 +
@@ -904,9 +928,12 @@ diff --git a/modules/multiplayer/network_manager.gd b/modules/multiplayer/networ
 +	_mp8_refused[network_id] = true
 +	var text: String
 +	if reason == RefuseReason.MP8RoomFull and client_data.get("mp8") is String:
-+		text = "Room full: with a player without Extended here, it holds 4."
++		text = mp8_text("Room full: with a player without Extended here, it holds 4.",
++			"房间已满：有玩家未安装 Extended，上限为 4 人。", "房間已滿：有玩家未安裝 Extended，上限為 4 人。")
 +	elif reason == RefuseReason.MP8RoomFull:
-+		text = "A player without Extended tried to join; rooms over 4 need it."
++		text = mp8_text("A player without Extended tried to join; rooms over 4 need it.",
++			"一名未安装 Extended 的玩家尝试加入；超过 4 人的房间需要 Extended。",
++			"一名未安裝 Extended 的玩家嘗試加入；超過 4 人的房間需要 Extended。")
 +	else:
 +		text = _mp8_blocked_text_for_host(_mp8_joiner_version(client_data))
 +	print("[MP8-VERSION] refused peer=%d reason=%d key=%s version=%s" % [network_id, reason, str(client_data.get("mp8")), str(client_data.get("game_version"))])
@@ -942,13 +969,18 @@ diff --git a/modules/multiplayer/network_manager.gd b/modules/multiplayer/networ
 +		_mp8_refused.erase(network_id)
 +		return
 +
-+	mp8_join_blocked.emit("A player could not join.")
++	mp8_join_blocked.emit(mp8_text("A player could not join.", "一名玩家无法加入。", "一名玩家無法加入。"))
 +
 +
-+# The mod tag in a full version string, "" for vanilla: "v2.1.2+mp8-0.1" -> "mp8-0.1".
++# The mod tag in a full version string, "" for vanilla: "v2.1.2+mp-extended-1.1" -> "mp-extended-1.1".
++# Extended up to 1.0 tagged "mp8-", Overtime "overtime-".
 +func _mp8_tag_of(full_version: String) -> String:
-+	var i: int = maxi(full_version.find("+mp8-"), full_version.find("+overtime-"))
++	var i: int = _mp8_tag_start(full_version)
 +	return "" if i < 0 else full_version.substr(i + 1)
++
++
++func _mp8_tag_start(full_version: String) -> int:
++	return maxi(maxi(full_version.find("+mp-extended-"), full_version.find("+mp8-")), full_version.find("+overtime-"))
 +
 +
 +# ── Client side: the refusal text (lobby_scene.gd's _on_join_refused) ──
@@ -956,14 +988,14 @@ diff --git a/modules/multiplayer/network_manager.gd b/modules/multiplayer/networ
 +# Re-measure after a change: set Globals.splash_screen_viewed = true and
 +# GameManager.main_menu_dialog_message, then call check_for_message().
 +
-+# "v2.1.2+mp8-0.1" -> "mp8-0.1" ("" without a tag); the prefix tells mp8 and Overtime apart.
++# "v2.1.2+mp8-0.1" -> "mp8-0.1" ("" without a tag); the prefix tells Extended and Overtime apart.
 +func _mp8_tag_num(full_version: String) -> String:
 +	return _mp8_tag_of(full_version)
 +
 +
-+# "v2.1.2+mp8-0.1" -> "v2.1.2"
++# "v2.1.2+mp-extended-1.1" -> "v2.1.2"
 +func _mp8_base_of(full_version: String) -> String:
-+	var i: int = maxi(full_version.find("+mp8-"), full_version.find("+overtime-"))
++	var i: int = _mp8_tag_start(full_version)
 +	return full_version if i < 0 else full_version.substr(0, i)
 +
 +
@@ -973,12 +1005,16 @@ diff --git a/modules/multiplayer/network_manager.gd b/modules/multiplayer/networ
 +	print("[MP8-VERSION] mismatch self=%s host=%s" % [mine, theirs])
 +	# A host without Extended publishes no version, nor does any host in the ENet debug lobby.
 +	if theirs.is_empty():
-+		return "Versions differ.\nYou %s / Host unknown" % _mp8_version_brief(mine)
++		return mp8_text("Versions differ.\nYou %s / Host unknown", "版本不一致。\n您 %s ／ 房主未知",
++			"版本不一致。\n您 %s ／ 房主未知") % _mp8_version_brief(mine)
 +	if mine == theirs:
-+		return "Refused, though versions match.\nDetails in the game log."
++		return mp8_text("Refused, though versions match.\nDetails in the game log.", "连接被拒，但版本相同。\n详情见游戏日志。",
++			"連線被拒，但版本相同。\n詳情見遊戲日誌。")
 +	if not _mp8_tag_of(mine).is_empty() and _mp8_tag_of(mine) == _mp8_tag_of(theirs) and _mp8_base_of(mine) != _mp8_base_of(theirs):
-+		return "Same mod tag; game versions differ.\nYou %s / Host %s" % [_mp8_version_brief(_mp8_base_of(mine)), _mp8_version_brief(_mp8_base_of(theirs))]
-+	return "Versions differ.\nYou %s / Host %s" % [_mp8_version_brief(mine), _mp8_version_brief(theirs)]
++		return mp8_text("Same mod tag; game versions differ.\nYou %s / Host %s", "mod 标签相同，游戏版本不同。\n您 %s ／ 房主 %s",
++			"mod 標籤相同，遊戲版本不同。\n您 %s ／ 房主 %s") % [_mp8_version_brief(_mp8_base_of(mine)), _mp8_version_brief(_mp8_base_of(theirs))]
++	return mp8_text("Versions differ.\nYou %s / Host %s", "版本不一致。\n您 %s ／ 房主 %s",
++		"版本不一致。\n您 %s ／ 房主 %s") % [_mp8_version_brief(mine), _mp8_version_brief(theirs)]
 +
 +
 +func _mp8_version_brief(value: String) -> String :
@@ -992,8 +1028,9 @@ diff --git a/modules/multiplayer/network_manager.gd b/modules/multiplayer/networ
 +func _mp8_blocked_text_for_host(their_version: String) -> String:
 +	print("[MP8-VERSION] unaccepted peer=%s lobby=%s" % [their_version, mp8_full_version()])
 +	if their_version.is_empty():
-+		return "A player on a different version tried to join."
-+	return "A player on %s tried to join this %s lobby." % [_mp8_version_brief(their_version), MP8_VERSION_TAG]
++		return mp8_text("A player on a different version tried to join.", "一名版本不同的玩家尝试加入。", "一名版本不同的玩家嘗試加入。")
++	return mp8_text("A player on %s tried to join this %s lobby.", "一名 %s 版本的玩家尝试加入本 %s 房间。",
++		"一名 %s 版本的玩家嘗試加入本 %s 房間。") % [_mp8_version_brief(their_version), MP8_VERSION_TAG]
 +
 +
 +# [MP8] ======== The Steam lobby member limit follows the cap ========
