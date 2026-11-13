@@ -34,7 +34,7 @@ diff --git a/minigames/disco_dodge/scrips/disco_dodge.gd b/minigames/disco_dodge
 +# The shipped markers are untouched, and with 4 or fewer players nothing is added.
 +func _mp8_setup_spawns() -> void :
 +
-+	# A mixed room keeps the game's 4 spawns (D120); they change above 4 players only.
++	# A mixed room keeps the game's 4 spawns; they change above 4 players only.
 +	if not NetworkManager.mp8_room_extended():
 +		return
 +

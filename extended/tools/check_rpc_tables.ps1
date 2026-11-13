@@ -2,7 +2,7 @@
 # own (src\): names, mode, sync, transfer mode, channel and parameters, the extends line, and rpc_config
 # calls. Godot 4.5 sends an RPC as its index in the node's RPC names sorted by code point
 # (scene_rpc_interface.cpp, _parse_rpc_config), so any difference here makes a mixed room with vanilla
-# peers run the wrong method or drop the call. Exits 1 on any difference (D115).
+# peers run the wrong method or drop the call. Exits 1 on any difference.
 param(
     [string]$Vanilla = '',
     [string]$Patched = ''

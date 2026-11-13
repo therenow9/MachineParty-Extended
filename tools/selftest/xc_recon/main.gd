@@ -179,9 +179,14 @@ func _fit() -> void:
 		return
 	var head := _skinned(skel, body, [skel.find_bone("head"), skel.find_bone("hat")])
 	var neck := _skinned(skel, body, [skel.find_bone("neck")])
+	# Everything below the head, for items that reach the shoulders.
+	var below := range(skel.get_bone_count())
+	below.erase(skel.find_bone("head"))
+	below.erase(skel.find_bone("hat"))
+	var torso := _skinned(skel, body, below)
 	ok("fit: head triangles", head.size() > 0, head.size() / 3)
 	var refs := {}
-	for item in ["tophat", "maska_helmet", "sunglasses"]:
+	for item in ["tophat", "maska_helmet", "sunglasses", "traffic_cone"]:
 		var holder := player.find_child(item, true, false)
 		for child in holder.get_children():
 			if child is MeshInstance3D:
@@ -193,6 +198,8 @@ func _fit() -> void:
 		say("\n[%s space]" % space_name)
 		say("head %s" % _aabb(hb))
 		say("neck %s" % _aabb(_bounds(space * neck)))
+		say("body %s" % _aabb(_bounds(space * torso)))
+		_obj("fit_%s_body.obj" % space_name, space * torso)
 		var up := (space.basis * Vector3.UP).normalized()
 		var glasses := _bounds(space * _rest(skel, refs["sunglasses"]) * refs["sunglasses"].mesh.get_faces())
 		var face := (glasses.get_center() - hb.get_center()).normalized()

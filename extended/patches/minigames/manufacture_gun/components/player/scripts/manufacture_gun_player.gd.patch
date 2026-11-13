@@ -7,7 +7,7 @@ diff --git a/minigames/manufacture_gun/components/player/scripts/manufacture_gun
  
 +					# [MP8] continue, not vanilla's return: with 8 benches set closer than about 4.9 m,
 +					# another player's bench in range would lock out yours and the parts on the floor.
-+					# A mixed room keeps the game's return: a player at another's bench drops nothing (D116).
++					# A mixed room keeps the game's return: a player at another's bench drops nothing.
  					if i.player_presence.network_id != player_presence.network_id:
 -						return
 +						if not NetworkManager.mp8_room_extended():
@@ -52,7 +52,7 @@ diff --git a/minigames/manufacture_gun/components/player/scripts/manufacture_gun
 +	var bench = (collider as Node).get_parent() if collider is Node else null
 +	return bench is ManufactureGunWorkstation and (bench.player_presence == null or bench.player_presence.network_id != network_id)
 +
-+# [MP8] A mixed room drops wherever the dropcast hits, another player's bench top included, as the game does (D116).
++# [MP8] A mixed room drops wherever the dropcast hits, another player's bench top included, as the game does.
 +static func mp8_drop_refused(collider: Object, network_id: int) -> bool:
 +	return NetworkManager.mp8_room_extended() and mp8_lands_on_other_bench(collider, network_id)
 +
@@ -66,7 +66,7 @@ diff --git a/minigames/manufacture_gun/components/player/scripts/manufacture_gun
 +
 +	# [MP8] Only the server sends the sound: this handler runs on every peer, and
 +	# play_positional_rpc takes a free slot from a pool, so each peer's send would stack another voice.
-+	# Same in set_has_gun_rpc and kill_rpc. A mixed room sends from every peer, as the game does (D116).
++	# Same in set_has_gun_rpc and kill_rpc. A mixed room sends from every peer, as the game does.
 +	if not NetworkManager.mp8_sends_broadcast(multiplayer.is_server()):
 +		return
 +

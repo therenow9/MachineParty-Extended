@@ -1,7 +1,7 @@
 {
   "id": "couch_lobby",
   "name": "Better Couch Lobby",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "entry": "main.gd",
   "priority": 10,
   "requires": []

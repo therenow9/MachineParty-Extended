@@ -51,7 +51,7 @@ diff --git a/scripts/scenes/game/game.gd b/scripts/scenes/game/game.gd
  
  		minigame.cleanup_rpc.rpc()
  		await get_tree().create_timer(1.0).timeout
-+		# A later load/cleanup has already taken ownership of this handoff. A mixed room goes on, as the game does (D116).
++		# A later load/cleanup has already taken ownership of this handoff. A mixed room goes on, as the game does.
 +		if mp8_ext and load_serial != _mp8_load_serial:
 +			return
 +
@@ -79,7 +79,7 @@ diff --git a/scripts/scenes/game/game.gd b/scripts/scenes/game/game.gd
  	GameManager.minigame_loaded.emit(minigame_identifier)
  	GameManager.current_minigame_identifier = minigame_identifier
 +
-+	# [MP8] Mixed rooms: the room is fixed for this minigame before its setup reads it (D118).
++	# [MP8] Mixed rooms: the room is fixed for this minigame before its setup reads it.
 +	NetworkManager.mp8_latch_room()
 +	_mp8_trace("before add_child")
  	minigame_parent.add_child(minigame_instance, true)
@@ -198,7 +198,7 @@ diff --git a/scripts/scenes/game/game.gd b/scripts/scenes/game/game.gd
  
 +	_mp8_round_close("scores")
 +	print("[MP8-HANDOFF] scores round=%d more=%s" % [session_current_minigame_round, more_rounds])
-+	# [MP8] A mixed room runs the game's own, its raw read of a missing round entry included (D120).
++	# [MP8] A mixed room runs the game's own, its raw read of a missing round entry included.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_update_scores(more_rounds)
 +		return
@@ -226,7 +226,7 @@ diff --git a/scripts/scenes/game/game.gd b/scripts/scenes/game/game.gd
 +		for k in game_score_by_network_id.keys():
 +			round_score_by_network_id[k] = 0
 +
-+# The game's update_scores, for a mixed room (D120).
++# The game's update_scores, for a mixed room.
 +func _mp8_game_update_scores(more_rounds: bool):
 +
  	if is_current_game_cutscene():
@@ -264,7 +264,7 @@ diff --git a/scripts/scenes/game/game.gd b/scripts/scenes/game/game.gd
 +
 +	if not multiplayer.is_server():
 +		return
-+	# A mixed room leaves the gate as the game does (D116).
++	# A mixed room leaves the gate as the game does.
 +	if not NetworkManager.mp8_room_extended():
 +		return
 +	if not is_instance_valid(minigame):
@@ -327,7 +327,7 @@ diff --git a/scripts/scenes/game/game.gd b/scripts/scenes/game/game.gd
  func _on_minigame_player_scored(_network_id: int, _score: int):
  
 -	round_score_by_network_id[_network_id] += (_score * score_multiplier)
-+	# [MP8] A mixed room adds the game's own score, unscaled (D116, D120).
++	# [MP8] A mixed room adds the game's own score, unscaled.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_on_minigame_player_scored(_network_id, _score)
 +		return
@@ -339,7 +339,7 @@ diff --git a/scripts/scenes/game/game.gd b/scripts/scenes/game/game.gd
  
  func _on_minigame_player_score_finalized(player_scores):
  
-+	# [MP8] A mixed room adds the game's own scores, unscaled (D116, D120).
++	# [MP8] A mixed room adds the game's own scores, unscaled.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_on_minigame_player_score_finalized(player_scores)
 +		return
@@ -352,7 +352,7 @@ diff --git a/scripts/scenes/game/game.gd b/scripts/scenes/game/game.gd
 +			)
 +
 +
-+# The game's two score handlers, for a mixed room (D120).
++# The game's two score handlers, for a mixed room.
 +func _mp8_game_on_minigame_player_scored(_network_id: int, _score: int):
 +
 +	round_score_by_network_id[_network_id] += (_score * score_multiplier)

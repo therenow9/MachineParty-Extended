@@ -722,9 +722,38 @@ func _online() -> void:
 	var named := func(prefix): return ui.get_children().filter(func(n): return str(n.name).begins_with(prefix)).size()
 	ok("one tile and one preview per item of ours", named.call("XcTile_") == ours
 		and sel.cosmetic_selection_parent.get_children().filter(func(n): return str(n.name).begins_with("XcTileView_")).size() == ours)
-	var solid_y: float = ui.get_node("suit color selection red").position.y
-	var ours_y: Array = c.COLORS.keys().map(func(id): return ui.get_node("XcSwatch_" + id).position.y)
-	ok("our swatch row 22 under the game's", named.call("XcSwatch_") == 5 and ours_y.all(func(y): return y == solid_y + 22), [solid_y, ours_y])
+	var red_rect: Control = ui.get_node("suit color selection red")
+	var solid_y: float = red_rect.position.y
+	var game_ids: Array = sel.suit_colors.filter(func(id): return ui.has_node("suit color selection %s" % id))
+	var game_n: int = game_ids.size()
+	# Each column at the game's own swatch's x; the sixth one mean pitch past purple.
+	var xs: Array = game_ids.map(func(id): return ui.get_node("suit color selection %s" % id).position.x)
+	xs.append(xs[-1] + (xs[-1] - xs[0]) / (game_n - 1))
+	var off_grid := []
+	for i in c.COLORS.size():
+		var j: int = game_n + i
+		var slot := Vector2(xs[j % P.SWATCH_COLUMNS], solid_y + j / P.SWATCH_COLUMNS * P.ROW_GAP)
+		var got: Vector2 = ui.get_node("XcSwatch_" + c.COLORS.keys()[i]).position
+		if not got.is_equal_approx(slot):
+			off_grid.append([c.COLORS.keys()[i], got, slot])
+	ok("our %d swatches after the game's %d, %d to a row 22 apart" % [c.COLORS.size(), game_n, P.SWATCH_COLUMNS],
+		named.call("XcSwatch_") == c.COLORS.size() and off_grid.is_empty(), off_grid)
+	var fabric_at: int = ui.get_node("fabric overlay").get_index()
+	var caret_at: int = sel.ninepatch_color_selection.get_index()
+	var row2_at: int = ui.get_node("XcSwatchOverlay").get_index()
+	ok("our swatches under the fabric, both fabrics under the caret",
+		c.COLORS.keys().all(func(id): return ui.get_node("XcSwatch_" + id).get_index() < fabric_at) and fabric_at < caret_at and row2_at < caret_at,
+		[c.COLORS.keys().map(func(id): return ui.get_node("XcSwatch_" + id).get_index()), fabric_at, row2_at, caret_at])
+	var off_colour: Array = c.COLORS.keys().filter(func(id): return (ui.get_node("XcSwatch_" + id) as ColorRect).color != c.SWATCHES.get(id, c.COLORS[id]))
+	ok("each swatch in its own colour (%d set apart from the cloth's)" % c.SWATCHES.size(), off_colour.is_empty() and c.SWATCHES.keys().all(func(id): return c.COLORS.has(id)), off_colour)
+	var row_end: Control = ui.get_node("XcSwatch_xc_teal")
+	ok("teal ends the game's row", row_end.position.y == solid_y and is_equal_approx(row_end.position.x, xs[-1]), [row_end.position, xs])
+	var panel_box: Control = ui.get_node("NinePatchRect misc under outline")
+	var fabric: Control = ui.get_node("fabric overlay")
+	var swatch_right: float = row_end.position.x + row_end.size.x * row_end.scale.x
+	ok("the panel and the fabric cover the sixth column", panel_box.position.x + panel_box.size.x > swatch_right
+		and fabric.position.x + fabric.size.x * fabric.scale.x >= swatch_right
+		and ui.get_node("XcSwatchOverlay").size == fabric.size, [panel_box.position.x + panel_box.size.x, fabric.size * fabric.scale.x, swatch_right])
 	var ot: Array = ui.get_children().filter(func(n): return str(n.name).begins_with("OvertimeMixedSuit"))
 	ok("Overtime's row %s" % ("22 under ours" if _overtime_suits() else "absent"),
 		ot.all(func(b): return b.position.y == solid_y + 44) if _overtime_suits() else ot.is_empty(),
@@ -802,8 +831,21 @@ func _online() -> void:
 				dangling.append([b.name, side, path])
 	ok("every focus neighbour resolves", dangling.is_empty(), dangling)
 	var red_btn: Control = ui.get_node("suit color selection red").find_child("Button", true, false)
-	ok("down from the game's red lands on our teal", red_btn.get_node_or_null(red_btn.focus_neighbor_bottom) == swatch_btn.call("xc_teal"),
-		red_btn.focus_neighbor_bottom)
+	var purple_btn: Control = ui.get_node("suit color selection purple").find_child("Button", true, false)
+	var hop := func(b: Control, side: String): return b.get_node_or_null(b.get(side))
+	var walks := [
+		["down from red", hop.call(red_btn, "focus_neighbor_bottom"), swatch_btn.call("xc_pink")],
+		["up from pink", hop.call(swatch_btn.call("xc_pink"), "focus_neighbor_top"), red_btn],
+		["right from purple", hop.call(purple_btn, "focus_neighbor_right"), swatch_btn.call("xc_teal")],
+		["left from teal", hop.call(swatch_btn.call("xc_teal"), "focus_neighbor_left"), purple_btn],
+		["down from teal", hop.call(swatch_btn.call("xc_teal"), "focus_neighbor_bottom"), swatch_btn.call("xc_charcoal")],
+		["up from charcoal", hop.call(swatch_btn.call("xc_charcoal"), "focus_neighbor_top"), swatch_btn.call("xc_teal")],
+		["right from brown", hop.call(swatch_btn.call("xc_brown"), "focus_neighbor_right"), swatch_btn.call("xc_lime")],
+		["left from lime", hop.call(swatch_btn.call("xc_lime"), "focus_neighbor_left"), swatch_btn.call("xc_brown")],
+		["down from purple", hop.call(purple_btn, "focus_neighbor_bottom"), swatch_btn.call("xc_white")],
+	]
+	ok("pad focus walks the two colour rows", walks.all(func(w): return w[1] == w[2]),
+		walks.filter(func(w): return w[1] != w[2]).map(func(w): return [w[0], w[1].name if w[1] else null]))
 
 	say("step: online screen, tile previews")
 	var views := {}
@@ -857,7 +899,7 @@ func _online() -> void:
 	parent.remove_child(root)
 	parent.add_child(root)
 	await frames(2)
-	ok("re-enter: no second tile, nothing moved twice", named.call("XcTile_") == ours and named.call("XcSwatch_") == 5
+	ok("re-enter: no second tile, nothing moved twice", named.call("XcTile_") == ours and named.call("XcSwatch_") == c.COLORS.size()
 		and order.map(func(id): return tile.call(id).position) == before_pos
 		and sel.get_children().filter(func(n): return n.get_script() == P).size() == 1)
 

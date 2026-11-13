@@ -6,7 +6,7 @@ diff --git a/minigames/knife_at_the_office/components/player/scripts/knife_at_th
  	tween_search.tween_property(animation_tree, "parameters/blend_searching/blend_amount", 1, 0.3)
  
 +# [MP8] Stabbing waits for the hunt: searching_disabled is the synced flag the game sets when it starts,
-+# about 1.5 s after the find. A mixed room lets the item stab at once, as the game does (D116).
++# about 1.5 s after the find. A mixed room lets the item stab at once, as the game does.
 +func _mp8_stab_waits() -> bool :
 +	if not NetworkManager.mp8_room_extended():
 +		return false

@@ -95,7 +95,7 @@ diff --git a/minigames/intermission_new/components/intermission_briefing_screen.
 +	_mp8_layouts = {false: vanilla, true: _mp8_snapshot()}
 +
 +
-+# [MP8] Mixed rooms (D116): the game's 4 rows, chosen at each briefing's reset. A briefing in progress only
++# [MP8] Mixed rooms: the game's 4 rows, chosen at each briefing's reset. A briefing in progress only
 +# grows to 8: update_players() indexes the rows across awaits, so shrinking under it would read past the end.
 +var mp8_extended_layout: bool = true
 +var _mp8_layouts: Dictionary = {}

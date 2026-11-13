@@ -1,7 +1,7 @@
 extends Node
 
 # Dev-only and windowed: More Cosmetics' items beside vanilla references, hat
-# gibs in flight and at rest, and every suit with three candidate shades of
+# gibs in flight and at rest, and every suit with candidate shades of
 # ours, rendered in the local lobby's own lighting into
 # %TEMP%/machine-party-tests/xc_render/ for tools/cosmetics/render_page.py.
 # Also times the suit recolor under the real renderer.
@@ -12,30 +12,34 @@ const HAT_GIB_SCENE := "res://prefabs/managed_props/hat_gib.tscn"
 const SYNC_NAME := "XcSuitSync"
 # This batch: ours, then the item it is judged against (a candidate is judged
 # against the item it would replace).
-const PAIRS := [["xc_fez", "tophat"], ["xc_kippah", "cap_blade"], ["xc_trapper_hat", "maska_helmet"],
-	["xc_football_helmet", "maska_helmet"], ["xc_beret", "cap_blade"], ["xc_dragonborn_helmet", "maska_helmet"],
-	["xc_tanning_glasses", "sunglasses"], ["xc_scuba_glasses", "sunglasses"], ["xc_diving_helmet", "maska_helmet"],
-	["xc_propeller_beanie", "cap_blade"], ["xc_sombrero", "tophat"]]
+const PAIRS := [["xc_snow_glasses", "sunglasses"]]
 # A hat and glasses worn together, where the two could clip.
-const COMBOS := [["xc_football_helmet", "sunglasses"], ["xc_trapper_hat", "xc_scuba_glasses"], ["xc_beret", "xc_tanning_glasses"]]
+const COMBOS := [["traffic_cone", "xc_snow_glasses"], ["xc_pharaoh_headdress", "xc_snow_glasses"], ["xc_trapper_hat", "xc_snow_glasses"],
+	["xc_football_helmet", "xc_snow_glasses"], ["xc_turban", "xc_snow_glasses"], ["xc_army_helmet", "xc_snow_glasses"]]
 # Other builds of an item in CANDIDATES_DIR, never shipped: generated with
 # --out, or a rework's shipped build copied there as <id>_before. Candidate id,
 # the item it stands in for.
 const CANDIDATES := []
 const CANDIDATES_DIR := "candidates"
 const YAWS := [0, 45, 180]
-const GIB_HATS := ["xc_fez", "xc_kippah", "xc_trapper_hat", "xc_football_helmet", "xc_beret", "xc_dragonborn_helmet", "tophat"]
+# Every pair's items also shot with the whole character this many pixels tall,
+# to judge them from a distance: about the 8-seat lobby's and a split-screen
+# view's (estimated, not measured in those scenes).
+const FAR := [240, 120]
+const FAR_YAWS := [0, 45]
+const GIB_HATS := []
 const GIB_SHOTS := [0.15, 0.4]
 const GIB_REST := 4.0
-# Value and saturation factors around catalog.COLORS; candidate 2 is the shipped colour.
-const SHADES := [[0.82, 0.9], [1.0, 1.0], [1.18, 1.08]]
-# The suit lineup and its shade candidates; the colours are picked (Phase 4).
+# The suit lineup and its shade candidates. Colours already picked are shot once,
+# at their shipped shade; those in NEW are shot at each of their candidates.
 const SUITS := false
+const NEW := {}
 
 var fails := 0
 var out: FileAccess
 var out_dir: String
 var api
+var _far_scale := 0.0
 
 func say(msg: String) -> void:
 	if out == null:
@@ -161,6 +165,8 @@ func _items(seat: Dictionary) -> void:
 		for id in pair:
 			_wear(a, id, glasses)
 			await _shoot(seat.camera, vp, box, "item_" + id, YAWS)
+			for px in FAR:
+				await _shoot_far(seat.camera, vp, seat.character, px, "far_%s_%03dpx" % [id, px])
 	for combo in COMBOS:
 		a.remove_hat()
 		a.remove_glasses()
@@ -312,8 +318,9 @@ func _suits(seat: Dictionary) -> void:
 	var shared_colors: Dictionary = sync.colors
 	for id in api.catalog.COLORS:
 		var base: Color = api.catalog.COLORS[id]
-		for k in SHADES.size():
-			var c := Color.from_hsv(base.h, clampf(base.s * SHADES[k][1], 0, 1), clampf(base.v * SHADES[k][0], 0, 1))
+		var shades: Array = NEW[id] if NEW.has(id) else [base]
+		for k in shades.size():
+			var c: Color = shades[k]
 			say("candidate %s %d #%s" % [id, k + 1, c.to_html(false)])
 			sync.recolor = api.recolor.get_script().new()
 			sync.colors = {id: c}
@@ -361,6 +368,51 @@ func _shoot(cam: Camera3D, vp: Viewport, box: AABB, label: String, yaws: Array) 
 		await frames(2)
 		await RenderingServer.frame_post_draw
 		_save(vp.get_texture().get_image(), "%s_%03d" % [label, deg])
+
+# The camera backed off until the character stands px pixels tall in the
+# viewport, aimed at its middle. Its meshes' bounds are the standing rest pose,
+# not the seated one, so the first far shot measures the lit silhouette and
+# corrects the distance for the rest of the run.
+func _shoot_far(cam: Camera3D, vp: Viewport, character: Node3D, px: int, label: String) -> void:
+	var box := AABB()
+	var first := true
+	for mi in character.find_children("*", "MeshInstance3D", true, false):
+		if mi.is_visible_in_tree():
+			var b: AABB = mi.global_transform * mi.get_aabb()
+			box = b if first else box.merge(b)
+			first = false
+	var center := box.get_center()
+	var distance := box.size.y * vp.get_visible_rect().size.y / (2.0 * px * tan(deg_to_rad(cam.fov * 0.5)))
+	if _far_scale == 0.0:
+		await _aim(cam, center, distance, 0)
+		var tall := _silhouette_height(vp.get_texture().get_image())
+		_far_scale = float(tall) / px if tall > 0 else 1.0
+		say("far: the character is %d px tall at the rest pose's %d px distance; scale %.3f" % [tall, px, _far_scale])
+	distance *= _far_scale
+	for deg in FAR_YAWS:
+		await _aim(cam, center, distance, deg)
+		_save(vp.get_texture().get_image(), "%s_%03d" % [label, deg])
+
+func _aim(cam: Camera3D, center: Vector3, distance: float, deg: int) -> void:
+	var yaw := deg_to_rad(deg)
+	cam.global_position = center + Vector3(cos(yaw), 0.15, sin(yaw)).normalized() * distance
+	cam.look_at(center)
+	await frames(2)
+	await RenderingServer.frame_post_draw
+
+# Rows holding any lit pixel, top to bottom; the seat's other meshes are hidden,
+# so the background is black.
+func _silhouette_height(img: Image) -> int:
+	var top := -1
+	var bottom := -1
+	for y in img.get_height():
+		for x in range(0, img.get_width(), 2):
+			if img.get_pixel(x, y).get_luminance() > 0.04:
+				if top < 0:
+					top = y
+				bottom = y
+				break
+	return bottom - top + 1 if top >= 0 else 0
 
 func _save(img: Image, name: String) -> void:
 	var path := out_dir.path_join("renders").path_join(name)

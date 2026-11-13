@@ -2,14 +2,14 @@
 
 [![Eight players in the wheat field, in More Cosmetics' hats and glasses, under the Machine Party: Extended logo](images/thumb_1280.jpg)](https://youtu.be/rwQyxxX0Bdo)
 
-### [⬇ Download Machine Party: Extended](https://github.com/therenow9/MachineParty-Extended/releases/download/v1.0.0/Machine-Party-Extended-1.0.0.zip) (4.9 MB)
-### [⬇ Download with GameCube Controller Support](https://github.com/therenow9/MachineParty-Extended/releases/download/v1.0.0/Machine-Party-Extended-1.0.0-with-GameCube.zip) (5.1 MB)
+### [⬇ Download Machine Party: Extended](https://github.com/therenow9/MachineParty-Extended/releases/download/v1.1.0/Machine-Party-Extended-1.1.0.zip) (6.4 MB)
+### [⬇ Download with GameCube Controller Support](https://github.com/therenow9/MachineParty-Extended/releases/download/v1.1.0/Machine-Party-Extended-1.1.0-with-GameCube.zip) (6.5 MB)
 
 **[▶ Watch the trailer](https://youtu.be/rwQyxxX0Bdo)**
 
 [All downloads](https://github.com/therenow9/MachineParty-Extended/releases/latest), including each mod on its own.
 
-Up to 8 players in Machine Party, on one couch or online, with fixes aimed at local split-screen play. **Version 1.0.0,** built for [MachinePartyModLoader](https://github.com/Krunk-theduck/MachinePartyModLoader) (MPML).
+Up to 8 players in Machine Party, on one couch or online, with fixes aimed at local split-screen play. **Version 1.1.0,** built for [MachinePartyModLoader](https://github.com/Krunk-theduck/MachinePartyModLoader) (MPML).
 
 It comes with [Better Couch Lobby](mods/README.md#better-couch-lobby) and [More Cosmetics](mods/README.md#more-cosmetics), so you don't need to install either one separately. Each is also on Nexus Mods on its own: [Better Couch Lobby](https://www.nexusmods.com/machineparty/mods/15), [More Cosmetics](https://www.nexusmods.com/machineparty/mods/16).
 
@@ -21,17 +21,20 @@ AI assisted: written with Claude (Anthropic's AI model) under my direction and t
 <img src="images/shot_lobby.png" width="49%" alt="The local lobby with 8 seats and a Polaroid of each player">
 <img src="images/shot_firearm_factory.png" width="49%" alt="Firearm Factory at 8 players, with workbenches along the walls">
 <img src="images/shot_wheat_field.png" width="49%" alt="Eight players in a row in the wheat field">
+<img src="images/shot_names.png" width="49%" alt="The couch lobby's name screens with saved names under the pencil">
+<img src="images/shot_chinese.png" width="49%" alt="The couch lobby with the game set to Simplified Chinese">
 
 ## What it adds
 
 - **All 15 minigames at up to 8 players:** [the full list](#the-minigames) of what changes in each is below.
-- **8 seats in the local lobby,** with seats 5–8 in a second row behind the original four.
+- **8 seats in the local lobby,** with seats 5–8 in a second row behind the original four, and eight player cards side by side along the bottom.
 - **An 8-slot session intro.** With 5 to 8 players, every player's tube goes into its own socket and every name lights on its own bar.
 - **The wheat field with 5 to 8 players.** Players 5 to 8 start in a second row, in the gaps, so everyone stays in view.
 - **A cleaner split-screen HUD.** No device list, and in Chisel Gauntlet, The Filter and Inside Job each screen's tag is just the player's name.
-- **Faster split screen with the same picture.** Views nobody could see are no longer drawn, and Chisel Gauntlet's and Inside Job's split-screen shadows cost about half the work.
+- **Faster split screen.** Views nobody could see are no longer drawn, and Chisel Gauntlet's and Inside Job's split-screen shadows cost about half the work. In Inside Job's split screen, each flashlight's glow around the hand casts no shadow; the beam still does.
 - **EXTENDED on the title screen,** in green down the right edge of the logo.
-- **Three of the game's own bugs fixed, in every room,** also one with players without Extended. Leaving Debris Platforms while a deck is blinking no longer freezes the game, leaving any minigame as its 3-2-1 countdown ticks no longer crashes it, and a Spine Breaker spider thrown into a pillar no longer stalls the round.
+- **Chinese, Simplified and Traditional:** with the game set to either, Extended's own text is in that language too: the lobby cards, The Filter's scoreboard, Duck Hunt's hunter lines and HUD, and the online refusal messages.
+- **Four of the game's own bugs fixed, in every room,** also one with players without Extended. Leaving Debris Platforms while a deck is blinking no longer freezes the game, leaving any minigame as its 3-2-1 countdown ticks no longer crashes it, a Spine Breaker spider thrown into a pillar no longer stalls the round, and a double press of Host, Local or Customization in the main menu no longer crashes it.
 
 ## The minigames
 
@@ -122,7 +125,7 @@ Each change is measured against the game's own minigame. Couch and online games 
 
 - **More places to start:** a pool of up to 25 points, with players at least 4 m apart where they can be.
 - **A second spider at 6 to 8: a black widow.** It is near black with a faint red hourglass on its back, so you can tell the two apart at a glance, on the floor and on a victim's back. It is 1.2 times as fast, has a 15-second fuse (the first spider's is 20), and waits 2 seconds after a kill (the first waits 3). The kill that leaves two players alive retires that spider.
-- **Prey:** each spider prefers someone no other spider is hunting, and skips anyone holding a spider.
+- **Prey:** each spider prefers someone no other spider is hunting, and skips anyone holding a spider. When a player gets a spider on their back, the other spider leaves them at once, and for 1 second after they throw it off, the other can't chase or grab them (a spider thrown at them still latches on).
 - **Throws:** only walls block a throw, not a player or spider in front of you. A spider stuck inside a pillar after a throw drops to the floor.
 - **Scoring:** deaths score as in the game. The survivor scores one more than the last to die, not two.
 
@@ -134,7 +137,7 @@ Each change is measured against the game's own minigame. Couch and online games 
 ### Table Manners
 
 - **8 seats, at any player count.** The game's four stay where they are; the new ones are added on each side, with chairs.
-- **The coach can catch two in one glance** in a round that starts with 6 or more players, however many are still eating. He shoots both, back to back. A round that starts with 5 or fewer keeps the game's own rule.
+- **The coach can catch two in one glance** in a round that starts with 6 or more players, however many are still eating. He shoots both, back to back, in one motion: his arm swings straight from the first player to the second. At seats 5 to 8 he aims at the player in that seat, and where a player sits within his reach he draws the gun back. A round that starts with 5 or fewer keeps the game's own rule.
 - **Scoring: changed.** Everyone scores by rank: players shot before halfway lowest, in the order they were shot, then players shot after it, then the finishers, with the first to finish highest and 1 more. The game's points for halfway are gone.
 
 ### The Filter
@@ -142,7 +145,7 @@ Each change is measured against the game's own minigame. Couch and online games 
 - **Eight stations at 5 to 8 players,** 45 degrees apart, every second one 2 m further out, with shorter conveyors. The room's walls and the incinerator are hidden. 2 to 4 players play the game's stations and rounds.
 - **Four rounds at 5 to 8.** Up to two players go out in a round: at 8 players 2, 2, 2, 1; at 7 players 2, 2, 1, 1; at 6 players 2, 1, 1, 1; at 5 players one a round. A tie at the bottom still saves everyone in it, so a match with ties runs a round longer. Each crush gets its own camera shot, and every screen turns to the right console.
 - **A parts board at 5 to 8:** one small line across the top at each round's end ("SCORE", with "OUT" for players knocked out), since each player sees only their own station's screen.
-- **On the couch at 5 to 8:** each station has its own light, all alike. The split screen is 3 columns at 5 or 6 players, and 4 at 7 or 8, where each view slides sideways to bring the counter in from the tile's edge.
+- **On the couch at 5 to 8:** each station has its own light, all alike. The split screen is 3 columns at 5 or 6 players, and 4 at 7 or 8. Each view slides sideways to bring the counter in from the tile's edge, and at 5 or 6 it is framed as at 8, so no neighbour stands beside your console.
 - **Scoring:** the game's own, the lower score of a pair placing lower.
 
 ### Tunnel Hazard
@@ -173,11 +176,13 @@ Each change is measured against the game's own minigame. Couch and online games 
 
 To check it loaded, look for `mp8_support: [READY]` in the game log. To uninstall, delete `mods/machine_party_extended`.
 
+**Updating from 1.0:** delete `mods/machine_party_extended`, then extract the new zip as in step 2. Your outfits and settings are kept. Online, 1.0 and 1.1 players can't join each other, so update together.
+
 ## Online play
 
-Machine Party: Extended players need the same version as each other. The main menu shows it after the game version (`v2.1.2+mp8-1.0`); a player on another version is refused, and the game says which versions differ. Players on Overtime can't join.
+Machine Party: Extended players need the same version as each other. The main menu shows it after the game version in the bottom corner (`v2.1.2+mp-extended-1.1`); a player on another version, 1.0 included, is refused, and the game says which versions differ. Players on Overtime can't join.
 
-Players without the mod can join a Machine Party: Extended room, and Extended players a room without it, while it has 4 players or fewer. Rooms of 5 to 8 need Extended for everyone. While anyone in the room lacks Extended, every minigame plays as the game's own (apart from Extended's fixes for three of the game's own bugs), the lobby has the game's 4 seats, and a 5th player is refused. A player joining or leaving counts from the next minigame.
+Players without the mod can join a Machine Party: Extended room, and Extended players a room without it, while it has 4 players or fewer. Rooms of 5 to 8 need Extended for everyone. While anyone in the room lacks Extended, every minigame plays as the game's own (apart from Extended's fixes for four of the game's own bugs), the lobby has the game's 4 seats, and a 5th player is refused. A player joining or leaving counts from the next minigame.
 
 ## Building from source
 
@@ -194,6 +199,6 @@ Machine Party: Extended's part of the repository, `extended/`, holds `.patch` fi
 
 The project's own work is under the MIT license (`extended/LICENSE`). `extended/NOTICE` says what that covers and what it can't. Machine Party: Extended is built on [Machine Party Overtime](https://github.com/DarkJadeStone/MachineParty-Overtime) 1.7 by DarkJadeStone, and its versions of Wrong Way, Forklift Certified, Inside Job and Firearm Factory on [machine-party-8p](https://github.com/Binary1936/machine-party-8p) by Binary1936 and contributors; `extended/NOTICE` has the full credit.
 
-Special thanks to DarkJadeStone, for Machine Party Overtime; Binary1936, for machine-party-8p; and Mike Klubnika and GDeavid, for Machine Party. Thanks also to Krunk-theduck, for [MachinePartyModLoader](https://github.com/Krunk-theduck/MachinePartyModLoader), and Ghostx10742, for [Offline Bots](https://github.com/Ghostx10742/MachineParty-Bots).
+Special thanks to DarkJadeStone, for Machine Party Overtime and its Chinese translations, which Extended's Chinese builds on; Binary1936, for machine-party-8p; and Mike Klubnika and GDeavid, for Machine Party. Thanks also to Krunk-theduck, for [MachinePartyModLoader](https://github.com/Krunk-theduck/MachinePartyModLoader), and Ghostx10742, for [Offline Bots](https://github.com/Ghostx10742/MachineParty-Bots).
 
 This is an unofficial community mod. It is not affiliated with or endorsed by the developer or publisher of Machine Party.

@@ -38,7 +38,7 @@ diff --git a/minigames/green_pea/scripts/green_pea.gd b/minigames/green_pea/scri
 +
 +func _mp8_setup_seats() -> void :
 +
-+	# [MP8] A mixed room keeps the game's 4 seats, chairs, decals and the table's cans (D120).
++	# [MP8] A mixed room keeps the game's 4 seats, chairs, decals and the table's cans.
 +	if not NetworkManager.mp8_room_extended():
 +		return
 +
@@ -295,7 +295,7 @@ diff --git a/minigames/green_pea/scripts/green_pea.gd b/minigames/green_pea/scri
  
  func check_game_end():
  
-+	# [MP8] A mixed room runs the game's check_game_end (D120).
++	# [MP8] A mixed room runs the game's check_game_end.
 +	if not NetworkManager.mp8_room_extended():
 +		await _mp8_game_check_game_end()
 +		return
@@ -317,7 +317,7 @@ diff --git a/minigames/green_pea/scripts/green_pea.gd b/minigames/green_pea/scri
 +	state_machine.transition_to_rpc.rpc(&"Finished")
 +	set_effects_visibility_rpc.rpc(false)
 +
-+# The game's check_game_end, for a mixed room (D120).
++# The game's check_game_end, for a mixed room.
 +func _mp8_game_check_game_end():
 +
  	if finished:
@@ -328,7 +328,7 @@ diff --git a/minigames/green_pea/scripts/green_pea.gd b/minigames/green_pea/scri
  
  func player_disconnected(_network_id: int):
 +	# [MP8] The room is read before the await, which can outlast this minigame's latch. A mixed room
-+	# keeps the game's own end check (D116).
++	# keeps the game's own end check.
 +	var mp8_ext: bool = NetworkManager.mp8_room_extended()
  	super.player_disconnected(_network_id)
  
@@ -347,7 +347,7 @@ diff --git a/minigames/green_pea/scripts/green_pea.gd b/minigames/green_pea/scri
  
  func _on_player_finished(_network_id: int):
  
-+	# [MP8] A mixed room runs the game's _on_player_finished (D120).
++	# [MP8] A mixed room runs the game's _on_player_finished.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_on_player_finished(_network_id)
 +		return
@@ -365,7 +365,7 @@ diff --git a/minigames/green_pea/scripts/green_pea.gd b/minigames/green_pea/scri
 +
 +	check_game_end()
 +
-+# The game's _on_player_finished, for a mixed room (D120).
++# The game's _on_player_finished, for a mixed room.
 +func _mp8_game_on_player_finished(_network_id: int):
 +
  	if player_characters.has(_network_id):
@@ -375,7 +375,7 @@ diff --git a/minigames/green_pea/scripts/green_pea.gd b/minigames/green_pea/scri
  
  func _on_player_died(_network_id: int):
  
-+	# [MP8] A mixed room runs the game's _on_player_died (D120).
++	# [MP8] A mixed room runs the game's _on_player_died.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_on_player_died(_network_id)
 +		return
@@ -387,7 +387,7 @@ diff --git a/minigames/green_pea/scripts/green_pea.gd b/minigames/green_pea/scri
 +
 +	check_game_end()
 +
-+# The game's _on_player_died, for a mixed room (D120).
++# The game's _on_player_died, for a mixed room.
 +func _mp8_game_on_player_died(_network_id: int):
 +
  	if active_players.has(_network_id):
@@ -397,7 +397,7 @@ diff --git a/minigames/green_pea/scripts/green_pea.gd b/minigames/green_pea/scri
  
  func _on_player_halfway(_network_id: int):
  
-+	# [MP8] A mixed room runs the game's _on_player_halfway (D120).
++	# [MP8] A mixed room runs the game's _on_player_halfway.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_on_player_halfway(_network_id)
 +		return
@@ -406,7 +406,7 @@ diff --git a/minigames/green_pea/scripts/green_pea.gd b/minigames/green_pea/scri
 +	if not halfway_done_players.has(_network_id):
 +		halfway_done_players.append(_network_id)
 +
-+# The game's _on_player_halfway, for a mixed room (D120).
++# The game's _on_player_halfway, for a mixed room.
 +func _mp8_game_on_player_halfway(_network_id: int):
 +
  	if not halfway_done_players.has(_network_id):

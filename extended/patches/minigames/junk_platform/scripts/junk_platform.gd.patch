@@ -58,7 +58,7 @@ diff --git a/minigames/junk_platform/scripts/junk_platform.gd b/minigames/junk_p
  func _ready() -> void :
  	super._ready()
  
-+	# [MP8] A mixed room runs the rest of the game's _ready (D120): no flags, octagon, camera, aim, sweep or labels.
++	# [MP8] A mixed room runs the rest of the game's _ready: no flags, octagon, camera, aim, sweep or labels.
 +	if not NetworkManager.mp8_room_extended():
 +		await _mp8_game_ready_tail()
 +		return
@@ -66,7 +66,7 @@ diff --git a/minigames/junk_platform/scripts/junk_platform.gd b/minigames/junk_p
 +	# [MP8] Before `_mp8_expand_platforms()`, which builds the labels these flags gate.
 +	_mp8_init_flags()
 +	_mp8_init_couch()
-+	# [MP8] Aimed throws (D113): the couch layout, and online at 5-8, where the octagon's far decks are 42-45
++	# [MP8] Aimed throws: the couch layout, and online at 5-8, where the octagon's far decks are 42-45
 +	# apart. Decided on every peer: online each player's own peer runs their throw.
 +	var online_8: bool = not GameManager.local_game and PlayerManager.player_presences.size() > 4
 +	_mp8_aim_on = _mp8_couch != Vector3.ZERO or online_8
@@ -94,7 +94,7 @@ diff --git a/minigames/junk_platform/scripts/junk_platform.gd b/minigames/junk_p
 +		await get_tree().create_timer(1.0).timeout
 +		minigame_ready.emit(1)
 +
-+# The game's _ready after its super call, for a mixed room (D120).
++# The game's _ready after its super call, for a mixed room.
 +func _mp8_game_ready_tail():
 +
  	camera.current = true
@@ -623,7 +623,7 @@ diff --git a/minigames/junk_platform/scripts/junk_platform.gd b/minigames/junk_p
 +# plane is at y -2. Online keeps mode c: its turned views need the regular octagon.
 +var _mp8_couch: Vector3 = Vector3.ZERO   # (rx, rz, tilt in degrees); zero = off
 +
-+# The owner's pick from in-game renders (D102): wider and shallower, all decks at one height.
++# The owner's pick from in-game renders: wider and shallower, all decks at one height.
 +# `mp8junkcouch=<rx>,<rz>,<tilt>` overrides it, and `mp8junkcouch=0,0,0` turns it off.
 +const MP8_COUCH_LAYOUT: Vector3 = Vector3(34.0, 18.0, 0.0)
 +
@@ -1188,7 +1188,7 @@ diff --git a/minigames/junk_platform/scripts/junk_platform.gd b/minigames/junk_p
 +
  func spawn_players():
  
-+	# [MP8] A mixed room runs the game's spawn_players (D120).
++	# [MP8] A mixed room runs the game's spawn_players.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_spawn_players()
 +		return
@@ -1287,7 +1287,7 @@ diff --git a/minigames/junk_platform/scripts/junk_platform.gd b/minigames/junk_p
 +	if not _mp8_label_names.is_empty():
 +		NetworkManager.mp8_rpc(self, &"mp8_set_platform_labels_rpc", [_mp8_label_names])
 +
-+# The game's spawn_players, for a mixed room (D120).
++# The game's spawn_players, for a mixed room.
 +func _mp8_game_spawn_players():
 +
  	player_count = PlayerManager.player_presences.size()
@@ -1311,7 +1311,7 @@ diff --git a/minigames/junk_platform/scripts/junk_platform.gd b/minigames/junk_p
 +	return best
 +
 +
-+# [MP8] Aimed throws (D113). The stock throw comes down past chest height about 28 out, and the couch oval's far
++# [MP8] Aimed throws. The stock throw comes down past chest height about 28 out, and the couch oval's far
 +# ends are 68 apart, so a throw at an opponent beyond that is strengthened until the rock reaches them at chest
 +# height. Only the strength changes, never the direction; a nearer target keeps stock.
 +var _mp8_aim_on: bool = false
@@ -1395,7 +1395,7 @@ diff --git a/minigames/junk_platform/scripts/junk_platform.gd b/minigames/junk_p
  
  func player_disconnected(_network_id: int):
 +	# [MP8] The room is read before the await, which can outlast this minigame's latch. A mixed room
-+	# keeps the game's own end check (D116).
++	# keeps the game's own end check.
 +	var mp8_ext: bool = NetworkManager.mp8_room_extended()
  	super.player_disconnected(_network_id)
  
@@ -1415,7 +1415,7 @@ diff --git a/minigames/junk_platform/scripts/junk_platform.gd b/minigames/junk_p
  
  func check_game_end():
  
-+	# [MP8] A mixed room runs the game's check_game_end (D120).
++	# [MP8] A mixed room runs the game's check_game_end.
 +	if not NetworkManager.mp8_room_extended():
 +		await _mp8_game_check_game_end()
 +		return
@@ -1444,7 +1444,7 @@ diff --git a/minigames/junk_platform/scripts/junk_platform.gd b/minigames/junk_p
 +
 +	player_scores_finalized.emit(player_scores)
 +
-+# The game's check_game_end, for a mixed room (D120).
++# The game's check_game_end, for a mixed room.
 +func _mp8_game_check_game_end():
 +
  	if finished:
@@ -1484,7 +1484,7 @@ diff --git a/minigames/junk_platform/scripts/junk_platform.gd b/minigames/junk_p
  @rpc("any_peer", "call_remote", "reliable")
  func rotate_camera_rpc(_rotation: float):
 +
-+	# [MP8] A mixed room runs the game's rotate_camera_rpc (D120).
++	# [MP8] A mixed room runs the game's rotate_camera_rpc.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_rotate_camera_rpc(_rotation)
 +		return
@@ -1503,7 +1503,7 @@ diff --git a/minigames/junk_platform/scripts/junk_platform.gd b/minigames/junk_p
 +		i.assign_indicators()
 +		i.assign_flipped_compactor()
 +
-+# The game's rotate_camera_rpc, for a mixed room (D120).
++# The game's rotate_camera_rpc, for a mixed room.
 +func _mp8_game_rotate_camera_rpc(_rotation: float):
  	camera_base.rotation_degrees.y = _rotation
  	visuals_base.rotation_degrees.y = _rotation
@@ -1512,7 +1512,7 @@ diff --git a/minigames/junk_platform/scripts/junk_platform.gd b/minigames/junk_p
  func _on_countdown_expired():
  	super._on_countdown_expired()
  
-+	# [MP8] A mixed room runs the rest of the game's handler (D120).
++	# [MP8] A mixed room runs the rest of the game's handler.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_on_countdown_expired_tail()
 +		return
@@ -1528,7 +1528,7 @@ diff --git a/minigames/junk_platform/scripts/junk_platform.gd b/minigames/junk_p
 +	# and each player's camera can only be checked on their own machine.
 +	NetworkManager.mp8_rpc(self, &"mp8_shot_rpc")
 +
-+# The game's _on_countdown_expired after its super call, for a mixed room (D120).
++# The game's _on_countdown_expired after its super call, for a mixed room.
 +func _mp8_game_on_countdown_expired_tail():
 +
  	for player in players.values():

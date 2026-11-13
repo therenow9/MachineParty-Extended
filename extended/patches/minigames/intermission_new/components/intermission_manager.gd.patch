@@ -18,7 +18,7 @@ diff --git a/minigames/intermission_new/components/intermission_manager.gd b/min
 +var _mp8_screen_update_mode: SubViewport.UpdateMode
 +
 +func _mp8_sync_screen_viewport() -> void :
-+	# A mixed room keeps the game's update mode (D116).
++	# A mixed room keeps the game's update mode.
 +	var drawn: bool = intermission_main_parent.is_visible_in_tree() or not NetworkManager.mp8_room_extended()
 +	_mp8_screen_viewport.render_target_update_mode = _mp8_screen_update_mode \
 +		if drawn else SubViewport.UPDATE_DISABLED

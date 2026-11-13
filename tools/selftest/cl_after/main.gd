@@ -7,13 +7,18 @@ extends Node
 
 const LOBBY := "res://scenes/local_lobby/local_lobby.tscn"
 const WALL_X := 6.517
-# The owner's picks: row 2 offset and the camera scale (docs/plans/2026-10-06-couch-lobby.md, Phase 2).
+# Row 2's offset and the camera scale, as picked from renders.
 const OFFSET := Vector3(0.2, 0.0, 5.8)
+# Seat 6 and its chair (the copy of chair_001) sit further toward the camera, clear of seat 3's legs.
+const SEAT6 := 5
+const SEAT6_NUDGE := Vector3(0.0, 0.0, 0.6)
+# A leg's centre line to a chair or body not its own; a shoe or trouser leg takes up the first 0.1-0.15 m.
+const LEG_CLEARANCE := 0.2
 const CAM_Y := 1.08
 const CAM_Z := 1.22
 # The lobby camera drifts by itself (about 0.001 over a run); a scaled-twice camera is metres off.
 const CAM_DRIFT := 0.05
-const NAMES := ["JERM", "ALEX", "SAM", "MAYA", "LEO", "ZOEY", "WWWW", "KAI"]
+const NAMES := ["JERM", "ALEX", "SAM", "MAYA", "LEO", "ZOEY", "WWWWWWW", "KAI"]
 # P1 is among them: the host's crown must not move its panel off the others' height when ready.
 const READY_SEATS := [0, 4, 6]
 # The xc_ ids need more_cosmetics, which the runner installs unless --without.
@@ -79,6 +84,8 @@ func _run() -> void:
 		var want: Transform3D = seats[i % n]
 		if i >= n:
 			want.origin += OFFSET
+		if i == SEAT6:
+			want.origin += SEAT6_NUDGE
 		var t: Transform3D = players.get_child(i).transform
 		ok("P%d model at its picked transform" % (i + 1), t.is_equal_approx(want), "%s want %s" % [t.origin, want.origin])
 	var assigners := {}
@@ -94,7 +101,8 @@ func _run() -> void:
 		ok("one chair copy per visible chair", row.get_child_count() == chairs.size(), [row.get_child_count(), chairs.size()])
 		for c in row.get_children():
 			var src := String(c.name).trim_prefix("MP8")
-			ok("chair %s at +offset" % src, chairs.has(src) and c.position.is_equal_approx(chairs[src] + OFFSET), c.position)
+			var shift: Vector3 = OFFSET + (SEAT6_NUDGE if src == "chair_001" else Vector3.ZERO)
+			ok("chair %s at +offset" % src, chairs.has(src) and c.position.is_equal_approx(chairs[src] + shift), c.position)
 	var cam_want := Vector3(cam0.x, cam0.y * CAM_Y, cam0.z * CAM_Z)
 	ok("camera pulled back", cam.position.distance_to(cam_want) < CAM_DRIFT, "%s want %s" % [cam.position, cam_want])
 
@@ -114,6 +122,8 @@ func _run() -> void:
 		var h := _head(i)
 		var on_screen := not cam.is_position_behind(h) and cam.get_viewport().get_visible_rect().has_point(cam.unproject_position(h))
 		ok("P%d head in frame" % (i + 1), on_screen, cam.unproject_position(h))
+	var clear := _clearance()
+	ok("every seated leg clears the chairs and bodies not its own (m)", clear["min"] >= LEG_CLEARANCE, "%.3f, %s" % [clear["min"], clear["worst"]])
 	for i in 8:
 		ok("P%d label has three lines" % (i + 1), controls[i].name_label.text.split("\n").size() == 3, controls[i].name_label.text.c_escape())
 	_label_report()
@@ -153,10 +163,12 @@ func _run() -> void:
 		var want: Transform3D = seats[i % n]
 		if i >= n:
 			want.origin += OFFSET
+		if i == SEAT6:
+			want.origin += SEAT6_NUDGE
 		if not players.get_child(i).transform.is_equal_approx(want):
 			moved.append(i + 1)
 	ok("re-entry keeps every model where it was", moved.is_empty(), moved)
-	# Panels are not checked here: on re-entry they move by the same amount on stock 1.7 (docs/issues.md).
+	# Panels are not checked here: on re-entry they move by the same amount on stock 1.7.
 	say("  after re-entry, label tops %s" % [_tops([0, 1, 2, 3, 4, 5, 6, 7])])
 	finish()
 
@@ -194,6 +206,92 @@ func _body(i: int) -> AABB:
 	for b in skel.get_bone_count():
 		box = box.expand(skel.global_transform * skel.get_bone_global_pose(b).origin)
 	return box
+
+# A seat's own chair is the shown chair nearest its hips.
+func _own_chair(model: Node3D, chairs: Array) -> Node:
+	var skel: Skeleton3D = model.find_children("*", "Skeleton3D", true, false)[0]
+	var hips := skel.global_transform * skel.get_bone_global_pose(0).origin
+	var best: Node = null
+	var best_d := INF
+	for c in chairs:
+		var d: float = c["box"].get_center().distance_to(hips)
+		if d < best_d:
+			best_d = d
+			best = c["node"]
+	return best
+
+func _segments(skel: Skeleton3D, legs_only: bool) -> Array:
+	var out: Array = []
+	for bi in skel.get_bone_count():
+		var bn := skel.get_bone_name(bi)
+		if legs_only and not (bn.begins_with("thigh") or bn.begins_with("shin") or bn.begins_with("foot") or bn.begins_with("toe")):
+			continue
+		var parent := skel.get_bone_parent(bi)
+		if parent >= 0:
+			out.append([bn, skel.global_transform * skel.get_bone_global_pose(parent).origin, skel.global_transform * skel.get_bone_global_pose(bi).origin])
+	return out
+
+# The least distance from any seated leg's bones to a shown chair's triangles or another seated body's
+# bones. Better Couch Lobby's room copy for the close-ups is far off at x 400 and left out.
+func _clearance() -> Dictionary:
+	var chairs: Array = []
+	for m in lobby.find_children("*chair*", "MeshInstance3D", true, false):
+		if m.is_visible_in_tree() and m.mesh and absf(m.global_position.x) < 100.0:
+			var faces: PackedVector3Array = m.mesh.get_faces()
+			var xf: Transform3D = m.global_transform
+			for i in faces.size():
+				faces[i] = xf * faces[i]
+			chairs.append({"node": m, "box": xf * m.mesh.get_aabb(), "faces": faces})
+	var models: Array = lobby.players_node.get_children().filter(func(m): return m is Node3D and m.is_visible_in_tree())
+	var least := INF
+	var worst := ""
+	for m in models:
+		var mine := _own_chair(m, chairs)
+		var legs := _segments(m.find_children("*", "Skeleton3D", true, false)[0], true)
+		for c in chairs:
+			if c["node"] == mine:
+				continue
+			var near: AABB = c["box"].grow(0.6)
+			for g in legs:
+				if near.has_point(g[1]) or near.has_point(g[2]):
+					var d := _seg_to_faces(g[1], g[2], c["faces"])
+					if d < least:
+						least = d
+						worst = "%s %s to %s" % [m.name, g[0], c["node"].name]
+		for o in models:
+			if o == m:
+				continue
+			for g in legs:
+				for h in _segments(o.find_children("*", "Skeleton3D", true, false)[0], false):
+					var pts := Geometry3D.get_closest_points_between_segments(g[1], g[2], h[1], h[2])
+					var d: float = pts[0].distance_to(pts[1])
+					if d < least:
+						least = d
+						worst = "%s %s to %s %s" % [m.name, g[0], o.name, h[0]]
+	return {"min": least, "worst": worst}
+
+func _seg_to_faces(p: Vector3, q: Vector3, faces: PackedVector3Array) -> float:
+	var best := INF
+	for t in range(0, faces.size(), 3):
+		for k in 5:
+			var x := p.lerp(q, k / 4.0)
+			best = minf(best, _closest_on_tri(x, faces[t], faces[t + 1], faces[t + 2]).distance_to(x))
+	return best
+
+func _closest_on_tri(x: Vector3, a: Vector3, b: Vector3, c: Vector3) -> Vector3:
+	var n := (b - a).cross(c - a)
+	if n.length_squared() < 1e-12:
+		return a
+	var proj := Plane(n.normalized(), a).project(x)
+	var bary := Geometry3D.get_triangle_barycentric_coords(proj, a, b, c)
+	if bary.x >= 0.0 and bary.y >= 0.0 and bary.z >= 0.0:
+		return proj
+	var best := Geometry3D.get_closest_point_to_segment(x, a, b)
+	for e in [[b, c], [c, a]]:
+		var cp := Geometry3D.get_closest_point_to_segment(x, e[0], e[1])
+		if cp.distance_to(x) < best.distance_to(x):
+			best = cp
+	return best
 
 func _head(i: int) -> Vector3:
 	return lobby.local_lobby_player_controls[i].customization_assigner.bone_attachment_glasses.global_position

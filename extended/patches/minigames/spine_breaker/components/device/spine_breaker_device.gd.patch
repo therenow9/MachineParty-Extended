@@ -34,7 +34,7 @@ diff --git a/minigames/spine_breaker/components/device/spine_breaker_device.gd b
 +# It identifies the device's surfaces among the meshes on the victim's back (copies of one texture).
 +var mp8_tex_key: String = ""
 +
-+# [MP8] Whether this device wears the black-widow hourglass (D103), set by the minigame in
++# [MP8] Whether this device wears the black-widow hourglass, set by the minigame in
 +# mp8_ensure_devices_rpc on every peer. On attach a copy goes on the victim's back.
 +var mp8_mark: bool = false
 +
@@ -85,7 +85,7 @@ diff --git a/minigames/spine_breaker/components/device/spine_breaker_device.gd b
 +
  func _physics_process(delta: float) -> void :
 +
-+	# [MP8] A mixed room runs the game's _physics_process (D120).
++	# [MP8] A mixed room runs the game's _physics_process.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_physics_process(delta)
 +		return
@@ -93,12 +93,12 @@ diff --git a/minigames/spine_breaker/components/device/spine_breaker_device.gd b
 +	check_target_proximity(delta)
 +	_mp8_check_altitude()
 +
-+# The game's _physics_process, for a mixed room (D120).
++# The game's _physics_process, for a mixed room.
 +func _mp8_game_physics_process(delta: float) -> void :
  	update_animations(delta)
  	check_target_proximity(delta)
  
-@@ -190,6 +272,43 @@ func set_lights_rpc():
+@@ -190,6 +272,47 @@ func set_lights_rpc():
  
  @rpc("any_peer", "call_local", "reliable")
  func try_throw_rpc(
@@ -109,7 +109,7 @@ diff --git a/minigames/spine_breaker/components/device/spine_breaker_device.gd b
 +	kick: bool = false
 +):
 +
-+	# [MP8] A mixed room runs the game's try_throw_rpc (D120).
++	# [MP8] A mixed room runs the game's try_throw_rpc.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_try_throw_rpc(_start_position, _direction, _strength, thrower, kick)
 +		return
@@ -130,6 +130,10 @@ diff --git a/minigames/spine_breaker/components/device/spine_breaker_device.gd b
 +	var possible_thrower = get_node(thrower)
 +	possible_thrower.set_spine_breaker_rpc.rpc(false)
 +
++	# [MP8] A throw off the back, not a kick: the thrower's grace from the other devices.
++	if not kick and game_instance != null and game_instance.has_method("mp8_note_throw"):
++		game_instance.mp8_note_throw(possible_thrower, self)
++
 +	state_machine.transition_to(&"Thrown", {
 +		"thrower": possible_thrower,
 +		"start_position": _start_position,
@@ -137,12 +141,12 @@ diff --git a/minigames/spine_breaker/components/device/spine_breaker_device.gd b
 +		"strength": _strength
 +	})
 +
-+# The game's try_throw_rpc, for a mixed room (D120).
++# The game's try_throw_rpc, for a mixed room.
 +func _mp8_game_try_throw_rpc(
  	_start_position: Vector3, 
  	_direction: Vector3, 
  	_strength: float, 
-@@ -265,6 +384,42 @@ func attach_entered_rpc():
+@@ -265,6 +388,42 @@ func attach_entered_rpc():
  	set_collision_layer_value(1, false)
  	set_collision_mask_value(1, false)
  
@@ -185,7 +189,7 @@ diff --git a/minigames/spine_breaker/components/device/spine_breaker_device.gd b
  @rpc("any_peer", "call_local", "reliable")
  func spine_broken_exited_rpc():
  
-@@ -274,6 +429,150 @@ func spine_broken_exited_rpc():
+@@ -274,6 +433,150 @@ func spine_broken_exited_rpc():
  	visible = true
  
  

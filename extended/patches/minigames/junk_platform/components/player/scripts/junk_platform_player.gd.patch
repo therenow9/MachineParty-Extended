@@ -6,7 +6,7 @@ diff --git a/minigames/junk_platform/components/player/scripts/junk_platform_pla
  var hand_tween: Tween
  
 +# [MP8] The minigame, found once among this player's ancestors on its own peer: it sets each throw's strength
-+# so the rock reaches the opponent faced (D113), or keeps throw_power where aimed throws are off.
++# so the rock reaches the opponent faced, or keeps throw_power where aimed throws are off.
 +var mp8_aim: Node = null
 +
  signal event_hit()
@@ -16,7 +16,7 @@ diff --git a/minigames/junk_platform/components/player/scripts/junk_platform_pla
  
  func update_interaction(_delta: float) -> void :
  
-+	# [MP8] A mixed room runs the game's update_interaction (D120).
++	# [MP8] A mixed room runs the game's update_interaction.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_update_interaction(_delta)
 +		return
@@ -81,7 +81,7 @@ diff --git a/minigames/junk_platform/components/player/scripts/junk_platform_pla
 +				grab_item_rpc.rpc()
 +				break
 +
-+# The game's update_interaction, for a mixed room (D120).
++# The game's update_interaction, for a mixed room.
 +func _mp8_game_update_interaction(_delta: float) -> void :
 +
  	if is_hit:

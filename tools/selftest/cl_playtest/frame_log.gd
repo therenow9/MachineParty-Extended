@@ -134,7 +134,7 @@ func _where() -> Dictionary:
 	out["scene"] = scene.scene_file_path.get_file().get_basename()
 	out["state"] = _state_of(scene.get("state_machine"))
 	# is_instance_valid before `is`: a repeat frees the old minigame a second before the new one is set, `is` on a
-	# freed instance stops this function, and _write_row's typed Dictionary then crashes the release build (PD5).
+	# freed instance stops this function, and _write_row's typed Dictionary then crashes the release build.
 	var mg = scene.get("minigame")
 	if is_instance_valid(mg) and mg is Node:
 		out["mg_state"] = _state_of(mg.get("state_machine"))

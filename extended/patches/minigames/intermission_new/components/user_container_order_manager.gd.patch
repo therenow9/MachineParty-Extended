@@ -10,7 +10,7 @@ diff --git a/minigames/intermission_new/components/user_container_order_manager.
 +# Intermission_ScoreScreen keeps `rank_y_positions` and `mp8_rank_x_positions`; in one column every x is equal.
  func switch_places(container1: Intermission_UserContainer, container2: Intermission_UserContainer):
 +
-+	# The game's 4-row board in a mixed room (D116, Intermission_ScoreScreen.mp8_apply_layout).
++	# The game's 4-row board in a mixed room (Intermission_ScoreScreen.mp8_apply_layout).
 +	if intermission_score != null and intermission_score.get("mp8_extended_layout") == false:
 +		_mp8_switch_places_vanilla(container1, container2)
 +		return

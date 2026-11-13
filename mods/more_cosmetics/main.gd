@@ -128,4 +128,5 @@ func _on_selection(selection: Node) -> void:
 	picker.glasses = catalog.GLASSES
 	picker.no_glasses_hats = catalog.NO_GLASSES_HATS
 	picker.colors = catalog.COLORS
+	picker.swatches = catalog.SWATCHES
 	picker.note = _note

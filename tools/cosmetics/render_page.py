@@ -22,6 +22,15 @@ CANDIDATES = os.path.join(os.environ.get("TEMP", ""), "machine-party-tests", "xc
 ANGLES = {"000": "face", "045": "side", "180": "back", "090": "side"}
 
 
+def far(renders, item):
+    """xc_render's far shots of item, captioned with the character's height."""
+    out = []
+    for k, v in shots(renders, "far_" + item):
+        px, yaw = k.split("px_")
+        out.append(["%d px tall, %s" % (int(px), ANGLES.get(yaw, yaw)), v])
+    return out
+
+
 def data_uri(path):
     kind = {"webp": "image/webp", "jpg": "image/jpeg", "png": "image/png"}[path.rsplit(".", 1)[1]]
     with open(path, "rb") as f:
@@ -51,12 +60,12 @@ def item_file(item, ext, candidates):
 
 def shots(renders, prefix):
     """(suffix, data uri) for every render named <prefix>_<suffix>.<ext>, sorted.
-    The suffix is xc_render's yaw, gib time or rest shot, so one id's prefix
+    The suffix is xc_render's yaw, gib time, rest shot or far shot's height, so one id's prefix
     never picks up another's (xc_sombrero, xc_sombrero_small)."""
     out = []
     for name in sorted(os.listdir(renders)):
         stem, _ = os.path.splitext(name)
-        if stem.startswith(prefix + "_") and re.fullmatch(r"(\d+ms_|rest_)?\d{3}", stem[len(prefix) + 1:]):
+        if stem.startswith(prefix + "_") and re.fullmatch(r"(\d+ms_|rest_|\d{3}px_)?\d{3}", stem[len(prefix) + 1:]):
             out.append((stem[len(prefix) + 1:], data_uri(os.path.join(renders, name))))
     return out
 
@@ -88,6 +97,7 @@ def build(renders, result, batch, candidates):
                 "texture": data_uri(item_file(ours, ".png", candidates)),
                 "oursShots": [[ANGLES.get(k, k), v] for k, v in shots(renders, "item_" + ours)],
                 "refShots": [[ANGLES.get(k, k), v] for k, v in shots(renders, "item_" + ref)],
+                "oursFar": far(renders, ours), "refFar": far(renders, ref),
             })
     # A rework's shipped build, rendered as <id>_before, is shown in its item's
     # card rather than as a candidate to pick.
@@ -133,7 +143,7 @@ def main():
     ap.add_argument("--renders", required=True)
     ap.add_argument("--result", required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--batch", required=True, help='shown above the title, e.g. "Phase 5 · second art batch"')
+    ap.add_argument("--batch", required=True, help='shown above the title, e.g. "second art batch"')
     ap.add_argument("--candidates", default=CANDIDATES, help="where xc_render's candidate items are (default: %(default)s)")
     a = ap.parse_args()
     out = os.path.realpath(a.out)

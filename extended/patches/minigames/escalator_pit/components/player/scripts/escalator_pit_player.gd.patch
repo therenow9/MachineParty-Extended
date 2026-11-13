@@ -17,7 +17,7 @@ diff --git a/minigames/escalator_pit/components/player/scripts/escalator_pit_pla
 +
 +	# [MP8] Only the server starts the alert: `kill_rpc` is call_local, so every peer runs this, and
 +	# each broadcasting it would play it once per peer from the omni pool, stacking voices. A mixed
-+	# room sends from every peer (D116). The guard wraps only the sound; the indicator lines below
++	# room sends from every peer. The guard wraps only the sound; the indicator lines below
 +	# must run on every peer.
 +	if mp8_sends:
 +		SoundManager.play_omni_rpc.rpc(
@@ -60,7 +60,7 @@ diff --git a/minigames/escalator_pit/components/player/scripts/escalator_pit_pla
 +
 +	# [MP8] The eight-strip build hides the handrails these two IKs pull the hands onto, so the arms
 +	# play the run clip's own swing instead. call_local: every peer, where each built its own strips.
-+	# A mixed room keeps the game's IKs (D120).
++	# A mixed room keeps the game's IKs.
 +	if NetworkManager.mp8_room_extended() and game_instance.player_spawn_positions.size() > EscalatorPitMinigame.MP8V_VANILLA_LANES:
 +		ik_left_hand.influence = 0.0
 +		ik_right_hand.influence = 0.0

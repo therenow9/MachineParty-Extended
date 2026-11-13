@@ -6,7 +6,7 @@ diff --git a/minigames/junk_platform/scripts/junk_platform_compactor.gd b/miniga
  
  func slam():
 +
-+	# [MP8] A mixed room runs the game's slam (D120).
++	# [MP8] A mixed room runs the game's slam.
 +	if not NetworkManager.mp8_room_extended():
 +		await _mp8_game_slam()
 +		return
@@ -21,7 +21,7 @@ diff --git a/minigames/junk_platform/scripts/junk_platform_compactor.gd b/miniga
 +	cam_shaker.play_shake()
 +	_mp8_fade()
 +
-+# The game's slam, for a mixed room (D120).
++# The game's slam, for a mixed room.
 +func _mp8_game_slam():
  	var t = create_tween()
  	t.tween_property(visual, "position", Vector3(visual.position.x, 1.355, visual.position.z), 0.1)
@@ -67,7 +67,7 @@ diff --git a/minigames/junk_platform/scripts/junk_platform_compactor.gd b/miniga
 +# client a compactor may cover a different player than on the server.
  func on_body_entered(body):
 +
-+	# [MP8] A mixed room runs the game's on_body_entered (D120).
++	# [MP8] A mixed room runs the game's on_body_entered.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_on_body_entered(body)
 +		return
@@ -86,7 +86,7 @@ diff --git a/minigames/junk_platform/scripts/junk_platform_compactor.gd b/miniga
 +		body.emit_died.emit(body.player_presence.network_id)
 +		manager.junk_handler.remove_spawn_point(body.player_presence.network_id)
 +
-+# The game's on_body_entered, for a mixed room (D120).
++# The game's on_body_entered, for a mixed room.
 +func _mp8_game_on_body_entered(body):
  	if body is JunkPlatformPlayer:
  		body.kill_rpc.rpc()

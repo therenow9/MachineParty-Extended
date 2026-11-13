@@ -71,7 +71,7 @@ func build() -> bool:
 		if line.begins_with("const MP8_VERSION_TAG"):
 			tag = line.get_slice("\"", 1)
 			break
-	if not tag.begins_with("mp8-"):
+	if not tag.begins_with("mp-extended-"):
 		return fail("Missing version tag")
 
 	var pack_path := OUT_DIR.path_join("mp8_support_overlay.zip")

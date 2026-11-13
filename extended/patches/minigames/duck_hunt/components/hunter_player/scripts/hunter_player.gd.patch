@@ -5,7 +5,7 @@ diff --git a/minigames/duck_hunt/components/hunter_player/scripts/hunter_player.
  @export var hand_meshes: Array[MeshInstance3D]
  @export var laser_mesh: MeshInstance3D
  
-+# [MP8] The game's tables, read by its shoot and set_active_rpc in a mixed room (D120).
++# [MP8] The game's tables, read by its shoot and set_active_rpc in a mixed room.
  @export var magazine_capacity_by_duck_count: Dictionary[int, int] = {
  	0: 7, 
  	1: 7, 
@@ -175,9 +175,9 @@ diff --git a/minigames/duck_hunt/components/hunter_player/scripts/hunter_player.
 +	var cyc: float = _mp8_effective_cycle()
 +
 +	_mp8_id_label.text = "[right]%s%s%s[/right]" % [
-+		_mp8_buff_line("MAG", _mp8_sign(float(mag - base_mag))),
++		_mp8_buff_line(NetworkManager.mp8_text("MAG", "弹夹", "彈匣"), _mp8_sign(float(mag - base_mag))),
 +		"  " if in_tile else "\n",
-+		_mp8_buff_line("RATE", _mp8_sign(base_cycle - cyc)),
++		_mp8_buff_line(NetworkManager.mp8_text("RATE", "射速", "射速"), _mp8_sign(base_cycle - cyc)),
 +	]
 +
 +
@@ -195,13 +195,13 @@ diff --git a/minigames/duck_hunt/components/hunter_player/scripts/hunter_player.
 +func _mp8_buff_line(what: String, direction: int) -> String:
 +
 +	var color: String = "#4dff6a"
-+	var word: String = "NORMAL"
++	var word: String = NetworkManager.mp8_text("NORMAL", "无效果", "無效果")
 +	if direction > 0:
 +		color = "#ff2d2d"
-+		word = "BUFFED"
++		word = NetworkManager.mp8_text("BUFFED", "增强", "增強")
 +	elif direction < 0:
 +		color = "#3fa9ff"
-+		word = "NERFED"
++		word = NetworkManager.mp8_text("NERFED", "削弱", "削弱")
 +
 +	return "[color=%s]%s %s[/color]" % [color, what, word]
 +
@@ -339,7 +339,7 @@ diff --git a/minigames/duck_hunt/components/hunter_player/scripts/hunter_player.
  
  func shoot():
  
-+	# [MP8] A mixed room runs the game's shoot (D120).
++	# [MP8] A mixed room runs the game's shoot.
 +	if not NetworkManager.mp8_room_extended():
 +		await _mp8_game_shoot()
 +		return
@@ -440,7 +440,7 @@ diff --git a/minigames/duck_hunt/components/hunter_player/scripts/hunter_player.
 +		update_zoom(zoom_index > 0)
 +	can_shoot = true
 +
-+# The game's shoot, for a mixed room (D120).
++# The game's shoot, for a mixed room.
 +func _mp8_game_shoot():
 +
  	if !can_shoot: return
@@ -476,7 +476,7 @@ diff --git a/minigames/duck_hunt/components/hunter_player/scripts/hunter_player.
  @rpc("any_peer", "call_local", "reliable")
  func set_active_rpc(_active: bool) -> void :
 +
-+	# [MP8] A mixed room runs the game's set_active_rpc (D120).
++	# [MP8] A mixed room runs the game's set_active_rpc.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_set_active_rpc(_active)
 +		return
@@ -490,7 +490,7 @@ diff --git a/minigames/duck_hunt/components/hunter_player/scripts/hunter_player.
 +		magazine_capacity, _mp8_effective_cycle()
 +	])
 +
-+# The game's set_active_rpc, for a mixed room (D120).
++# The game's set_active_rpc, for a mixed room.
 +func _mp8_game_set_active_rpc(_active: bool) -> void :
  	active = _active
  
@@ -510,13 +510,13 @@ diff --git a/minigames/duck_hunt/components/hunter_player/scripts/hunter_player.
  @rpc("any_peer", "call_local", "reliable")
  func setup_rpc(_position: Vector3, _duck_count: int):
 +
-+	# [MP8] A mixed room runs the game's setup_rpc (D120).
++	# [MP8] A mixed room runs the game's setup_rpc.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_setup_rpc(_position, _duck_count)
 +		return
 +	mp8_setup_rpc(_position, _duck_count)
 +
-+# The game's setup_rpc, for a mixed room (D120).
++# The game's setup_rpc, for a mixed room.
 +func _mp8_game_setup_rpc(_position: Vector3, _duck_count: int):
  	global_position = _position
  	duck_count = _duck_count

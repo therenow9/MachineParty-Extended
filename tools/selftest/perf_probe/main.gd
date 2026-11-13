@@ -12,7 +12,11 @@ extends Node
 #                          PERF_REPEAT=N runs the whole list N times, for minigames whose frame time drifts.
 #   PERF_PROBE=shots       the inventory, then with the tree paused: window shots as is, the next frame, and with
 #                          root3d, omni_paraboloid and omni_shadows each applied alone
+#   PERF_PROBE=timeline    from the load, one line a second: frame median and max, the tiles' visible and shadow
+#                          draw calls (sum and largest), the state, flashlights on, the players' mean distance apart
 # PERF_START_S=<s> starts any mode that many seconds after the load instead of 12.
+# PERF_BASE=a+b+... is applied in every ablate window, baselines included, so PERF_ABLATE's steps are measured inside
+# that scene (Knife at the Office's freeze, cluster, spread, flashlights). A PERF_ABLATE step may itself be a+b.
 # Results go to %TEMP%/machine-party-tests/perf_probe/<started>_<minigame>.txt.
 
 const ABLATIONS := ["tiles_but_p1", "omni_shadows", "dir_shadows", "all_lights", "env_effects", "other_subviewports",
@@ -39,6 +43,11 @@ var _cpu: Array = []
 var _states: Dictionary = {}
 var _undo: Array = []
 var _vps: Array = []
+var _shadow: Array = []
+var _base: Array = []
+var _tl_t := 0.0
+var _tl_frames: Array = []
+var _tl_tiles: Array = []
 
 func _mod_ready(_loader) -> void:
 	process_priority = 1000
@@ -48,6 +57,8 @@ func _mod_ready(_loader) -> void:
 		_mode = "inventory"
 	var picked := OS.get_environment("PERF_ABLATE")
 	_ablations = ABLATIONS.duplicate() if picked == "" else Array(picked.split(","))
+	var base := OS.get_environment("PERF_BASE")
+	_base = [] if base == "" else Array(base.split("+"))
 	_dir = OS.get_environment("TEMP").path_join("machine-party-tests/perf_probe")
 	DirAccess.make_dir_recursive_absolute(_dir)
 	get_tree().node_added.connect(_on_node_added)
@@ -66,6 +77,9 @@ func _on_node_added(node: Node) -> void:
 		_inventoried = false
 		_queue.clear()
 		_step = ""
+		_tl_t = 0.0
+		_tl_frames.clear()
+		_tl_tiles.clear()
 		var stamp := Time.get_datetime_string_from_system().replace(":", "").replace("-", "").replace("T", "-")
 		_out = FileAccess.open(_dir.path_join("%s_%s.txt" % [stamp, node.name]), FileAccess.WRITE)
 		say("# perf_probe %s, minigame %s, window %s, renderer %s" % [_mode, node.name,
@@ -83,6 +97,9 @@ func _process(delta: float) -> void:
 			_step = ""
 		return
 	_mg_t += delta
+	if _mode == "timeline":
+		_timeline(delta)
+		return
 	if _mg_t < (float(OS.get_environment("PERF_START_S")) if OS.get_environment("PERF_START_S") != "" else START_AFTER_S):
 		return
 	if not _inventoried:
@@ -115,12 +132,16 @@ func _begin(step: String) -> void:
 	_step_t = 0.0
 	_frames.clear()
 	_draws.clear()
+	_shadow.clear()
 	_gpu.clear()
 	_cpu.clear()
 	_states.clear()
 	_undo.clear()
+	for part in _base:
+		_apply(part)
 	if step != "base":
-		_apply(step)
+		for part in step.split("+"):
+			_apply(part)
 	_vps = _viewports()
 
 func _sample(delta: float) -> void:
@@ -128,20 +149,23 @@ func _sample(delta: float) -> void:
 	_draws.append(Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME))
 	var gpu := 0.0
 	var cpu := 0.0
+	var shadow := 0
 	for v in _vps:
 		if not is_instance_valid(v):
 			continue
 		gpu += RenderingServer.viewport_get_measured_render_time_gpu(v.get_viewport_rid())
 		cpu += RenderingServer.viewport_get_measured_render_time_cpu(v.get_viewport_rid())
+		shadow += _info(v, RenderingServer.VIEWPORT_RENDER_INFO_TYPE_SHADOW, RenderingServer.VIEWPORT_RENDER_INFO_DRAW_CALLS_IN_FRAME)
+	_shadow.append(shadow)
 	_gpu.append(gpu)
 	_cpu.append(cpu)
 	var st := _mg_state()
 	_states[st] = int(_states.get(st, 0)) + 1
 
 func _report() -> void:
-	say("window %-18s changed %3d frames %4d  median %6.2f ms  p90 %6.2f  mean %6.2f  draws %6.0f  vp_cpu %6.2f  vp_gpu %6.2f  states %s" % [
+	say("window %-18s changed %3d frames %4d  median %6.2f ms  p90 %6.2f  mean %6.2f  draws %6.0f  shadow %6.0f  vp_cpu %6.2f  vp_gpu %6.2f  apart %5.1f m  states %s" % [
 		_step, _undo.size(), _frames.size(), _pct(_frames, 0.5), _pct(_frames, 0.9), _mean(_frames), _mean(_draws),
-		_mean(_cpu), _mean(_gpu), _states])
+		_mean(_shadow), _mean(_cpu), _mean(_gpu), _apart(), _states])
 
 func _mg_state() -> String:
 	var m = _mg.get("state_machine")
@@ -303,18 +327,29 @@ func _shots() -> void:
 	var stamp := Time.get_datetime_string_from_system().replace(":", "").replace("-", "").replace("T", "-")
 	var dir := _dir.path_join("shots_%s_%s" % [stamp, _mg.name])
 	DirAccess.make_dir_recursive_absolute(dir)
+	# PERF_BASE's scene stays applied for every shot; PERF_SHOTS=a,b+c,... picks the variants.
+	var base_undo: Array = []
+	for part in _base:
+		_undo.clear()
+		_apply(part)
+		base_undo.append_array(_undo)
+	var picked := OS.get_environment("PERF_SHOTS")
+	var steps: Array = ["root3d", "omni_paraboloid", "omni_shadows"] if picked == "" else Array(picked.split(","))
 	await _frames_drawn(4)
 	_shot(dir, "a_as_is")
 	await _frames_drawn(1)
 	_shot(dir, "b_as_is_next_frame")
-	for step in ["root3d", "omni_paraboloid", "omni_shadows"]:
+	for step in steps:
 		_undo.clear()
-		_apply(step)
+		for part in step.split("+"):
+			_apply(part)
 		await _frames_drawn(3)
-		_shot(dir, "c_" + step)
+		_shot(dir, "c_" + step.replace("+", "_"))
 		_restore()
 		await _frames_drawn(3)
 	_shot(dir, "d_as_is_after")
+	_undo = base_undo
+	_restore()
 	get_tree().paused = false
 	say("shots in %s" % dir)
 
@@ -356,11 +391,217 @@ func _restore() -> void:
 	for i in range(_undo.size() - 1, -1, -1):
 		var u: Array = _undo[i]
 		if is_instance_valid(u[0]):
-			u[0].set(u[1], u[2])
+			if u[1] == "__free":
+				u[0].queue_free()
+			else:
+				u[0].set(u[1], u[2])
 	_undo.clear()
+
+# One line a second from the load. The tiles are looked up again only once their first is gone: a tree walk
+# costs a frame, which would land in the max column.
+func _timeline(delta: float) -> void:
+	_tl_t += delta
+	_tl_frames.append(delta * 1000.0)
+	if _tl_t < 1.0:
+		return
+	if _tl_tiles.is_empty() or not is_instance_valid(_tl_tiles[0]):
+		_tl_tiles = _tiles()
+		for v in _tl_tiles:
+			_measure(v)
+	var vis := 0
+	var sh := 0
+	var sh_max := 0
+	var cpu := 0.0
+	for v in _tl_tiles:
+		if not is_instance_valid(v):
+			continue
+		vis += _info(v, RenderingServer.VIEWPORT_RENDER_INFO_TYPE_VISIBLE, RenderingServer.VIEWPORT_RENDER_INFO_DRAW_CALLS_IN_FRAME)
+		var one := _info(v, RenderingServer.VIEWPORT_RENDER_INFO_TYPE_SHADOW, RenderingServer.VIEWPORT_RENDER_INFO_DRAW_CALLS_IN_FRAME)
+		sh += one
+		sh_max = maxi(sh_max, one)
+		cpu += RenderingServer.viewport_get_measured_render_time_cpu(v.get_viewport_rid())
+	var lit := 0
+	for p in _players():
+		var f = p.get("flashlight")
+		if f is Light3D and f.is_visible_in_tree():
+			lit += 1
+	say("t %6.1f  frames %3d  median %6.2f ms  max %6.2f  tiles %d  vis %6d  shadow %6d  shadow_max_tile %5d  tile_cpu %6.2f  flashlights %d  apart %5.1f m  state %s" % [
+		_mg_t, _tl_frames.size(), _pct(_tl_frames, 0.5), _pct(_tl_frames, 1.0), _tl_tiles.size(), vis, sh, sh_max,
+		cpu, lit, _apart(), _mg_state()])
+	_tl_t = 0.0
+	_tl_frames.clear()
+
+func _players() -> Array:
+	var d = _mg.get("players") if is_instance_valid(_mg) else null
+	if not (d is Dictionary):
+		return []
+	return d.values().filter(func(p): return is_instance_valid(p) and p is Node3D)
+
+# The players' mean distance to each other on the floor, in metres.
+func _apart() -> float:
+	var ps := _players()
+	var total := 0.0
+	var n := 0
+	for i in ps.size():
+		for j in range(i + 1, ps.size()):
+			var a: Vector3 = ps[i].global_position
+			var b: Vector3 = ps[j].global_position
+			total += Vector2(a.x, a.z).distance_to(Vector2(b.x, b.z))
+			n += 1
+	return total / n if n > 0 else 0.0
+
+# Far-apart floor spots for n players: searchables picked greedily, each the farthest from those already picked.
+func _spread_spots(n: int) -> Array:
+	var pool: Array = []
+	var s = _mg.get("searchables")
+	if s is Array:
+		for x in s:
+			if is_instance_valid(x) and x is Node3D:
+				pool.append(x.global_position)
+	var spots: Array = []
+	if pool.is_empty():
+		return spots
+	spots.append(pool[0])
+	while spots.size() < mini(n, pool.size()):
+		var best: Vector3 = pool[0]
+		var best_d := -1.0
+		for c in pool:
+			var d := INF
+			for q in spots:
+				d = minf(d, Vector2(c.x, c.z).distance_to(Vector2(q.x, q.z)))
+			if d > best_d:
+				best_d = d
+				best = c
+		spots.append(best)
+	return spots
 
 func _apply(step: String) -> void:
 	match step:
+		"freeze":
+			for n in _all("Node"):
+				if n != self and n.has_method("_drive_bots"):
+					_change(n, "process_mode", Node.PROCESS_MODE_DISABLED)
+			for p in _players():
+				if "active" in p:
+					_change(p, "active", false)
+				if "movement_input" in p:
+					_change(p, "movement_input", Vector3.ZERO)
+		"cluster":
+			var marks_node = _mg.get("player_spawn_positions_node")
+			var marks: Array = marks_node.get_children() if marks_node is Node else []
+			var ps := _players()
+			if marks.is_empty():
+				say("cluster: no spawn markers")
+				return
+			for i in ps.size():
+				var pos: Vector3 = (marks[i % marks.size()] as Node3D).global_position
+				_change(ps[i], "global_position", Vector3(pos.x, ps[i].global_position.y, pos.z))
+		"spread":
+			var ps := _players()
+			var spots := _spread_spots(ps.size())
+			if spots.size() < ps.size():
+				say("spread: %d spots for %d players" % [spots.size(), ps.size()])
+			for i in mini(ps.size(), spots.size()):
+				_change(ps[i], "global_position", Vector3(spots[i].x, ps[i].global_position.y, spots[i].z))
+		"flashlights":
+			for p in _players():
+				for prop in ["flashlight", "flashlight_emitter"]:
+					var f = p.get(prop)
+					if f is Node3D:
+						_change(f, "visible", true)
+		"flash_shadows":
+			for p in _players():
+				var f = p.get("flashlight")
+				if not (f is Light3D):
+					continue
+				var ls: Array = [f]
+				ls.append_array(f.find_children("*", "Light3D", true, false))
+				for l in ls:
+					if l.shadow_enabled:
+						_change(l, "shadow_enabled", false)
+		"ceiling_shadows":
+			var lights = _mg.get_node_or_null("Lights")
+			if lights != null:
+				for l in lights.get_children():
+					if l is Light3D and l.shadow_enabled:
+						_change(l, "shadow_enabled", false)
+		"player_casters":
+			for p in _players():
+				for g in p.find_children("*", "GeometryInstance3D", true, false):
+					if g.cast_shadow != GeometryInstance3D.SHADOW_CASTING_SETTING_OFF:
+						_change(g, "cast_shadow", GeometryInstance3D.SHADOW_CASTING_SETTING_OFF)
+		"name_labels":
+			for p in _players():
+				var l = p.get("player_name_label")
+				if l is Node3D:
+					_change(l, "visible", false)
+		"still":
+			# No caster moves: the players' animation stopped. Shows whether a light's shadow is redrawn only
+			# when something in it moves.
+			for p in _players():
+				for a in p.find_children("*", "AnimationMixer", true, false):
+					_change(a, "active", false)
+		"cabinet_casters", "prop_casters":
+			var want := "searchables parent" if step == "cabinet_casters" else "props parent"
+			for g in _mg.find_children("*", "GeometryInstance3D", true, false):
+				if str(_mg.get_path_to(g)).contains(want) and g.cast_shadow != GeometryInstance3D.SHADOW_CASTING_SETTING_OFF:
+					_change(g, "cast_shadow", GeometryInstance3D.SHADOW_CASTING_SETTING_OFF)
+		"flash_own_tile":
+			# Each flashlight on its own player's tile layer only (local_camera sees starting_layer + 1):
+			# whether a light's layers cull it from the other tiles, and the shadow cost left if so.
+			for p in _players():
+				var f = p.get("flashlight")
+				var own = p.get("local_visual_layer_from")
+				if not (f is Light3D) or not (own is int):
+					continue
+				var ls: Array = [f]
+				ls.append_array(f.find_children("*", "Light3D", true, false))
+				for l in ls:
+					_change(l, "layers", 1 << own)
+		"flash_omni_shadow", "flash_no_bodies":
+			# flash_omni_shadow: only the child omni (3.2 m around the hand) loses its shadow.
+			# flash_no_bodies: the beam and the omni keep their shadows, but the characters' bodies (layer 2 in a
+			# local game, set_player_presence) cast none into them.
+			for p in _players():
+				var f = p.get("flashlight")
+				if not (f is Light3D):
+					continue
+				var ls: Array = [f]
+				ls.append_array(f.find_children("*", "Light3D", true, false))
+				for l in ls:
+					if step == "flash_omni_shadow" and l is OmniLight3D:
+						_change(l, "shadow_enabled", false)
+					elif step == "flash_no_bodies":
+						_change(l, "shadow_caster_mask", l.shadow_caster_mask & ~2)
+		"flash_twin":
+			# The candidate: each flashlight shadowed in its own tile only, and a shadowless copy of it (and of
+			# its child omni) drawn in every other tile.
+			var owns: Array = []
+			for p in _players():
+				var own = p.get("local_visual_layer_from")
+				if own is int and own > 0:
+					owns.append(1 << own)
+			var all_bits := 0
+			for b in owns:
+				all_bits |= b
+			for p in _players():
+				var f = p.get("flashlight")
+				var own = p.get("local_visual_layer_from")
+				if not (f is Light3D) or not (own is int):
+					continue
+				var ls: Array = [f]
+				ls.append_array(f.find_children("*", "Light3D", true, false))
+				for l in ls:
+					var twin: Light3D = l.duplicate(0) as Light3D
+					for c in twin.get_children():
+						twin.remove_child(c)
+						c.free()
+					twin.shadow_enabled = false
+					twin.layers = all_bits & ~(1 << own)
+					l.get_parent().add_child(twin)
+					twin.transform = l.transform
+					_undo.append([twin, "__free", null])
+					_change(l, "layers", 1 << own)
 		"tiles_but_p1":
 			var tiles := _tiles()
 			for i in range(1, tiles.size()):

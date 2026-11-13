@@ -25,7 +25,7 @@ diff --git a/minigames/knife_at_the_office/components/countdown_handler/countdow
 +# [MP8] Appends copies after the original icons; the originals are left untouched.
 +func _mp8_extend_alive_indicators() -> void :
 +
-+	# A mixed room keeps the game's 4 (D120); the room is latched before this scene's add_child.
++	# A mixed room keeps the game's 4; the room is latched before this scene's add_child.
 +	if not NetworkManager.mp8_room_extended():
 +		return
 +
@@ -63,7 +63,7 @@ diff --git a/minigames/knife_at_the_office/components/countdown_handler/countdow
  		i.visible = false
 -	for i in num_of_alive_players:
 -		alive_indicator_icons[i].visible = true
-+	# A mixed room runs the game's loop (D120).
++	# A mixed room runs the game's loop.
 +	if not NetworkManager.mp8_room_extended():
 +		for i in num_of_alive_players:
 +			alive_indicator_icons[i].visible = true
@@ -82,7 +82,7 @@ diff --git a/minigames/knife_at_the_office/components/countdown_handler/countdow
  
  @rpc("authority", "call_local", "reliable")
  func update_alive_indicator_rpc(num_of_alive_players: int):
-+	# Read before the await; a mixed room runs the game's loop (D120).
++	# Read before the await; a mixed room runs the game's loop.
 +	var mp8_ext: bool = NetworkManager.mp8_room_extended()
  	anim_alive_indicator_fader.play("hide")
  	await get_tree().create_timer(0.16, false).timeout

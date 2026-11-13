@@ -4,8 +4,12 @@ extends Node
 # lobby's script with a subclass). The game drops a player out with Start
 # (local_leave); a GameCube pad also drops out with B on its name screen, where
 # the game gives B nothing to do, so from the outfit panel it is B, then B.
+# Better Couch Lobby 1.1's name screen owns back itself (the letters to its list, the list to
+# dropped out) and marks the panel; this helper then stands aside.
 
 var api  # gamecube_support's main.gd: detector, config
+
+const COUCH_LOBBY_BACK := &"couch_lobby_name_back"
 
 var _was_naming := false
 
@@ -14,6 +18,8 @@ func _process(_delta: float) -> void:
 	var naming: bool = controls.assigned_player_id >= 0 and controls.name_entry_selector.active
 	var was := _was_naming
 	_was_naming = naming
+	if controls.has_meta(COUCH_LOBBY_BACK):
+		return
 	if api == null or api.detector == null:
 		return
 	var device: int = controls.device

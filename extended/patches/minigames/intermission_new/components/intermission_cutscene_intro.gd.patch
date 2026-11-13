@@ -38,7 +38,7 @@ diff --git a/minigames/intermission_new/components/intermission_cutscene_intro.g
 +
  func start_intro_cutscene():
 +
-+	# [MP8] A mixed room plays the game's intro (D120), on the game's 4 slots.
++	# [MP8] A mixed room plays the game's intro, on the game's 4 slots.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_unstack_rack()
 +		await _mp8_game_start_intro_cutscene()
@@ -81,7 +81,7 @@ diff --git a/minigames/intermission_new/components/intermission_cutscene_intro.g
 +	_mp8_intro_playing = false
 +	intermission_manager.picker.start_minigame_pick()
 +
-+# The game's start_intro_cutscene, for a mixed room (D120).
++# The game's start_intro_cutscene, for a mixed room.
 +func _mp8_game_start_intro_cutscene():
  	if multiplayer.get_unique_id() == get_multiplayer_authority():
  		setup_synced_player_name_list()
@@ -91,7 +91,7 @@ diff --git a/minigames/intermission_new/components/intermission_cutscene_intro.g
  
  func skip_intro_cutscene():
 +
-+	# [MP8] A mixed room plays the game's intro (D120), on the game's 4 slots.
++	# [MP8] A mixed room plays the game's intro, on the game's 4 slots.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_unstack_rack()
 +		await _mp8_game_skip_intro_cutscene()
@@ -111,7 +111,7 @@ diff --git a/minigames/intermission_new/components/intermission_cutscene_intro.g
 +		await get_tree().create_timer(1, false).timeout
 +	intermission_manager.picker.start_minigame_pick()
 +
-+# The game's skip_intro_cutscene, for a mixed room (D120).
++# The game's skip_intro_cutscene, for a mixed room.
 +func _mp8_game_skip_intro_cutscene():
  	for i in visuals_to_hide:
  		i.visible = false
@@ -121,7 +121,7 @@ diff --git a/minigames/intermission_new/components/intermission_cutscene_intro.g
  
  func bootup_nametag():
 +
-+	# [MP8] A mixed room plays the game's intro (D120), on the game's 4 slots.
++	# [MP8] A mixed room plays the game's intro, on the game's 4 slots.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_unstack_rack()
 +		_mp8_game_bootup_nametag()
@@ -138,7 +138,7 @@ diff --git a/minigames/intermission_new/components/intermission_cutscene_intro.g
 +	rack_nametags[vessel_to_insert_index].set_nametag_text(player_name.to_upper())
 +	rack_nametags[vessel_to_insert_index].show_nametag()
 +
-+# The game's bootup_nametag, for a mixed room (D120).
++# The game's bootup_nametag, for a mixed room.
 +func _mp8_game_bootup_nametag():
  	speaker_intro_show_nametag.pitch_scale = randf_range(0.3, 0.34)
  	speaker_intro_show_nametag.play()
@@ -147,7 +147,7 @@ diff --git a/minigames/intermission_new/components/intermission_cutscene_intro.g
  @rpc("any_peer", "call_remote", "reliable")
  func reset_nametags_rpc(id_array: Array):
  
-+	# [MP8] A mixed room plays the game's intro (D120), on the game's 4 slots.
++	# [MP8] A mixed room plays the game's intro, on the game's 4 slots.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_unstack_rack()
 +		_mp8_game_reset_nametags_rpc(id_array)
@@ -169,7 +169,7 @@ diff --git a/minigames/intermission_new/components/intermission_cutscene_intro.g
 +		rack_nametags[i].set_nametag_text(player_name.to_upper())
 +		rack_nametags[i].show_nametag()
 +
-+# The game's reset_nametags_rpc, for a mixed room (D120).
++# The game's reset_nametags_rpc, for a mixed room.
 +func _mp8_game_reset_nametags_rpc(id_array: Array):
 +
  	for i in id_array.size():

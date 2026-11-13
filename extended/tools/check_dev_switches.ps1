@@ -1,5 +1,5 @@
 # Checks that every command-line switch this build adds is read through NetworkManager.mp8_dev_args(),
-# which is empty outside a test build or the editor (D116, D119), while the game's own switches stay as
+# which is empty outside a test build or the editor, while the game's own switches stay as
 # the game reads them. A line is ours when its text (trimmed) is not one of src\'s lines, so a moved or
 # re-indented game line still counts as the game's. Exits 1 on any failure:
 #   R1  a get_cmdline_args or get_cmdline_user_args call on a line of ours, other than mp8_dev_args()'s own;

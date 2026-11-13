@@ -5,6 +5,8 @@ extends Node
 const MOD_ID := "mp8_support"
 const PACK := "mp8_support_overlay.zip"
 const MANIFEST := "vanilla_md5.json"
+# The online tag's prefix (network_manager's MP8_VERSION_TAG); the build writes it into the manifest too.
+const TAG_PREFIX := "mp-extended-"
 const SENTINELS := [
 	"res://modules/multiplayer/network_manager.gd",
 	"res://scripts/scenes/game/game.gd",
@@ -31,7 +33,7 @@ const MESSAGES := {
 const MAIN_MENU := "res://scenes/main_menu/scripts/main_menu.gd"
 const TITLE_ART := "title_extended.png"
 const RELAY := "mp8_net.gd"
-# The word's centre from the logo's top left, in the menu's 960x540 pixels (tools/make_title.py, D106).
+# The word's centre from the logo's top left, in the menu's 960x540 pixels (tools/make_title.py).
 const TITLE_CENTRE := Vector2(283.0, 91.5)
 var _mounted: bool = false
 var _title: Texture2D = null
@@ -46,7 +48,7 @@ func _valid_manifest(parsed) -> bool:
 		return false
 	if typeof(parsed.get("files")) != TYPE_DICTIONARY or parsed["files"].is_empty():
 		return false
-	if typeof(parsed.get("game_version")) != TYPE_STRING or not parsed["game_version"].begins_with("mp8-"):
+	if typeof(parsed.get("game_version")) != TYPE_STRING or not parsed["game_version"].begins_with(TAG_PREFIX):
 		return false
 	if typeof(parsed.get("overlay_sha256")) != TYPE_STRING:
 		return false
@@ -80,7 +82,7 @@ func _mod_init(loader) -> void:
 		_fail(loader, "OVERTIME_PRESENT", "mods/" + overtime)
 		return
 	# The bundle's folder is named machine_party_extended, a build's mp8_support; the loader starts both
-	# copies of one id, and two overlays would mount. A copy built before D157 never checks, so it alone mounts.
+	# copies of one id, and two overlays would mount. An older copy without this check mounts alone.
 	var twin := _installed_folder(directory.get_base_dir(), MOD_ID, directory.get_file())
 	if not twin.is_empty():
 		_fail(loader, "INSTALLED_TWICE", "mods/" + twin)
@@ -145,7 +147,7 @@ func _mod_init(loader) -> void:
 	_host_init(loader, directory)
 
 # A bundle carries its other mods in subfolders, whose mod.json the loader never reads (one level
-# only), so they start here, in the loader's order, and only with the overlay mounted (D157).
+# only), so they start here, in the loader's order, and only with the overlay mounted.
 # Each finds its folder in the "mpml_dir" meta, since dir_of() knows only top-level mods.
 func _host_init(loader, directory: String) -> void:
 	var found: Array = []
@@ -189,9 +191,9 @@ func _host_init(loader, directory: String) -> void:
 		if node.has_method("_mod_init"):
 			node.call("_mod_init", loader)
 
-# EXTENDED beside the main menu's logo, and our tag in its corner. A hook rather than a patch, so
-# main_menu.gd stays the game's. The loader calls it on node_added, while the menu's children are still
-# entering the tree; deferred, it runs after the menu's _ready has written the corner.
+# EXTENDED beside the main menu's logo, and our tag in its corner. The loader calls it on node_added,
+# while the menu's children are still entering the tree; deferred, it runs after the menu's _ready has
+# written the corner.
 func _hook_title(loader, directory: String) -> void:
 	if not loader.has_method("has_api") or not loader.has_api("on_scene_script"):
 		loader.note("mp8_support: title word and version corner off")
@@ -241,7 +243,7 @@ static func _installed_folder(mods_dir: String, id: String, skip: String = "") -
 	return ""
 
 func _normalized_version(value: String) -> String:
-	value = value.trim_prefix("mp8-")
+	value = value.trim_prefix(TAG_PREFIX)
 	var pieces := value.split("-", true, 1)
 	var numbers := pieces[0].split(".")
 	if numbers.size() == 3 and numbers[2] == "0":
@@ -262,7 +264,7 @@ func _mod_ready(loader) -> void:
 	get_tree().root.add_child.call_deferred(relay)
 	var nm = get_tree().root.get_node_or_null("NetworkManager")
 	var actual: String = str(nm.get("MP8_VERSION_TAG")) if nm != null else "?"
-	if not actual.begins_with("mp8-") or declared == "?" or _normalized_version(actual) != _normalized_version(declared):
+	if not actual.begins_with(TAG_PREFIX) or declared == "?" or _normalized_version(actual) != _normalized_version(declared):
 		_fail(loader, "VERSION_MISMATCH", declared + " / " + actual)
 	else:
 		loader.note("mp8_support: [READY] " + _text("READY") + " " + actual)

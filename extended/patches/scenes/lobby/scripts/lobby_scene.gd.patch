@@ -32,7 +32,7 @@ diff --git a/scenes/lobby/scripts/lobby_scene.gd b/scenes/lobby/scripts/lobby_sc
  	if not NetworkManager.active_backend:
  		return
  
-+	NetworkManager.mp8_lobby_layout(lobby_handler, player_order_by_seat.size() > NetworkManager.MP8_MIXED_CAP)  # [MP8] D121
++	NetworkManager.mp8_lobby_layout(lobby_handler, player_order_by_seat.size() > NetworkManager.MP8_MIXED_CAP)  # [MP8]
  	lobby_handler.update_player_list(player_order_by_seat.values())
  
  func fade_loading_screen():
@@ -40,7 +40,7 @@ diff --git a/scenes/lobby/scripts/lobby_scene.gd b/scenes/lobby/scripts/lobby_sc
  @rpc("any_peer", "call_remote", "reliable")
  func player_joined_lobby_rpc(_network_id: int):
  
-+	# [MP8] D121: the seat map fitted to the room, before the game's loop takes the first free seat.
++	# [MP8] The seat map fitted to the room, before the game's loop takes the first free seat.
 +	var mp8_seats := player_order_by_seat.size()
 +	player_order_by_seat = NetworkManager.mp8_fit_seats(player_order_by_seat, NetworkManager.mp8_room_extended())
 +	if player_order_by_seat.size() != mp8_seats:
@@ -75,8 +75,8 @@ diff --git a/scenes/lobby/scripts/lobby_scene.gd b/scenes/lobby/scripts/lobby_sc
  		NetworkManager.RefuseReason.HostLeft:
  			message = tr("LOC_ROOM_DISBANDED")
 +		NetworkManager.RefuseReason.MP8RoomFull:
-+			# [MP8] Sent only by an Extended host; a vanilla joiner shows its own fallback for it (D117).
-+			message = NetworkManager.MP8_ROOM_FULL_TEXT
++			# [MP8] Sent only by an Extended host; a vanilla joiner shows its own fallback for it.
++			message = NetworkManager.mp8_room_full_text()
  
  	GameManager.main_menu_dialog_message = message
  	if not is_inside_tree():
@@ -84,7 +84,7 @@ diff --git a/scenes/lobby/scripts/lobby_scene.gd b/scenes/lobby/scripts/lobby_sc
  			player_order_by_seat[key] = -1
  			break
  
-+	# [MP8] D121: a leave's broadcast is fitted too; a vanilla peer may be connecting.
++	# [MP8] A leave's broadcast is fitted too; a vanilla peer may be connecting.
 +	player_order_by_seat = NetworkManager.mp8_fit_seats(player_order_by_seat, NetworkManager.mp8_room_extended())
  	player_list_updated_rpc.rpc(player_order_by_seat)
  

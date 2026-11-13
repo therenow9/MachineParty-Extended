@@ -16,7 +16,7 @@ diff --git a/minigames/smoke_break/components/player/scripts/smoke_break_player.
  
  
 +# [MP8] Extended's setup, sent by the relay in an Extended room (smoke_break.gd) with the seat's death
-+# animation; a mixed room sends the game's setup_rpc above (D120).
++# animation; a mixed room sends the game's setup_rpc above.
 +func mp8_setup_rpc(_position: Vector3, _rotation: Vector3, _seat_index: int, _mp8_death_anim: String = ""):
 +
 +	global_position = _position

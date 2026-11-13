@@ -187,14 +187,33 @@ static func widen(current: float, raw: float) -> float:
 static func l_click_step(was_down: bool, raw: float, threshold: float) -> bool:
 	return raw >= threshold if not was_down else raw > threshold - L_RELEASE_GAP
 
-# pads: [{name, guid}]. Returns "" or what is wrong.
-static func duplicate_problem(pads: Array, hidapi_disabled: bool) -> String:
+# pads: [{name, guid}]. Returns "" or what is wrong, in English unless lang says otherwise.
+static func duplicate_problem(pads: Array, hidapi_disabled: bool, lang := "EN") -> String:
 	var hidapi := pads.filter(func(p): return HIDAPI_GC_NAME in str(p.get("name", "")).to_lower())
 	if hidapi.size() > 4 and not hidapi_disabled:
-		return "the GameCube adapter shows up as %d pads" % hidapi.size()
+		return pick(lang, "the GameCube adapter shows up as %d pads", "GameCube 适配器被识别为 %d 个手柄",
+			"GameCube 轉接器被識別為 %d 個手把") % hidapi.size()
 	if pads.size() >= MAX_JOYPADS:
-		return "%d controllers connected, the most the game can see" % pads.size()
+		return pick(lang, "%d controllers connected, the most the game can see", "已连接 %d 个控制器，已达游戏可识别的上限",
+			"已連接 %d 個控制器，已達遊戲可識別的上限") % pads.size()
 	return ""
+
+# The game's language as "EN", "ZHS" or "ZHT": the game sets its loc sheet's codes, and the zh_* forms are
+# taken too. Only the toasts follow it; the log and the console stay English.
+static func lang_of(raw: String) -> String:
+	var value := raw.to_upper().replace("-", "_")
+	if value == "ZHT" or value == "ZH_TW" or value == "ZH_HK" or value == "ZH_MO" or value.begins_with("ZH_HANT"):
+		return "ZHT"
+	if value == "ZHS" or value == "ZH" or value == "ZH_CN" or value == "ZH_SG" or value.begins_with("ZH_HANS"):
+		return "ZHS"
+	return "EN"
+
+static func pick(lang: String, en: String, zhs: String, zht: String) -> String:
+	if lang == "ZHS":
+		return zhs
+	if lang == "ZHT":
+		return zht
+	return en
 
 # --- face buttons -------------------------------------------------------------
 
@@ -328,9 +347,9 @@ func describe(device: int) -> String:
 		parts.append("real LB found" if s["lb_real"] else "L click = LB")
 	return ", ".join(parts)
 
-func current_problem() -> String:
+func current_problem(lang := "EN") -> String:
 	var pads := Input.get_connected_joypads().map(func(d): return {"name": Input.get_joy_name(d), "guid": Input.get_joy_guid(d)})
-	return duplicate_problem(pads, OS.get_environment("SDL_JOYSTICK_HIDAPI_GAMECUBE") == "0")
+	return duplicate_problem(pads, OS.get_environment("SDL_JOYSTICK_HIDAPI_GAMECUBE") == "0", lang)
 
 func _on_joy_connection_changed(device: int, connected: bool) -> void:
 	if connected:

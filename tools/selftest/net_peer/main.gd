@@ -90,10 +90,10 @@ func _mod_ready(loader) -> void:
 
 # The main menu applies the saved display settings on its _ready (options_handler.apply_settings), after
 # _mod_ready, so the window is placed once the menu is up and again in the lobby. Position is in the
-# primary screen's pixels, the ones ddagrab's output 0 crops.
+# pixels of the screen left of the primary (window_place's rule), the ones run_online.sh's ddagrab crops.
 func _place_window() -> void:
 	var xy := String(cfg["window"]).split(",")
-	var screen := DisplayServer.get_primary_screen()
+	var screen := _left_screen()
 	DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_WINDOWED)
 	DisplayServer.window_set_current_screen(screen)
 	DisplayServer.window_set_flag(DisplayServer.WINDOW_FLAG_BORDERLESS, true)
@@ -106,6 +106,21 @@ func _place_window() -> void:
 	DisplayServer.window_set_position(DisplayServer.screen_get_position(screen) + Vector2i(int(xy[0]), int(xy[1])))
 	await get_tree().process_frame
 	say("WINDOW screen=%d at %s pos=%s size=%s" % [screen, DisplayServer.screen_get_position(screen), DisplayServer.window_get_position(), DisplayServer.window_get_size()])
+
+# A scaled screen's size is not in physical pixels, so the nearest screen starting left of the primary, at
+# its height, is taken; MP_WINDOW_SCREEN=primary keeps the primary.
+func _left_screen() -> int:
+	var primary := DisplayServer.get_primary_screen()
+	if OS.get_environment("MP_WINDOW_SCREEN") == "primary":
+		return primary
+	var p := Rect2i(DisplayServer.screen_get_position(primary), DisplayServer.screen_get_size(primary))
+	var best := -1
+	for s in DisplayServer.get_screen_count():
+		var at := DisplayServer.screen_get_position(s)
+		if s != primary and at.x < p.position.x and at.y < p.end.y \
+				and (best < 0 or at.x > DisplayServer.screen_get_position(best).x):
+			best = s
+	return primary if best < 0 else best
 
 # While a minigame plays, presses like a player who mashes: a held direction that changes about once
 # a second and one or two other actions at a time, so idle-proof minigames end and the players' RPCs fire.
@@ -290,7 +305,7 @@ func _watch() -> void:
 			finish("capped %s" % key)
 
 # What each peer's own copy of an Extended minigame holds after its start, for the runner to compare with the
-# host's: relay calls the host sends from initialize() run inside the last client's player_loaded RPC (PD19).
+# host's: relay calls the host sends from initialize() run inside the last client's player_loaded RPC.
 func _probe(mg) -> void:
 	match Globals.MinigameIdentifier.keys()[Globals.current_minigame_identifier]:
 		"ManufactureGun":

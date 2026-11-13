@@ -77,7 +77,7 @@ done
 mkdir -p "$LOGS"
 before="$(md5sum "$SAVES"/*.save "$SAVES"/*.json 2>/dev/null)"
 [ -n "$before" ] || die "no saves found in $SAVES"
-installed=(lg_joyprobe)
+installed=(lg_joyprobe window_place)
 cleanup() { for m in "${installed[@]}"; do rm -rf "${GAME:?}/mods/${m:?}"; done; }
 trap cleanup EXIT
 # Our own mods are replaced with the repo's copies. Those the owner already had
@@ -92,13 +92,16 @@ for m in "$REPO"/mods/*/; do
   fi
 done
 rm -rf "${GAME:?}/mods/lg_joyprobe" && cp -r "$PROBE" "$GAME/mods/" || die "could not install the probe"
+# The owner plays it, so it opens on the screen left of the primary and keeps focus.
+cp -r "$REPO/tools/selftest/window_place" "$GAME/mods/" || die "could not install window_place"
 
 sdl_config=""
 [ "$raw" = 1 ] && sdl_config="$(grep -o 'const RAW_SDL := "[^"]*"' "$PROBE/main.gd" | sed 's/^const RAW_SDL := "//; s/"$//')"
 stamp="$(date +%Y%m%d-%H%M%S)"
-(cd "$GAME" && SDL_JOYSTICK_HIDAPI_GAMECUBE=0 SDL_GAMECONTROLLERCONFIG="$sdl_config" JOYPROBE_WATCH="$watch" JOYPROBE_PLAY="$play" \
+(cd "$GAME" && SDL_JOYSTICK_HIDAPI_GAMECUBE=0 SDL_GAMECONTROLLERCONFIG="$sdl_config" JOYPROBE_WATCH="$watch" JOYPROBE_PLAY="$play" MP_WINDOW_FOCUS="${MP_WINDOW_FOCUS:-keep}" \
   timeout 500 "./Machine Party.exe" > "$LOGS/probe_stdout_$stamp.txt" 2>&1)
 echo "exit=$?"
+grep -E '^\[window_place\] (WARN|WINDOW)' "$LOGS/probe_stdout_$stamp.txt" | awk '/WARN/ || !w++' | head -4
 if [ -f "$GAME/mods/lg_joyprobe/result.txt" ]; then
   cp "$GAME/mods/lg_joyprobe/result.txt" "$LOGS/probe_$stamp.txt"
   grep -vE "SEEN|FOCUS" "$LOGS/probe_$stamp.txt"

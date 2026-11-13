@@ -6,7 +6,7 @@ diff --git a/scripts/scenes/game/states/minigame_playing_state.gd b/scripts/scen
  
 +var _mp8_finish_source: WeakRef
 +var _mp8_finish_callback: Callable
-+# Read at each round's enter(), inside its latch. False: a mixed room, which takes the game's own flow (D116).
++# Read at each round's enter(), inside its latch. False: a mixed room, which takes the game's own flow.
 +var _mp8_claim: bool = true
 +
  func enter(_msg: Dictionary = {}) -> void :

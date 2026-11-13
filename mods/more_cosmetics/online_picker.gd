@@ -4,21 +4,24 @@ extends Node
 # select_cosmetic asks is_compatible_with_glasses(), which returns null for any
 # name it doesn't know, so under one of our hats it refuses every pair of
 # glasses. After the game handles a tile press, this redoes it with select().
-# It also lays the screen out as one 7-column grid with our colour row (owner's
-# picks, plan Phases 6 and 8) and names our items on the info labels.
+# It also lays the screen out as one 7-column grid with our colours in rows of
+# swatches beside and under the game's (as picked) and names our items on the
+# info labels.
 
 const BRANCH_PATH := "res://scripts/components/character customization/customization_selection_branch.gd"
 const GAME_TILE := 89.0
 const TILE := 46.0
 const PITCH := 52.0
 const COLUMNS := 7
-# Our swatch row sits this far under the game's solid row, above Overtime's.
+# The colour swatches' row pitch, and how many to a row (picked by the owner:
+# teal ends the game's row, the rest of ours make a second).
 const ROW_GAP := 22.0
+const SWATCH_COLUMNS := 6
 # Codes after Overtime's last (0010060), in catalog order: hats, glasses, colours.
 const FIRST_CODE := 10061
 # Tile-only emission for ours that render too dark to read in their tiles;
-# xc_screen measures each tile's lit pixels. The amounts are the owner's picks
-# (plan Phases 6 and 8): emission scales the item's own texture.
+# xc_screen measures each tile's lit pixels. The amounts were picked from renders;
+# emission scales the item's own texture.
 const TILE_LIFT := {"xc_eyepatch_glasses": 0.08, "xc_head_mirror": 0.10, "xc_kippah": 0.06}
 const LAID_OUT := &"xc_online_layout"
 
@@ -27,6 +30,7 @@ var hats: Array = []
 var glasses: Array = []
 var no_glasses_hats: Array = []
 var colors: Dictionary = {}
+var swatches: Dictionary = {}
 var note: Callable
 
 var _hat := ""
@@ -180,39 +184,73 @@ func _lay_out(sel: Node, branches: Dictionary, solids: Dictionary) -> void:
 	var bottom := grid_slot(order.size() - 1, origin).y + TILE
 	var dy := bottom - old_bottom
 
-	# The colour panel moves up into the freed space, and our row goes under the
-	# game's solid swatches; Overtime's two-tone row moves below ours.
+	# The colour panel moves up into the freed space. The swatches fill rows of
+	# SWATCH_COLUMNS, the game's solids (the screen's own colour order; Overtime's
+	# two-tone suits have none) and then ours; Overtime's two-tone row goes below.
+	var game_order: Array = sel.suit_colors.filter(func(id): return solids.has(id))
+	if game_order.size() < 2 or game_order.size() > SWATCH_COLUMNS:
+		if note.is_valid():
+			note.call("more_cosmetics: the online screen's colours aren't laid out as expected; our colours aren't on it")
+		return
+	var ids: Array = colors.keys()
+	var rows := ceili((game_order.size() + ids.size()) / float(SWATCH_COLUMNS))
 	var overtime: Array = ui.get_children().filter(func(n): return str(n.name).begins_with("OvertimeMixedSuit"))
 	for n in [panel, overlay, sel.ninepatch_color_selection] + solids.values().map(func(b): return b.get_parent()):
 		if n != null:
 			n.position.y += dy
 	for n in overtime:
-		n.position.y += dy + ROW_GAP
-	panel.size.y += ROW_GAP
+		n.position.y += dy + (rows - 1) * ROW_GAP
+	# The game's swatches are not evenly spaced: the columns keep their x, and
+	# any past them step on by the row's mean pitch.
+	var first_swatch: Control = solids[game_order[0]].get_parent()
+	var xs: Array = game_order.map(func(id): return solids[id].get_parent().position.x)
+	var pitch_x: float = (xs[-1] - xs[0]) / (xs.size() - 1)
+	while xs.size() < SWATCH_COLUMNS:
+		xs.append(xs[-1] + pitch_x)
+	var wider: float = xs[-1] - xs[game_order.size() - 1]
+	panel.size += Vector2(wider, (rows - 1) * ROW_GAP)
 	_caret_y = sel.ninepatch_color_selection.position.y
 	if overlay != null:
-		var o: Control = overlay.duplicate()
-		o.name = "XcSwatchOverlay"
-		ui.add_child(o)
-		o.position.y += ROW_GAP
+		overlay.size.x += wider / overlay.scale.x
+		var last: Control = overlay
+		for r in range(1, rows):
+			var o: Control = overlay.duplicate()
+			o.name = "XcSwatchOverlay" if r == 1 else "XcSwatchOverlay%d" % r
+			last.add_sibling(o)
+			last = o
+			o.position.y += r * ROW_GAP
 
-	# The screen's own colour order; Overtime's two-tone suits have no solid swatch.
-	var game_order: Array = sel.suit_colors.filter(func(id): return solids.has(id))
-	var ids: Array = colors.keys()
+	var cells: Array = game_order.map(func(id): return solids[id].button.get_parent())
 	for i in ids.size():
-		var src = solids.get(game_order[i]) if i < game_order.size() else null
-		if src == null:
-			continue
-		var b := _our_swatch(sel, src, ids[i])
+		var j := game_order.size() + i
+		var at := Vector2(xs[j % SWATCH_COLUMNS], first_swatch.position.y + j / SWATCH_COLUMNS * ROW_GAP)
+		var b := _our_swatch(sel, solids[game_order[0]], ids[i], at)
 		_swatches[ids[i]] = b
-		var above: Control = src.button.get_parent()
-		above.focus_neighbor_bottom = above.get_path_to(b)
-		b.focus_neighbor_top = b.get_path_to(above)
-		if overtime.size() == 3:
-			b.focus_neighbor_bottom = b.get_path_to(overtime[mini(i / 2, 2)])
-	for i in overtime.size():
-		if _swatches.size() == 5:
-			overtime[i].focus_neighbor_top = overtime[i].get_path_to(_swatches[ids[i * 2]])
+		cells.append(b)
+	# The game draws its fabric (subtracted) over its swatches and the caret over
+	# both; ours go under the fabric too, or they show flat.
+	if overlay != null:
+		for id in ids:
+			ui.move_child(_swatches[id].get_parent(), overlay.get_index())
+	# Up and down between rows, and along each row; the top row's up and the ends
+	# of a row keep the game's own search.
+	for j in cells.size():
+		var b: Control = cells[j]
+		if j >= SWATCH_COLUMNS:
+			b.focus_neighbor_top = b.get_path_to(cells[j - SWATCH_COLUMNS])
+		if j + SWATCH_COLUMNS < cells.size():
+			b.focus_neighbor_bottom = b.get_path_to(cells[j + SWATCH_COLUMNS])
+		if j % SWATCH_COLUMNS > 0:
+			b.focus_neighbor_left = b.get_path_to(cells[j - 1])
+		if j % SWATCH_COLUMNS < SWATCH_COLUMNS - 1 and j + 1 < cells.size():
+			b.focus_neighbor_right = b.get_path_to(cells[j + 1])
+	if overtime.size() == 3:
+		var last_row := (rows - 1) * SWATCH_COLUMNS
+		for j in range(last_row, cells.size()):
+			cells[j].focus_neighbor_bottom = cells[j].get_path_to(overtime[mini((j - last_row) / 2, 2)])
+		for i in overtime.size():
+			var above: Control = cells[mini(last_row + i * 2, cells.size() - 1)]
+			overtime[i].focus_neighbor_top = overtime[i].get_path_to(above)
 	_place_caret()
 
 # A tile built like the game's: a copy of its first tile's frame and button,
@@ -333,7 +371,7 @@ static func _lift(item: Node3D, energy: float) -> void:
 	for s in mi.mesh.get_surface_count():
 		mi.set_surface_override_material(s, mat)
 
-func _our_swatch(sel: Node, src_branch: Node, id: String) -> Control:
+func _our_swatch(sel: Node, src_branch: Node, id: String, at: Vector2) -> Control:
 	var src: ColorRect = src_branch.get_parent()
 	var button_path := src.get_path_to(src_branch.button)
 	var s := sel.ui_root.get_node_or_null("XcSwatch_" + id) as ColorRect
@@ -343,8 +381,8 @@ func _our_swatch(sel: Node, src_branch: Node, id: String) -> Control:
 		var branch := s.get_node(src.get_path_to(src_branch))
 		branch.get_parent().remove_child(branch)
 		branch.free()
-		s.color = colors[id]
-		s.position.y += ROW_GAP
+		s.color = swatches.get(id, colors[id])
+		s.position = at
 		sel.ui_root.add_child(s)
 		var bc = s.get_node(button_path)
 		bc.is_pressed.connect(func(): get_parent().select_suit_color(id))

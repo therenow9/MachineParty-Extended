@@ -18,9 +18,10 @@
 #   --spoof=TAG  van peers send game_version+TAG, as Extended before 0.22 did (an old Extended joiner)
 #   --last       what the last joiner should see (default joined); every other joiner must join. A reason
 #                past the peer's own list (a vanilla peer refused with MP8RoomFull) reads reason_<n>
-#   --cast       a trailer take (docs/plans/2026-10-31-trailer.md, D125): each seat is tools/trailer_cast/trailer.json's
+#   --cast       a trailer take: each seat is tools/trailer_cast/trailer.json's
 #                cast, long name and outfit, and every peer gets mods/more_cosmetics (most of the cast's items)
-#   --window=I   peer I (0 = host) runs windowed, borderless and on top, 960x540 at the desktop's (WIN_X, WIN_Y),
+#   --window=I   peer I (0 = host) runs windowed, borderless and on top, 960x540 at (WIN_X, WIN_Y) on the screen
+#                left of the primary (MP_WINDOW_SCREEN=primary: on the primary),
 #                with the music bus muted; the rest stay headless
 #   --record     the windowed peer's take, never overwriting one: ddagrab (real time, ffmpeg's Desktop
 #                Duplication of the window into Ut Video, the game's sound recorded by the peer beside it as
@@ -99,9 +100,25 @@ if [ -n "$take" ]; then
   [ "$rec_kind" = movie ] && [ -n "$(ls "$(dirname "$rec_file")" 2>/dev/null)" ] && die "$(dirname "$rec_file") is not empty; Movie Maker writes frame00000000.png onward into it"
   mkdir -p "$(dirname "$rec_file")" || die "could not make $(dirname "$rec_file")"
 fi
-# Physical desktop pixels on the primary display, the same for the window and ddagrab's crop.
+# Physical pixels on the window's screen, the same for the window and ddagrab's crop.
 WIN_X="${WIN_X:-64}"
 WIN_Y="${WIN_Y:-64}"
+# ddagrab's output index for the peer's screen, from DXGI's own list (two screens of one size can't be told
+# apart by ddagrab's log): the primary is the output at 0, 0, the screen left of it ends at x 0.
+if [ "$rec_kind" = ddagrab ]; then
+  outputs="$(pwsh -NoProfile -File "$REPO/tools/dxgi_outputs.ps1" | tr -d '\r')" || die "tools/dxgi_outputs.ps1 failed"
+  if [ "${MP_WINDOW_SCREEN:-}" = primary ]; then
+    OUT_IDX="$(echo "$outputs" | awk '$2 == 0 && $3 == 0 {print $1; exit}')"
+  else
+    OUT_IDX="$(echo "$outputs" | awk '$4 == 0 && $3 < pb && $5 > 0 {print $1; exit}' pb="$(echo "$outputs" | awk '$2 == 0 && $3 == 0 {print $5}')")"
+  fi
+  [ -n "$OUT_IDX" ] || die "no DXGI output for the peer's screen; outputs: $outputs (MP_WINDOW_SCREEN=primary records on the primary)"
+  # The game is DPI-aware at the primary's scale only: on a screen scaled otherwise Windows stretches its
+  # window as a bitmap, so the take is neither 1:1 nor where the crop is, while every check still passes.
+  dpi_of() { echo "$outputs" | awk -v i="$1" '$1 == i {print $6}'; }
+  primary_idx="$(echo "$outputs" | awk '$2 == 0 && $3 == 0 {print $1; exit}')"
+  [ "$(dpi_of "$OUT_IDX")" = "$(dpi_of "$primary_idx")" ] || die "ddagrab: output $OUT_IDX is at $(dpi_of "$OUT_IDX") dpi, the primary at $(dpi_of "$primary_idx"); a take there would be stretched. Record with --record=movie:<dir>/frame.png, or MP_WINDOW_SCREEN=primary for a ddagrab take on the primary"
+fi
 
 # Git Bash's python is often the Store's stub; the installer's copy is under LOCALAPPDATA.
 find_python() {
@@ -110,8 +127,8 @@ find_python() {
   command -v py >/dev/null && echo py && return
   command -v python
 }
-# A WINDOW line from net_peer, against the primary screen's origin (Godot puts the desktop's top-left screen
-# at 0, 0): the window must be 960x540 at (WIN_X, WIN_Y) on it, where ddagrab crops.
+# A WINDOW line from net_peer, against its screen's origin (Godot puts the desktop's top-left screen at 0, 0):
+# the window must be 960x540 at (WIN_X, WIN_Y) on it, where ddagrab crops.
 window_in_place() {
   [[ "$1" =~ at\ \(([-0-9]+),\ ([-0-9]+)\)\ pos=\(([-0-9]+),\ ([-0-9]+)\)\ size=\(960,\ 540\) ]] \
     && [ $((BASH_REMATCH[3] - BASH_REMATCH[1])) = "$WIN_X" ] && [ $((BASH_REMATCH[4] - BASH_REMATCH[2])) = "$WIN_Y" ]
@@ -139,7 +156,7 @@ have="$(stat -c %s "$GAME/Machine Party.pck")"
 tag=""
 if [[ " ${roles[*]} " == *" ext "* ]]; then
   [ -n "$MP8" ] && [ -f "$MP8/mod.json" ] && [ -f "$MP8/mp8_support_overlay.zip" ] || die "ext peers: set MP_MP8_BUILD to a build (extended/dist/<build>/mp8_support)"
-  tag="$(grep -o '"mod_tag": *"[^"]*"' "$MP8/BUILDINFO.json" | grep -o 'mp8-[0-9.]*')"
+  tag="$(grep -o '"mod_tag": *"[^"]*"' "$MP8/BUILDINFO.json" | grep -o 'mp-extended-[0-9.]*')"
   [ -n "$tag" ] || die "no mod_tag in $MP8/BUILDINFO.json"
 fi
 
@@ -234,7 +251,7 @@ if [ "$rec_kind" = ddagrab ]; then
     date +%s.%N > "$out/rec_start_unix.txt"
     { while [ ! -e "$out/stop_rec" ] && kill -0 "$wpid" 2>/dev/null && ! grep -qE ' (END |SCENE MainMenu)' "$res" 2>/dev/null; do sleep 0.2; done; echo q; } \
       | timeout $((limit + 90)) ffmpeg -hide_banner -loglevel warning \
-      -f lavfi -i "ddagrab=output_idx=0:draw_mouse=0:framerate=60:offset_x=$WIN_X:offset_y=$WIN_Y:video_size=960x540,hwdownload,format=bgra" \
+      -f lavfi -i "ddagrab=output_idx=$OUT_IDX:draw_mouse=0:framerate=60:offset_x=$WIN_X:offset_y=$WIN_Y:video_size=960x540,hwdownload,format=bgra" \
       -c:v utvideo -pix_fmt gbrp "$rec_file" > "$out/ffmpeg.txt" 2>&1 &
     rec_pid=$!
   fi
@@ -251,9 +268,9 @@ fail() { echo "FAIL $1"; fails=$((fails + 1)); }
 if [ -n "$window" ]; then
   win_line="$(grep ' WINDOW ' "$PEERS/p$window/mods/net_peer/result.txt" 2>/dev/null | tail -1)"
   if window_in_place "$win_line"; then
-    echo "PASS p$window's window at ($WIN_X, $WIN_Y) on the primary screen, 960x540"
+    echo "PASS p$window's window at ($WIN_X, $WIN_Y) on its screen, 960x540${OUT_IDX:+, ddagrab output $OUT_IDX}"
   else
-    fail "p$window's window was not at ($WIN_X, $WIN_Y) 960x540 on the primary screen: ${win_line:-no WINDOW line}${rec_kind:+ (nothing was recorded unless the lobby's line was in place; check the take's frames)}"
+    fail "p$window's window was not at ($WIN_X, $WIN_Y) 960x540 on its screen: ${win_line:-no WINDOW line}${rec_kind:+ (nothing was recorded unless the lobby's line was in place; check the take's frames)}"
   fi
 fi
 if [ "$rec_kind" = ddagrab ]; then
@@ -307,7 +324,7 @@ if [ "${#joined[@]}" -ge 2 ]; then
     [ "$(grep -o ' SCORES .*' "$out/p${i}_result.txt")" = "$scores_h" ] && echo "PASS p$i scores match the host's at every briefing ($(echo "$scores_h" | grep -c SCORES); the last minigame's are not compared)" || fail "p$i scores differ from the host's"
   done
   # Each peer changes its own copy of Firearm Factory's bench room (zz_mp8v_bench_room_rpc): every Extended peer
-  # that joined logs the same, the host too: its own relay calls run inside a client's RPC (PD19).
+  # that joined logs the same, the host too: its own relay calls run inside a client's RPC.
   room="$(grep -ho '\[MP8\] Firearm Factory 8p: room for .*' "$out"/p*_stdout.txt | sort -u)"
   all_ext=1; for i in "${joined[@]}"; do [ "${roles[$i]}" = ext ] || all_ext=0; done
   if [ -z "$room" ] && [ "$all_ext" = 1 ] && [ "${#joined[@]}" -ge 5 ] && grep -q ' LOAD ManufactureGun ' "$out/p${h}_result.txt"; then

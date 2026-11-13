@@ -15,7 +15,7 @@ diff --git a/minigames/escalator_pit/scripts/escalator_pit.gd b/minigames/escala
 +# in the root's `_ready()` would never be seen.
 +func _enter_tree() -> void :
 +	# machine-party-8p's design: the vanilla arena, belt and scoring, eight strips in the four troughs.
-+	# A mixed room keeps the game's four (D120); the room is latched before add_child.
++	# A mixed room keeps the game's four; the room is latched before add_child.
 +	if NetworkManager.mp8_room_extended() and PlayerManager.player_presences.size() > MP8V_VANILLA_LANES:
 +		_mp8v_build_eight_lanes()
 +

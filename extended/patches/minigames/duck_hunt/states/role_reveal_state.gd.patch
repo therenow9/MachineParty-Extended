@@ -5,7 +5,7 @@ diff --git a/minigames/duck_hunt/states/role_reveal_state.gd b/minigames/duck_hu
  
  func reveal_online():
  
-+	# [MP8] A mixed room runs the game's reveal_online (D120).
++	# [MP8] A mixed room runs the game's reveal_online.
 +	if not NetworkManager.mp8_room_extended():
 +		await _mp8_game_reveal_online()
 +		return
@@ -37,7 +37,7 @@ diff --git a/minigames/duck_hunt/states/role_reveal_state.gd b/minigames/duck_hu
 +
 +	state_machine.transition_to_rpc.rpc(&"PlayerMarker")
 +
-+# The game's reveal_online, for a mixed room (D120).
++# The game's reveal_online, for a mixed room.
 +func _mp8_game_reveal_online():
 +
  	owner.ui_role_label.text = tr("LOC_CONTROL_HUNTER_NAME") % owner.hunter_name.to_upper()

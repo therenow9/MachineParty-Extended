@@ -39,7 +39,7 @@ def glyph(c, h, stroke=STROKE):
 
     Shapes are painted in order: ("poly", points[, None]) and ("round", box, radius, fill[, corners]), where
     a None fill cuts the shape out of what is painted before it. tools/make_lettering.py builds the font from
-    the same list, so both paint them alike. The trailer's lettering (D124) is every character here."""
+    the same list, so both paint them alike. The trailer's lettering is every character here."""
     s = stroke * h
     shapes = []
     rect = lambda x0, y0, x1, y1: shapes.append(("poly", [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]))
@@ -410,7 +410,7 @@ def placements():
     return p
 
 
-# The owner's pick (D106): green, one letter per row down the logo's right edge. Its centre is the wrapper's
+# The owner's pick: green, one letter per row down the logo's right edge. Its centre is the wrapper's
 # TITLE_CENTRE (mpml/mp8_support/main.gd), measured from the logo's top left.
 SHIPPED = ("green", "side_letters")
 

@@ -23,7 +23,7 @@ GUIDES = os.path.join(os.environ.get("TEMP", ""), "machine-party-tests", "xc_rec
 TEXTURE = 512
 TRIANGLES = (400, 2000)
 
-# Godot axes, (position, size): the anchor meshes' AABBs from the Phase 0 dump,
+# Godot axes, (position, size): the anchor meshes' AABBs from the recon dump,
 # and the rest-pose head from xc_recon's "=== fit" section.
 TOPHAT = ((-0.502, -0.261, -0.398), (0.996, 0.586, 0.795))
 SUNGLASSES = ((-0.070, -0.373, -0.208), (0.150, 0.423, 0.415))
@@ -71,6 +71,27 @@ HEAD_RADIUS_IN_TOPHAT = [
 # Unit vectors, Godot axes: the head's up and the way the face looks.
 UP_IN_TOPHAT, FACE_IN_TOPHAT = (0.220, 0.975, -0.038), (0.996, -0.092, -0.003)
 UP_IN_SUNGLASSES, FACE_IN_SUNGLASSES = (-0.975, -0.222, -0.005), (0.185, 0.983, -0.005)
+# For a hat that sits level on the head, in top hat space: the head's radius
+# round its own up (UP_IN_TOPHAT), the axis through x = HEAD_AXIS_X_IN_TOPHAT
+# moved LEVEL_FORWARD along the face to the head's middle at the hat line; rows
+# of heights along the up, 24 angles from the face toward the character's right
+# (head_radius.py --space level). Its crown peaks at LEVEL_HEAD_TOP.
+LEVEL_FORWARD = 0.07
+LEVEL_HEAD_TOP = 0.034
+HEAD_RADIUS_LEVEL = [
+    (-0.200, [0.252, 0.249, 0.236, 0.227, 0.208, 0.194, 0.191, 0.247, 0.224, 0.246, 0.245, 0.250, 0.248, 0.250, 0.245, 0.247, 0.225, 0.249, 0.191, 0.192, 0.203, 0.221, 0.233, 0.245]),
+    (-0.180, [0.252, 0.249, 0.234, 0.227, 0.208, 0.196, 0.192, 0.209, 0.219, 0.247, 0.246, 0.251, 0.249, 0.251, 0.247, 0.248, 0.220, 0.210, 0.192, 0.192, 0.203, 0.219, 0.230, 0.244]),
+    (-0.160, [0.251, 0.248, 0.233, 0.227, 0.208, 0.196, 0.192, 0.210, 0.220, 0.248, 0.247, 0.252, 0.250, 0.252, 0.248, 0.249, 0.221, 0.211, 0.192, 0.192, 0.203, 0.219, 0.229, 0.243]),
+    (-0.140, [0.250, 0.247, 0.233, 0.231, 0.208, 0.195, 0.193, 0.210, 0.220, 0.249, 0.247, 0.252, 0.250, 0.253, 0.248, 0.250, 0.222, 0.212, 0.193, 0.192, 0.202, 0.222, 0.229, 0.243]),
+    (-0.120, [0.246, 0.244, 0.230, 0.228, 0.204, 0.193, 0.190, 0.208, 0.218, 0.237, 0.246, 0.250, 0.248, 0.251, 0.246, 0.247, 0.219, 0.209, 0.190, 0.190, 0.202, 0.222, 0.227, 0.239]),
+    (-0.100, [0.240, 0.238, 0.224, 0.222, 0.201, 0.188, 0.185, 0.205, 0.215, 0.234, 0.244, 0.248, 0.246, 0.249, 0.245, 0.236, 0.217, 0.207, 0.188, 0.187, 0.198, 0.217, 0.222, 0.233]),
+    (-0.080, [0.234, 0.232, 0.221, 0.220, 0.199, 0.186, 0.182, 0.198, 0.213, 0.232, 0.241, 0.246, 0.244, 0.247, 0.243, 0.234, 0.215, 0.199, 0.183, 0.185, 0.194, 0.212, 0.217, 0.231]),
+    (-0.060, [0.231, 0.229, 0.216, 0.214, 0.192, 0.176, 0.172, 0.191, 0.200, 0.218, 0.227, 0.231, 0.229, 0.232, 0.227, 0.228, 0.201, 0.193, 0.175, 0.179, 0.188, 0.207, 0.212, 0.226]),
+    (-0.040, [0.217, 0.214, 0.205, 0.200, 0.177, 0.167, 0.164, 0.179, 0.188, 0.206, 0.213, 0.216, 0.215, 0.217, 0.212, 0.214, 0.189, 0.181, 0.165, 0.165, 0.179, 0.199, 0.203, 0.211]),
+    (-0.020, [0.207, 0.204, 0.192, 0.187, 0.168, 0.157, 0.154, 0.168, 0.176, 0.198, 0.197, 0.201, 0.200, 0.202, 0.198, 0.200, 0.177, 0.170, 0.156, 0.156, 0.165, 0.185, 0.190, 0.202]),
+    (0.000, [0.187, 0.184, 0.173, 0.169, 0.147, 0.137, 0.135, 0.148, 0.152, 0.169, 0.168, 0.171, 0.170, 0.172, 0.169, 0.170, 0.154, 0.150, 0.136, 0.137, 0.146, 0.165, 0.179, 0.182]),
+    (0.020, [0.165, 0.162, 0.152, 0.145, 0.126, 0.117, 0.114, 0.124, 0.128, 0.140, 0.139, 0.141, 0.140, 0.142, 0.140, 0.141, 0.129, 0.126, 0.116, 0.117, 0.126, 0.145, 0.151, 0.161]),
+]
 
 
 def to_blender(x, y, z):
@@ -114,6 +135,31 @@ def head_radius(table, h, t):
     def at(row):
         return row[j] + (row[(j + 1) % n] - row[j]) * kt
     return at(table[i][1]) + (at(table[i + 1][1]) - at(table[i][1])) * kh
+
+
+def _level_frame():
+    up = Vector(UP_IN_TOPHAT).normalized()
+    face = Vector(FACE_IN_TOPHAT)
+    face = (face - up * face.dot(up)).normalized()
+    right = face.cross(up)
+    origin = Vector((HEAD_AXIS_X_IN_TOPHAT, 0.0, 0.0)) + face * LEVEL_FORWARD
+    return tuple(Vector(to_blender(*v)) for v in (up, face, -right, origin))
+
+
+LEVEL_UP, LEVEL_FACE, LEVEL_LEFT, _LEVEL_ORIGIN = _level_frame()
+
+
+def level_point(hat_line, r, phi, c):
+    """A Blender point r out from the level axis at angle phi (from the face toward
+    the character's left) and c above hat_line along the head's up."""
+    return tuple(_LEVEL_ORIGIN + LEVEL_UP * (hat_line + c) + (LEVEL_FACE * math.cos(phi) + LEVEL_LEFT * math.sin(phi)) * r)
+
+
+def level_head_radius(h, phi):
+    """The head's radius at height h along its up and angle phi (toward the left)
+    round the level axis, the largest within 15 degrees either side."""
+    # The table's angles run toward the right.
+    return max(head_radius(HEAD_RADIUS_LEVEL, h, -phi + d) for d in (-0.26, 0.0, 0.26))
 
 
 def reset():

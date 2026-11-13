@@ -25,7 +25,7 @@ diff --git a/minigames/duck_hunt/components/duck_player/scripts/duck_player.gd b
  
  func _physics_process(delta: float) -> void :
  
-+	# [MP8] A mixed room runs the game's _physics_process (D120).
++	# [MP8] A mixed room runs the game's _physics_process.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_physics_process(delta)
 +		return
@@ -73,7 +73,7 @@ diff --git a/minigames/duck_hunt/components/duck_player/scripts/duck_player.gd b
 +	update_animations(delta)
 +	play_footstep_sound(delta)
 +
-+# The game's _physics_process, for a mixed room (D120).
++# The game's _physics_process, for a mixed room.
 +func _mp8_game_physics_process(delta: float) -> void :
 +
  	if not active:
@@ -131,7 +131,7 @@ diff --git a/minigames/duck_hunt/components/duck_player/scripts/duck_player.gd b
  @rpc("any_peer", "call_local", "reliable")
  func shot_rpc(_damage: int):
  
-+	# [MP8] A mixed room runs the game's shot_rpc (D120).
++	# [MP8] A mixed room runs the game's shot_rpc.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_shot_rpc(_damage)
 +		return
@@ -162,7 +162,7 @@ diff --git a/minigames/duck_hunt/components/duck_player/scripts/duck_player.gd b
 +
 +	got_shot.emit(player_presence.network_id)
 +
-+# The game's shot_rpc, for a mixed room (D120).
++# The game's shot_rpc, for a mixed room.
 +func _mp8_game_shot_rpc(_damage: int):
 +
  	health -= _damage
@@ -172,7 +172,7 @@ diff --git a/minigames/duck_hunt/components/duck_player/scripts/duck_player.gd b
  @rpc("any_peer", "call_local", "reliable")
  func teleport_rpc(_position: Vector3):
  
-+	# [MP8] A mixed room runs the game's teleport_rpc (D120).
++	# [MP8] A mixed room runs the game's teleport_rpc.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_teleport_rpc(_position)
 +		return
@@ -185,7 +185,7 @@ diff --git a/minigames/duck_hunt/components/duck_player/scripts/duck_player.gd b
 +	_mp8_crumb_set = true
 +	_mp8_stuck_t = 0.0
 +
-+# The game's teleport_rpc, for a mixed room (D120).
++# The game's teleport_rpc, for a mixed room.
 +func _mp8_game_teleport_rpc(_position: Vector3):
 +
  	global_position = _position

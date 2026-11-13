@@ -1,0 +1,1 @@
+{ "id": "window_place", "name": "Window place (dev)", "version": "0.0.1", "entry": "main.gd", "priority": 98, "requires": [] }

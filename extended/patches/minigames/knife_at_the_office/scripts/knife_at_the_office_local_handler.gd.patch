@@ -117,7 +117,7 @@ diff --git a/minigames/knife_at_the_office/scripts/knife_at_the_office_local_han
 +	return player.player_presence.network_name
 +
 +func _ready() -> void:
-+	# The handler lays out only couch tiles; a mixed room connects nothing (D120).
++	# The handler lays out only couch tiles; a mixed room connects nothing.
 +	if not NetworkManager.mp8_room_extended():
 +		return
 +	get_viewport().size_changed.connect(_mp8_relayout)

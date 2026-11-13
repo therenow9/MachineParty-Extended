@@ -6,7 +6,7 @@ diff --git a/minigames/spine_breaker/components/device/states/attached_state.gd 
  
  func enter(_msg: Dictionary = {}) -> void :
 +
-+	# [MP8] A mixed room runs the game's enter (D120).
++	# [MP8] A mixed room runs the game's enter.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_enter(_msg)
 +		return
@@ -69,7 +69,7 @@ diff --git a/minigames/spine_breaker/components/device/states/attached_state.gd 
 +
 +		state_machine.transition_to(&"Idle")
 +
-+# The game's enter, for a mixed room (D120).
++# The game's enter, for a mixed room.
 +func _mp8_game_enter(_msg: Dictionary = {}) -> void :
  	state_time = 0.0
  	owner.can_kick = false

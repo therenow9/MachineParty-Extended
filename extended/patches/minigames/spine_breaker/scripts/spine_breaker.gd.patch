@@ -10,7 +10,7 @@ diff --git a/minigames/spine_breaker/scripts/spine_breaker.gd b/minigames/spine_
  const player_scene = preload("uid://b774mjndcdeqg")
  
  @export_category("Nodes")
-@@ -24,9 +26,260 @@ var player_count: int = 0
+@@ -24,9 +26,285 @@ var player_count: int = 0
  
  var playing: bool = false
  
@@ -169,7 +169,31 @@ diff --git a/minigames/spine_breaker/scripts/spine_breaker.gd b/minigames/spine_
 +# so the period difference adds up; swapped, the periods can come out equal and lock in step.
 +const MP8_DEVICE_WAIT: Array[float] = [3.0, 2.0]
 +
-+# Body colours: the added, fiercer device is a near-black widow (D103). Color.WHITE = untinted.
++# A player who throws a device off their back can't be chased or grabbed by another device for this
++# long, so a device that was shadowing them gets no free catch. A device thrown at them still attaches.
++const MP8_THROW_GRACE: float = 1.0
++
++
++# Command line `mp8spinegrace=<seconds>`: the throw grace instead of MP8_THROW_GRACE (0 = none); -1 = not
++# given. A dev tool, for comparing lengths.
++func _mp8_grace_forced() -> float :
++	if not NetworkManager.mp8_development_tools_allowed():
++		return -1.0
++	for a in NetworkManager.mp8_dev_args():
++		var s: String = str(a)
++		if s.begins_with("mp8spinegrace="):
++			var v: String = s.substr(len("mp8spinegrace="))
++			if v.is_valid_float():
++				return clampf(float(v), 0.0, 10.0)
++
++	return -1.0
++
++
++func _mp8_throw_grace() -> float :
++	var forced: float = _mp8_grace_forced()
++	return (forced if forced >= 0.0 else MP8_THROW_GRACE)
++
++# Body colours: the added, fiercer device is a near-black widow. Color.WHITE = untinted.
 +# albedo_color multiplies the texture; below about 0.12 every body reads as black.
 +const MP8_DEVICE_TINT: Array[Color] = [Color.WHITE, Color(0.06, 0.06, 0.07)]
 +
@@ -225,6 +249,7 @@ diff --git a/minigames/spine_breaker/scripts/spine_breaker.gd b/minigames/spine_
 +var _mp8_retire_claimed: bool = false    # this round's retirement has been claimed
 +var _mp8_counted_victims: Array = []     # network_ids already counted this round, so one death counts once
 +var _mp8_kills_started: int = 0          # kills started this round, counted at the strike (see mp8_claim_retire())
++var _mp8_throws: Dictionary = {}         # network_id -> [the thrown device, Engine.get_physics_frames() at the throw]
 +
 +var _mp8_pool: Array = []                # [[Vector3 pos, float yaw], ...], index = priority
 +var _mp8_pool_src: String = "scene default"
@@ -239,7 +264,7 @@ diff --git a/minigames/spine_breaker/scripts/spine_breaker.gd b/minigames/spine_
  func _ready() -> void :
  	super._ready()
  
-+	# [MP8] A mixed room runs the rest of the game's _ready (D120): one device, unbound, no spawn pool or editor.
++	# [MP8] A mixed room runs the rest of the game's _ready: one device, unbound, no spawn pool or editor.
 +	if not NetworkManager.mp8_room_extended():
 +		await _mp8_game_ready_tail()
 +		return
@@ -265,17 +290,17 @@ diff --git a/minigames/spine_breaker/scripts/spine_breaker.gd b/minigames/spine_
 +		await get_tree().create_timer(1.0).timeout
 +		minigame_ready.emit(1)
 +
-+# The game's _ready after its super call, for a mixed room (D120).
++# The game's _ready after its super call, for a mixed room.
 +func _mp8_game_ready_tail():
 +
  	camera.current = true
  
  	if multiplayer.is_server():
-@@ -91,6 +344,59 @@ func initialize(_round_number: int, _total_rounds: int, _scores: Dictionary = {}
+@@ -91,6 +369,60 @@ func initialize(_round_number: int, _total_rounds: int, _scores: Dictionary = {}
  
  func spawn_players():
  
-+	# [MP8] A mixed room runs the game's spawn_players (D120).
++	# [MP8] A mixed room runs the game's spawn_players.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_spawn_players()
 +		return
@@ -291,6 +316,7 @@ diff --git a/minigames/spine_breaker/scripts/spine_breaker.gd b/minigames/spine_
 +	_mp8_retire_claimed = false
 +	_mp8_kills_started = 0
 +	_mp8_counted_victims.clear()
++	_mp8_throws.clear()
 +	NetworkManager.mp8_rpc(self, &"mp8_device_reset_rpc")
 +
 +	# [MP8] The game indexes its 4 spawn markers, which fails for a 5th player; the pool replaces it.
@@ -325,23 +351,23 @@ diff --git a/minigames/spine_breaker/scripts/spine_breaker.gd b/minigames/spine_
 +		if is_instance_valid(d):
 +			d.set_players_node(players_node)
 +
-+# The game's spawn_players, for a mixed room (D120).
++# The game's spawn_players, for a mixed room.
 +func _mp8_game_spawn_players():
 +
  	var spawn_positions = player_spawn_positions_node.get_children()
  	spawn_positions.shuffle()
  
-@@ -123,6 +429,9 @@ func cleanup():
+@@ -123,6 +455,9 @@ func cleanup():
  		queue_free()
  
  func player_disconnected(_network_id: int):
 +	# [MP8] The room is read before the await, which can outlast this minigame's latch. A mixed room
-+	# keeps the game's own end check (D116).
++	# keeps the game's own end check.
 +	var mp8_ext: bool = NetworkManager.mp8_room_extended()
  	super.player_disconnected(_network_id)
  
  	if not multiplayer.is_server():
-@@ -131,10 +440,61 @@ func player_disconnected(_network_id: int):
+@@ -131,10 +466,61 @@ func player_disconnected(_network_id: int):
  	remove_player_rpc.rpc(_network_id)
  	await get_tree().create_timer(1.0).timeout
  
@@ -355,7 +381,7 @@ diff --git a/minigames/spine_breaker/scripts/spine_breaker.gd b/minigames/spine_
  
  func check_game_end():
  
-+	# [MP8] A mixed room runs the game's check_game_end (D120).
++	# [MP8] A mixed room runs the game's check_game_end.
 +	if not NetworkManager.mp8_room_extended():
 +		await _mp8_game_check_game_end()
 +		return
@@ -397,17 +423,17 @@ diff --git a/minigames/spine_breaker/scripts/spine_breaker.gd b/minigames/spine_
 +	state_machine.transition_to_rpc.rpc(&"Finished")
 +	set_effects_visibility_rpc.rpc(false)
 +
-+# The game's check_game_end, for a mixed room (D120).
++# The game's check_game_end, for a mixed room.
 +func _mp8_game_check_game_end():
 +
  	if finished:
  		return
  
-@@ -168,6 +528,27 @@ func check_game_end():
+@@ -168,6 +554,27 @@ func check_game_end():
  @rpc("any_peer", "call_local", "reliable")
  func remove_player_rpc(_network_id: int):
  
-+	# [MP8] A mixed room runs the game's remove_player_rpc (D120).
++	# [MP8] A mixed room runs the game's remove_player_rpc.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_remove_player_rpc(_network_id)
 +		return
@@ -425,13 +451,13 @@ diff --git a/minigames/spine_breaker/scripts/spine_breaker.gd b/minigames/spine_
 +		players.erase(_network_id)
 +		active_players.erase(_network_id)
 +
-+# The game's remove_player_rpc, for a mixed room (D120).
++# The game's remove_player_rpc, for a mixed room.
 +func _mp8_game_remove_player_rpc(_network_id: int):
 +
  	var player_instance = players.get(_network_id, null)
  	if player_instance:
  
-@@ -187,7 +568,63 @@ func set_playing_rpc(_playing: bool):
+@@ -187,7 +594,63 @@ func set_playing_rpc(_playing: bool):
  func _on_countdown_tick(time_left: int):
  	super._on_countdown_tick(time_left)
  
@@ -439,7 +465,7 @@ diff --git a/minigames/spine_breaker/scripts/spine_breaker.gd b/minigames/spine_
 +# [MP8] which = null: a target for every device in play (round start); a device: that one only.
 +func choose_new_target(which = null):
 +
-+	# [MP8] A mixed room runs the game's choose_new_target (D120).
++	# [MP8] A mixed room runs the game's choose_new_target.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_choose_new_target()
 +		return
@@ -491,12 +517,12 @@ diff --git a/minigames/spine_breaker/scripts/spine_breaker.gd b/minigames/spine_
 +			String(d.state_machine.current_state.name) if d.state_machine.current_state != null else "?"
 +		])
 +
-+# The game's choose_new_target, for a mixed room (D120).
++# The game's choose_new_target, for a mixed room.
 +func _mp8_game_choose_new_target():
  
  	if active_players.size() <= 1:
  		return
-@@ -200,6 +637,82 @@ func choose_new_target():
+@@ -200,6 +663,127 @@ func choose_new_target():
  	})
  	device.start_timer()
  
@@ -517,8 +543,9 @@ diff --git a/minigames/spine_breaker/scripts/spine_breaker.gd b/minigames/spine_
 +	return null
 +
 +
-+# Picks prey, preferring players the other device is not chasing. Players carrying a device are
-+# skipped: two fuses on one player would kill them twice.
++# Picks prey, preferring players the other device is not chasing, then players not in a throw grace
++# from this device (mp8_in_throw_grace). Players carrying a device are skipped: two fuses on one
++# player would kill them twice.
 +func _mp8_pick_prey(me) -> SpineBreakerPlayer :
 +
 +	var busy: Array = []
@@ -531,10 +558,14 @@ diff --git a/minigames/spine_breaker/scripts/spine_breaker.gd b/minigames/spine_
 +
 +	var free: Array = []
 +	var all: Array = []
++	var graced: Array = []
 +	for p in active_players.values():
 +		if not is_instance_valid(p) or not p.active:
 +			continue
 +		if p.has_spine_breaker:
++			continue
++		if mp8_in_throw_grace(p, me):
++			graced.append(p)
 +			continue
 +		all.append(p)
 +		if not busy.has(p):
@@ -544,6 +575,8 @@ diff --git a/minigames/spine_breaker/scripts/spine_breaker.gd b/minigames/spine_
 +		return free.pick_random()
 +	if not all.is_empty():
 +		return all.pick_random()
++	if not graced.is_empty():
++		return graced.pick_random()
 +
 +	# Nobody left: log why each player was filtered out.
 +	var why := PackedStringArray()
@@ -576,17 +609,55 @@ diff --git a/minigames/spine_breaker/scripts/spine_breaker.gd b/minigames/spine_
 +
 +	return false
 +
++
++# Called by the device's try_throw_rpc for a throw off the back, not a kick. Server only.
++func mp8_note_throw(p, dev) -> void :
++
++	if not multiplayer.is_server():
++		return
++	if p == null or not is_instance_valid(p) or p.player_presence == null:
++		return
++	_mp8_throws[p.player_presence.network_id] = [dev, Engine.get_physics_frames()]
++	print("[MP8] Spine Breaker: %s threw device %d, %.1f s grace from the other devices" % [
++		String(p.name), int(dev.mp8_index) if is_instance_valid(dev) else 0, _mp8_throw_grace()
++	])
++
++
++# Did p throw a device other than dev within the throw grace? Then dev may neither chase nor grab them
++# (follow_state's `_mp8_in_grace`: contact, retarget, held take; _mp8_pick_prey; the landing pick); a thrown
++# dev's contact ignores it. Counted in physics frames, not wall time: Movie Maker runs slower than real time.
++func mp8_in_throw_grace(p, dev) -> bool :
++
++	if p == null or not is_instance_valid(p) or not (p is SpineBreakerPlayer) or p.player_presence == null:
++		return false
++	var t = _mp8_throws.get(p.player_presence.network_id)
++	if t == null or t[0] == dev:
++		return false
++	var frames: int = Engine.get_physics_frames() - int(t[1])
++	return frames < int(_mp8_throw_grace() * Engine.physics_ticks_per_second)
++
++
++# A dead end (the target took another device, died or was freed) retargets at once: during the post-kill
++# wait the device would shadow a carrier and take them the moment they throw. Server only.
++func mp8_retarget_now(dev) -> void :
++
++	if not multiplayer.is_server() or dev == null or not is_instance_valid(dev):
++		return
++	print("[MP8] Spine Breaker: device %d retargets now" % dev.mp8_index)
++	dev.laugh_rpc.rpc()
++	choose_new_target(dev)
++
  func _on_countdown_expired():
  	super._on_countdown_expired()
  
-@@ -211,7 +724,27 @@ func _on_countdown_expired():
+@@ -211,7 +795,27 @@ func _on_countdown_expired():
  
  	set_playing_rpc.rpc(true)
  
 -func _on_device_requested_target():
 +func _on_device_requested_target(which = null):
 +
-+	# [MP8] A mixed room runs the game's _on_device_requested_target (D120).
++	# [MP8] A mixed room runs the game's _on_device_requested_target.
 +	if not NetworkManager.mp8_room_extended():
 +		await _mp8_game_on_device_requested_target()
 +		return
@@ -603,12 +674,12 @@ diff --git a/minigames/spine_breaker/scripts/spine_breaker.gd b/minigames/spine_
 +	# [MP8] Only the requesting device; the other keeps its chase.
 +	choose_new_target(which)
 +
-+# The game's _on_device_requested_target, for a mixed room (D120).
++# The game's _on_device_requested_target, for a mixed room.
 +func _mp8_game_on_device_requested_target():
  
  	if multiplayer.is_server():
  		device.laugh_rpc.rpc()
-@@ -226,6 +759,884 @@ func _on_player_died(_network_id: int):
+@@ -226,6 +830,884 @@ func _on_player_died(_network_id: int):
  		active_players.erase(_network_id)
  		dead_players.append(_network_id)
  
@@ -681,7 +752,7 @@ diff --git a/minigames/spine_breaker/scripts/spine_breaker.gd b/minigames/spine_
 +
 +func _mp8_load_layout_file() -> Array :
 +
-+	# [MP8] The editor's file, read only in a test build: a shipped build plays the built-in layout (D116).
++	# [MP8] The editor's file, read only in a test build: a shipped build plays the built-in layout.
 +	if not NetworkManager.mp8_development_tools_allowed() or not FileAccess.file_exists(MP8_LAYOUT_FILE):
 +		return []
 +

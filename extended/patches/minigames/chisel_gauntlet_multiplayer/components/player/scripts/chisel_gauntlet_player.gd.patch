@@ -62,7 +62,7 @@ diff --git a/minigames/chisel_gauntlet_multiplayer/components/player/scripts/chi
  @rpc("any_peer", "call_local", "reliable")
  func set_spectator_rpc():
 +
-+	# [MP8] A mixed room runs the game's set_spectator_rpc (D120).
++	# [MP8] A mixed room runs the game's set_spectator_rpc.
 +	if not NetworkManager.mp8_room_extended():
 +		await _mp8_game_set_spectator_rpc()
 +		return
@@ -83,7 +83,7 @@ diff --git a/minigames/chisel_gauntlet_multiplayer/components/player/scripts/chi
 +	await get_tree().create_timer(0.2, false).timeout
 +	game_instance.anim_viewblocker.play("fade to transparent")
 +
-+# The game's set_spectator_rpc, for a mixed room (D120).
++# The game's set_spectator_rpc, for a mixed room.
 +func _mp8_game_set_spectator_rpc():
  	spectating = true
  
@@ -93,7 +93,7 @@ diff --git a/minigames/chisel_gauntlet_multiplayer/components/player/scripts/chi
  @rpc("any_peer", "call_local", "reliable")
  func look_at_rpc(target: ChiselGauntletPlayer.LookAtTarget):
 +
-+	# [MP8] A mixed room runs the game's look_at_rpc (D120).
++	# [MP8] A mixed room runs the game's look_at_rpc.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_look_at_rpc(target)
 +		return
@@ -127,7 +127,7 @@ diff --git a/minigames/chisel_gauntlet_multiplayer/components/player/scripts/chi
 +		ChiselGauntletPlayer.LookAtTarget.DeskInstantVertical:
 +			camera_animation_player.play("look at desk instant vertical")
 +
-+# The game's look_at_rpc, for a mixed room (D120).
++# The game's look_at_rpc, for a mixed room.
 +func _mp8_game_look_at_rpc(target: ChiselGauntletPlayer.LookAtTarget):
  	if !alive: return
  	match target:
@@ -140,7 +140,7 @@ diff --git a/minigames/chisel_gauntlet_multiplayer/components/player/scripts/chi
 +	_rotation: Vector3,
 +):
 +
-+	# [MP8] A mixed room runs the game's teleport_rpc (D120).
++	# [MP8] A mixed room runs the game's teleport_rpc.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_teleport_rpc(_position, _rotation)
 +		return
@@ -150,7 +150,7 @@ diff --git a/minigames/chisel_gauntlet_multiplayer/components/player/scripts/chi
 +	# [MP8] A seat is a yaw (every player shares one spawn point); the jumbotron camera swings by it.
 +	_mp8_set_seat_yaw(_rotation.y)
 +
-+# The game's teleport_rpc, for a mixed room (D120).
++# The game's teleport_rpc, for a mixed room.
 +func _mp8_game_teleport_rpc(
  	_position: Vector3, 
  	_rotation: Vector3, 

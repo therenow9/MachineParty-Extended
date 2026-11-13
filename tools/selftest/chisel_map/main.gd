@@ -1,6 +1,6 @@
 extends Node
 
-# Dev only (PC6): on every seat's tile, each cube's index and an arrow per stick direction to the
+# Dev only: on every seat's tile, each cube's index and an arrow per stick direction to the
 # cube a press picks (8 Player Support 0.10's screen pick, else InteractionHandler.segment_matrix);
 # an arrow more than 60 degrees off its stick direction on screen is thick and reported. README, "chisel_map".
 # CHISEL_MAP=play: no round time limit, small labels beside the cubes, arrows (diagonals white) only from the
