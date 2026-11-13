@@ -8,7 +8,7 @@ diff --git a/minigames/chisel_gauntlet_multiplayer/scripts/chisel_gauntlet_local
 -func _process(_delta: float) -> void :
 +func _process(_delta: float) -> void:
 +
-+	# [MP8] A mixed room runs the game's _process (D120).
++	# [MP8] A mixed room runs the game's _process.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_process(_delta)
 +		return
@@ -23,7 +23,7 @@ diff --git a/minigames/chisel_gauntlet_multiplayer/scripts/chisel_gauntlet_local
 +	if inside:
 +		fake_cursor.position = local_point
 +
-+# The game's _process, for a mixed room (D120).
++# The game's _process, for a mixed room.
 +func _mp8_game_process(_delta: float) -> void :
  
  	if keyboard_player:
@@ -153,7 +153,7 @@ diff --git a/minigames/chisel_gauntlet_multiplayer/scripts/chisel_gauntlet_local
 +	return player.player_presence.network_name
 +
 +func _ready() -> void:
-+	# [MP8] The game's handler has no _ready; a mixed room connects nothing (D120).
++	# [MP8] The game's handler has no _ready; a mixed room connects nothing.
 +	if not NetworkManager.mp8_room_extended():
 +		return
 +	get_viewport().size_changed.connect(_mp8_relayout)

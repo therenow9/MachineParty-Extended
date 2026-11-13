@@ -21,7 +21,7 @@ diff --git a/minigames/duck_hunt/scripts/duck_hunt_local_handler.gd b/minigames/
 +	return rows
 +
 +func _ready() -> void:
-+	# [MP8] The game's handler has no _ready; a mixed room connects nothing (D120).
++	# [MP8] The game's handler has no _ready; a mixed room connects nothing.
 +	if not NetworkManager.mp8_room_extended():
 +		return
 +	get_viewport().size_changed.connect(_mp8_relayout)
@@ -39,7 +39,7 @@ diff --git a/minigames/duck_hunt/scripts/duck_hunt_local_handler.gd b/minigames/
 +
 +func setup(players_viewport: SubViewport, hunter_viewports,
 +		labels: PackedStringArray = PackedStringArray(), font: Font = null):
-+	# [MP8] The game's call passes one hunter viewport: a mixed room's spawn_players runs the game's body (D120).
++	# [MP8] The game's call passes one hunter viewport: a mixed room's spawn_players runs the game's body.
 +	if hunter_viewports is SubViewport:
 +		_mp8_game_setup(players_viewport, hunter_viewports)
 +		return
@@ -70,7 +70,7 @@ diff --git a/minigames/duck_hunt/scripts/duck_hunt_local_handler.gd b/minigames/
 +		_mp8_labels.append(label)
 +	_mp8_relayout()
 +
-+# The game's setup, for the game's call (D120).
++# The game's setup, for the game's call.
 +func _mp8_game_setup(players_viewport: SubViewport, hunter_viewport: SubViewport):
  
  	var viewport_rect: Rect2 = viewport_parent.get_viewport_rect()

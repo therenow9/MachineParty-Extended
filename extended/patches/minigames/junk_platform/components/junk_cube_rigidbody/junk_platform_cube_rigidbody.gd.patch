@@ -6,7 +6,7 @@ diff --git a/minigames/junk_platform/components/junk_cube_rigidbody/junk_platfor
  @rpc("any_peer", "call_local", "reliable")
  func set_held_rpc(held: bool, _held_by: NodePath):
 +
-+	# [MP8] A mixed room runs the game's set_held_rpc (D120).
++	# [MP8] A mixed room runs the game's set_held_rpc.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_set_held_rpc(held, _held_by)
 +		return
@@ -33,7 +33,7 @@ diff --git a/minigames/junk_platform/components/junk_cube_rigidbody/junk_platfor
 +	held_by = held_by_player.grab_position
 +	freeze = held
 +
-+# The game's set_held_rpc, for a mixed room (D120).
++# The game's set_held_rpc, for a mixed room.
 +func _mp8_game_set_held_rpc(held: bool, _held_by: NodePath):
  	visible = false
  	held_by_player = get_node(_held_by)
@@ -42,7 +42,7 @@ diff --git a/minigames/junk_platform/components/junk_cube_rigidbody/junk_platfor
  @rpc("any_peer", "call_local", "reliable")
  func reset_rpc():
  
-+	# [MP8] A mixed room runs the game's reset_rpc (D120).
++	# [MP8] A mixed room runs the game's reset_rpc.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_reset_rpc()
 +		return
@@ -62,7 +62,7 @@ diff --git a/minigames/junk_platform/components/junk_cube_rigidbody/junk_platfor
 +	linear_velocity = Vector3.ZERO
 +	angular_velocity = Vector3.ZERO
 +
-+# The game's reset_rpc, for a mixed room (D120).
++# The game's reset_rpc, for a mixed room.
 +func _mp8_game_reset_rpc():
 +
  	visible = false

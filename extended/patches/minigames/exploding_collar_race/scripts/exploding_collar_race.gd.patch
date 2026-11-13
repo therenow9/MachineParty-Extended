@@ -83,7 +83,7 @@ diff --git a/minigames/exploding_collar_race/scripts/exploding_collar_race.gd b/
  
  func spawn_players():
  
-+	# [MP8] A mixed room spawns as the game does (D120).
++	# [MP8] A mixed room spawns as the game does.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_spawn_players()
 +		return
@@ -127,7 +127,7 @@ diff --git a/minigames/exploding_collar_race/scripts/exploding_collar_race.gd b/
 +		counter, _mp8_layout_src, " | ".join(seated)
 +	])
 +
-+# The game's spawn_players, for a mixed room (D120).
++# The game's spawn_players, for a mixed room.
 +func _mp8_game_spawn_players():
 +
 +	var player_positions: Array[Node3D] = player_spawn_positions.duplicate()
@@ -160,7 +160,7 @@ diff --git a/minigames/exploding_collar_race/scripts/exploding_collar_race.gd b/
 +
 +func _mp8_setup_spawns() -> void :
 +
-+	# A mixed room keeps the game's field and 4 spawns (D120); they change above 4 players only.
++	# A mixed room keeps the game's field and 4 spawns; they change above 4 players only.
 +	if not NetworkManager.mp8_room_extended():
 +		return
 +
@@ -375,7 +375,7 @@ diff --git a/minigames/exploding_collar_race/scripts/exploding_collar_race.gd b/
 +
 +func _mp8_load_spawns() -> Array :
 +
-+	# [MP8] The editor's file, read only in a test build: a shipped build plays the built-in layout (D116).
++	# [MP8] The editor's file, read only in a test build: a shipped build plays the built-in layout.
 +	if not NetworkManager.mp8_development_tools_allowed() or not FileAccess.file_exists(MP8_SPAWN_FILE):
 +		return []
 +	var f := FileAccess.open(MP8_SPAWN_FILE, FileAccess.READ)
@@ -653,7 +653,7 @@ diff --git a/minigames/exploding_collar_race/scripts/exploding_collar_race.gd b/
 +
  func spawn_mines():
 +
-+	# [MP8] A mixed room lays the game's field (D120).
++	# [MP8] A mixed room lays the game's field.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_spawn_mines()
 +		return
@@ -684,7 +684,7 @@ diff --git a/minigames/exploding_collar_race/scripts/exploding_collar_race.gd b/
 +		mine_instance.set_active_rpc.rpc()
 +		mine_instance.exploded.connect(_on_mine_exploded)
 +
-+# The game's spawn_mines, for a mixed room (D120).
++# The game's spawn_mines, for a mixed room.
 +func _mp8_game_spawn_mines():
  	randomize()
  
@@ -719,7 +719,7 @@ diff --git a/minigames/exploding_collar_race/scripts/exploding_collar_race.gd b/
  	state_machine.transition_to_rpc.rpc(&"Play")
  
 +# [MP8] Rank scoring overwrites player_scores whole; the game's `+= 1` increments, made as players go,
-+# are replaced here because ranks are known only at the end. A mixed room keeps the game's (D116).
++# are replaced here because ranks are known only at the end. A mixed room keeps the game's.
 +func _mp8_rank_scores() -> void :
 +
 +	if not NetworkManager.mp8_room_extended():

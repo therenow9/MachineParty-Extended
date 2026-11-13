@@ -24,7 +24,7 @@ diff --git a/minigames/green_pea/components/coach_handler/coach_handler.gd b/min
  
  func set_players(_players):
  
-+	# [MP8] A mixed room runs the game's set_players (D120).
++	# [MP8] A mixed room runs the game's set_players.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_set_players(_players)
 +		return
@@ -34,7 +34,7 @@ diff --git a/minigames/green_pea/components/coach_handler/coach_handler.gd b/min
 +	# [MP8] Taken once, here at the round's start (`spawn_players` is the only caller), so a leaver never lowers it.
 +	_mp8_limit = mp8_catch_limit(_players.size())
 +
-+# The game's set_players, for a mixed room (D120).
++# The game's set_players, for a mixed room.
 +func _mp8_game_set_players(_players):
 +
  	players = _players
@@ -51,7 +51,7 @@ diff --git a/minigames/green_pea/components/coach_handler/coach_handler.gd b/min
  
  func _on_execution_finished():
  
-+	# [MP8] A mixed room runs the game's _on_execution_finished (D120).
++	# [MP8] A mixed room runs the game's _on_execution_finished.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_on_execution_finished()
 +		return
@@ -63,7 +63,7 @@ diff --git a/minigames/green_pea/components/coach_handler/coach_handler.gd b/min
 +
 +	timer.start(randf_range(min_read_time, max_read_time))
 +
-+# The game's _on_execution_finished, for a mixed room (D120).
++# The game's _on_execution_finished, for a mixed room.
 +func _mp8_game_on_execution_finished():
 +
  	executing = false
@@ -73,7 +73,7 @@ diff --git a/minigames/green_pea/components/coach_handler/coach_handler.gd b/min
  
  func _on_player_acted(_network_id: int, seat_index: int):
  
-+	# [MP8] A mixed room runs the game's _on_player_acted (D120).
++	# [MP8] A mixed room runs the game's _on_player_acted.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_on_player_acted(_network_id, seat_index)
 +		return
@@ -106,7 +106,7 @@ diff --git a/minigames/green_pea/components/coach_handler/coach_handler.gd b/min
 +			reading = true
 +			timer.start(randf_range(min_read_time, max_read_time))
 +
-+# The game's _on_player_acted, for a mixed room (D120).
++# The game's _on_player_acted, for a mixed room.
 +func _mp8_game_on_player_acted(_network_id: int, seat_index: int):
 +
  	if executing:
@@ -116,7 +116,7 @@ diff --git a/minigames/green_pea/components/coach_handler/coach_handler.gd b/min
  
  func _on_timer_timeout():
  
-+	# [MP8] A mixed room runs the game's _on_timer_timeout (D120).
++	# [MP8] A mixed room runs the game's _on_timer_timeout.
 +	if not NetworkManager.mp8_room_extended():
 +		await _mp8_game_on_timer_timeout()
 +		return
@@ -139,7 +139,7 @@ diff --git a/minigames/green_pea/components/coach_handler/coach_handler.gd b/min
  		reading = true
  		timer.start(randf_range(min_read_time, max_read_time))
 +
-+# The game's _on_timer_timeout, for a mixed room (D120).
++# The game's _on_timer_timeout, for a mixed room.
 +func _mp8_game_on_timer_timeout():
 +
 +	if reading:

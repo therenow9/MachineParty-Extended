@@ -1,14 +1,14 @@
 diff --git a/minigames/spine_breaker/components/device/states/thrown_state.gd b/minigames/spine_breaker/components/device/states/thrown_state.gd
 --- a/minigames/spine_breaker/components/device/states/thrown_state.gd
 +++ b/minigames/spine_breaker/components/device/states/thrown_state.gd
-@@ -60,6 +60,60 @@ func update(_delta: float) -> void :
+@@ -60,6 +60,71 @@ func update(_delta: float) -> void :
  
  func update_physics(_delta: float) -> void :
  
-+	# [MP8] Before the room's dispatch: the rescue runs in every room (PD8, D155).
++	# [MP8] Before the room's dispatch: the rescue runs in every room.
 +	_mp8_unstick(_delta)
 +
-+	# [MP8] A mixed room runs the game's update_physics (D120).
++	# [MP8] A mixed room runs the game's update_physics.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_update_physics(_delta)
 +		return
@@ -34,6 +34,8 @@ diff --git a/minigames/spine_breaker/components/device/states/thrown_state.gd b/
 +
 +		var closest_distance: float = 999.9
 +		var closest = null
++		var graced = null
++		var gi = owner.game_instance
 +		for player in owner.players_node.get_children():
 +
 +			if not player.active:
@@ -44,11 +46,20 @@ diff --git a/minigames/spine_breaker/components/device/states/thrown_state.gd b/
 +			if player.has_spine_breaker:
 +				continue
 +
++			# [MP8] And, unless nobody else is left, a player who just threw another device: follow_state
++			# would neither grab nor target them until their grace ends.
++			if gi != null and gi.has_method("mp8_in_throw_grace") and gi.mp8_in_throw_grace(player, owner):
++				if graced == null:
++					graced = player
++				continue
++
 +			var distance = owner.global_position.distance_to(player.global_position)
 +			if distance < closest_distance:
 +				closest_distance = distance
 +				closest = player
 +
++		if not closest:
++			closest = graced
 +		if not closest:
 +			closest = thrower
 +
@@ -56,20 +67,20 @@ diff --git a/minigames/spine_breaker/components/device/states/thrown_state.gd b/
 +			"target": closest,
 +		})
 +
-+# The game's update_physics, for a mixed room (D120).
++# The game's update_physics, for a mixed room.
 +func _mp8_game_update_physics(_delta: float) -> void :
 +
  	var horizontal_velocity = owner.velocity
  	horizontal_velocity.y = 0.0
  	horizontal_velocity = horizontal_velocity.move_toward(
-@@ -98,14 +152,87 @@ func update_physics(_delta: float) -> void :
+@@ -98,14 +163,87 @@ func update_physics(_delta: float) -> void :
  			"target": closest, 
  		})
  
 +# [MP8] A normal throw lands in under a second; past this the device counts as stuck in Thrown.
 +const MP8_STUCK_S: float = 2.0
 +
-+# [MP8] PD8: Thrown ends only on a floor contact, and a device can hang on a vertical edge of the room's
++# [MP8] Thrown ends only on a floor contact, and a device can hang on a vertical edge of the room's
 +# hidden collision boxes, where move_and_slide reports a wall and never a floor. Stuck, it drops to the
 +# nearest navmesh point, and this frame's landing code below picks its target. Server only: position replicates.
 +func _mp8_unstick(delta: float) -> void :
@@ -113,7 +124,7 @@ diff --git a/minigames/spine_breaker/components/device/states/thrown_state.gd b/
 +
  func _on_player_attach_entered(body):
  
-+	# [MP8] A mixed room runs the game's _on_player_attach_entered (D120).
++	# [MP8] A mixed room runs the game's _on_player_attach_entered.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_on_player_attach_entered(body)
 +		return
@@ -144,7 +155,7 @@ diff --git a/minigames/spine_breaker/components/device/states/thrown_state.gd b/
 +		"target": body
 +	})
 +
-+# The game's _on_player_attach_entered, for a mixed room (D120).
++# The game's _on_player_attach_entered, for a mixed room.
 +func _mp8_game_on_player_attach_entered(body):
 +
  	if not active:

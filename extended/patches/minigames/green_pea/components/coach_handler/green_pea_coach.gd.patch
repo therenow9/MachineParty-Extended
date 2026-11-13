@@ -31,11 +31,11 @@ diff --git a/minigames/green_pea/components/coach_handler/green_pea_coach.gd b/m
  var is_first_newspaper_sound = true
  
  func _ready() -> void :
-@@ -62,6 +85,40 @@ func play_newspaper_sound():
+@@ -62,6 +85,34 @@ func play_newspaper_sound():
  
  func shoot_player(seat_position_to_shoot: int):
  
-+	# [MP8] A mixed room runs the game's shoot_player (D120).
++	# [MP8] A mixed room runs the game's shoot_player.
 +	if not NetworkManager.mp8_room_extended():
 +		await _mp8_game_shoot_player(seat_position_to_shoot)
 +		return
@@ -55,31 +55,32 @@ diff --git a/minigames/green_pea/components/coach_handler/green_pea_coach.gd b/m
 +	# A missing animation does not hang (fixed timers follow), but the coach never aims.
 +	var anim_name = "coach_shoot_position_" + str(_mp8_anim_index(seat_position_to_shoot))
 +	anim_coach.play(anim_name, 0.2)
++	_mp8_turn_to(_mp8_turn_for(seat_position_to_shoot, anim_name), MP8_TURN_IN, MP8_TURN_IN_FROM)
 +	gun_shot_visuals(seat_position_to_shoot)
-+	await get_tree().create_timer(4, false).timeout
++	await get_tree().create_timer(MP8_FIRE_AT, false).timeout
++	await _mp8_after_last_shot()
 +
-+	if multiplayer.is_server():
-+		continue_eating_for_players()
-+
-+	anim_tree_coach.set("parameters/reading blend/blend_amount", 0)
-+	anim_tree_coach.active = true
-+
-+	execution_finished.emit()
-+
-+# The game's shoot_player, for a mixed room (D120).
++# The game's shoot_player, for a mixed room.
 +func _mp8_game_shoot_player(seat_position_to_shoot: int):
 +
  	if multiplayer.is_server():
  		pause_eating_for_players(seat_position_to_shoot)
  
-@@ -86,7 +143,73 @@ func shoot_player(seat_position_to_shoot: int):
+@@ -86,7 +137,341 @@ func shoot_player(seat_position_to_shoot: int):
  
  	execution_finished.emit()
  
-+# [MP8] Two catches from one glance (coach_handler.gd), shot back to back in the order caught: the game's
-+# draw once, then each seat's aim. An aim fires at 0.93 s, recoils until about 1.6 s and lowers from about
-+# 2 s, so the next aim starts here; the draw racked the first shot, the second re-racks.
-+const MP8_NEXT_SHOT: float = 1.6
+-func gun_shot_visuals(seat_position_to_shoot: int):
++# [MP8] Two catches from one glance (coach_handler.gd), shot in the order caught after one draw. Each aim fires
++# MP8_FIRE_AT into its animation and recoils; the second shot blends from that recoil straight into the next aim's
++# fire pose (by a second name when both seats share one), so the arm never drops back to the draw. That aim creeps
++# at MP8_AIM_CREEP meanwhile, near its fire pose, so the arm holds on the player before the bang as the first aim does.
++const MP8_NEXT_SHOT: float = 1.4          # bang to bang, same side of the table
++const MP8_LEAN_BLEND: float = 0.4         # its recoil to the next aim
++const MP8_SWING_NEXT: float = 2.25        # bang to bang across the table
++const MP8_SWING_BLEND: float = 1.0
++const MP8_AIM_HOLD: float = 0.45
++const MP8_AIM_CREEP: float = 0.08         # AnimationPlayer runs its blends on the same clock, so they are scaled by it
 +
 +
 +func mp8_shoot_players(seats: PackedInt32Array):
@@ -96,13 +97,37 @@ diff --git a/minigames/green_pea/components/coach_handler/green_pea_coach.gd b/m
 +	await get_tree().create_timer(1.1, false).timeout
 +
 +	for i in seats.size():
-+		if i > 0:
-+			await get_tree().create_timer(MP8_NEXT_SHOT, false).timeout
-+			deagle_slide_forward()
-+			speaker_drone.play()
-+		anim_coach.play("coach_shoot_position_" + str(_mp8_anim_index(seats[i])), 0.2)
-+		gun_shot_visuals(seats[i])
-+	await get_tree().create_timer(4, false).timeout
++		var anim_name := "coach_shoot_position_" + str(_mp8_anim_index(seats[i]))
++		if i == 0:
++			anim_coach.play(anim_name, 0.2)
++			_mp8_turn_to(_mp8_turn_for(seats[i], anim_name), MP8_TURN_IN, MP8_TURN_IN_FROM)
++			gun_shot_visuals(seats[i])
++			await get_tree().create_timer(MP8_FIRE_AT, false).timeout
++			continue
++
++		var turn := _mp8_turn_for(seats[i], anim_name)
++		var same := _mp8_same_side(seats[i - 1], seats[i])
++		var blend := MP8_LEAN_BLEND if same else MP8_SWING_BLEND
++		var gap := MP8_NEXT_SHOT if same else MP8_SWING_NEXT
++		await get_tree().create_timer(gap - blend - MP8_AIM_HOLD, false).timeout
++		deagle_slide_forward()
++		speaker_drone.play()
++		anim_coach.speed_scale = MP8_AIM_CREEP
++		anim_coach.play(_mp8_again(anim_name), blend * MP8_AIM_CREEP)
++		anim_coach.seek(MP8_FIRE_AT - (blend + MP8_AIM_HOLD) * MP8_AIM_CREEP)
++		_mp8_turn_to(turn, blend)
++		gun_shot_visuals(seats[i], blend + MP8_AIM_HOLD)
++		await get_tree().create_timer(blend + MP8_AIM_HOLD, false).timeout
++		anim_coach.speed_scale = 1.0
++
++	await _mp8_after_last_shot()
++
++# [MP8] The game holds 4 s from the aim's start before everyone eats again; the turn unwinds as the arm lowers.
++func _mp8_after_last_shot():
++
++	await get_tree().create_timer(MP8_TURN_BACK_AT - MP8_FIRE_AT, false).timeout
++	_mp8_turn_to(Vector2.ZERO, MP8_TURN_BACK)
++	await get_tree().create_timer(4.0 - MP8_TURN_BACK_AT, false).timeout
 +
 +	if multiplayer.is_server():
 +		continue_eating_for_players()
@@ -112,13 +137,249 @@ diff --git a/minigames/green_pea/components/coach_handler/green_pea_coach.gd b/m
 +
 +	execution_finished.emit()
 +
- func gun_shot_visuals(seat_position_to_shoot: int):
++# [MP8] Only 4 aims exist, so seats 4-7 borrow one. After the animation, the coach's upper body turns about world
++# up until that aim's barrel points at its own player's head; the stock seats keep the game's aim. Seats 6-7 sit
++# within his reach, and seat 3's aim passes seat 7, so wherever a head would meet the gun he bends his elbow and
++# draws the gun back along its own barrel, the aim unchanged.
++const MP8_FIRE_AT: float = 0.93           # gun_shot_visuals' wait: the bang in every aim
++const MP8_TURN_IN_FROM: float = 0.25      # the turn joins the aim's own swing
++const MP8_TURN_IN: float = 0.55
++const MP8_TURN_BACK_AT: float = 2.0       # the aims lower from about here
++const MP8_TURN_BACK: float = 1.0
++const MP8_TURN_MAX: float = deg_to_rad(60.0)
++const MP8_GUN_CLEAR: float = 0.45         # a head's centre ahead of the muzzle, along the barrel
++const MP8_HEAD_WIDE: float = 0.35         # a head this close to the barrel's line meets the gun
++const MP8_PULL_MAX: float = 1.4
 +
-+	# [MP8] A mixed room runs the game's gun_shot_visuals (D120).
++class MP8Turn extends SkeletonModifier3D:
++
++	var bone: int = -1                    # spine
++	var upper: int = -1                   # the gun arm: upper arm, forearm, hand
++	var fore: int = -1
++	var hand: int = -1
++	var gun_local: Transform3D = Transform3D.IDENTITY   # the gun on the hand: its +z is the barrel
++	var pose: Vector2 = Vector2.ZERO      # x: the turn about world up (radians), y: the gun drawn back (m)
++	# The elbow's side in the upper arm's own frame: taken once per draw-back, so a near-straight arm can't flip it,
++	# and turning with the arm through a swing.
++	var _bend: Vector3 = Vector3.ZERO
++
++	func _process_modification() -> void:
++		if pose.y <= 0.0:
++			_bend = Vector3.ZERO
++		var sk := get_skeleton()
++		if sk == null or bone < 0 or pose.is_zero_approx():
++			return
++		if not is_zero_approx(pose.x):
++			var up: Vector3 = (sk.global_basis.inverse() * Vector3.UP).normalized()
++			var gp: Transform3D = sk.get_bone_global_pose(bone)
++			sk.set_bone_global_pose(bone, Transform3D(Basis(up, pose.x) * gp.basis, gp.origin))
++		if pose.y > 0.0 and hand >= 0:
++			_draw_back(sk, pose.y / sk.global_basis.get_scale().x)
++
++	# Two-bone IK: the hand moves back along the barrel, the elbow bends to the side it already bends to, and
++	# the hand keeps its own rotation, so the barrel keeps its line. The arm's shortest reach stops it short.
++	func _draw_back(sk: Skeleton3D, dist: float) -> void:
++		var u: Transform3D = sk.get_bone_global_pose(upper)
++		var e: Vector3 = sk.get_bone_global_pose(fore).origin
++		var w: Transform3D = sk.get_bone_global_pose(hand)
++		var s: Vector3 = u.origin
++		var l1: float = s.distance_to(e)
++		var l2: float = e.distance_to(w.origin)
++		var back: Vector3 = (w.basis * gun_local.basis).z.normalized()
++		var dmin: float = absf(l1 - l2) + 0.001
++		var b: float = back.dot(w.origin - s)
++		var disc: float = b * b - (w.origin - s).length_squared() + dmin * dmin
++		if disc >= 0.0 and b > 0.0:
++			dist = minf(dist, maxf(b - sqrt(disc), 0.0))
++		var to: Vector3 = w.origin - back * dist
++		var span: Vector3 = to - s
++		var d: float = clampf(span.length(), dmin, l1 + l2 - 0.001)
++		var axis: Vector3 = span.normalized()
++		if _bend.is_zero_approx():
++			var side: Vector3 = (e - s) - axis * (e - s).dot(axis)
++			if side.length() < 0.05 * l1:
++				side = -(sk.global_basis.inverse() * Vector3.UP)
++			_bend = u.basis.inverse() * side
++		var bend: Vector3 = u.basis * _bend
++		var pole: Vector3 = bend - axis * bend.dot(axis)
++		var a: float = (l1 * l1 - l2 * l2 + d * d) / (2.0 * d)
++		var elbow: Vector3 = s + axis * a + pole.normalized() * sqrt(maxf(l1 * l1 - a * a, 0.0))
++		sk.set_bone_global_pose(upper, Transform3D(Basis(Quaternion((e - s).normalized(), (elbow - s).normalized())) * u.basis, s))
++		var f: Transform3D = sk.get_bone_global_pose(fore)
++		var now: Vector3 = sk.get_bone_global_pose(hand).origin
++		var hit: Vector3 = s + axis * d
++		sk.set_bone_global_pose(fore, Transform3D(Basis(Quaternion((now - f.origin).normalized(), (hit - f.origin).normalized())) * f.basis, f.origin))
++		sk.set_bone_global_pose(hand, Transform3D(w.basis, sk.get_bone_global_pose(hand).origin))
++
++var _mp8_turn: MP8Turn = null
++var _mp8_turn_tween: Tween = null
++
++
++func _mp8_turner() -> MP8Turn:
++
++	if _mp8_turn == null:
++		var sk := _mp8_skeleton()
++		var att := _mp8_gun().get_parent() as BoneAttachment3D
++		_mp8_turn = MP8Turn.new()
++		_mp8_turn.name = "MP8Turn"
++		_mp8_turn.bone = sk.find_bone("spine")
++		_mp8_turn.hand = sk.find_bone(att.bone_name) if att != null else -1
++		_mp8_turn.fore = sk.get_bone_parent(_mp8_turn.hand) if _mp8_turn.hand >= 0 else -1
++		_mp8_turn.upper = sk.get_bone_parent(_mp8_turn.fore) if _mp8_turn.fore >= 0 else -1
++		if _mp8_turn.upper < 0:
++			_mp8_turn.hand = -1
++		_mp8_turn.gun_local = _mp8_gun().transform
++		sk.add_child(_mp8_turn)
++	return _mp8_turn
++
++
++# The gun rides `hand_L`, a BoneAttachment3D on the coach's Skeleton3D.
++func _mp8_gun() -> Node3D:
++	return anim_gun_fire.get_parent()
++
++
++func _mp8_skeleton() -> Skeleton3D:
++	return _mp8_gun().get_parent().get_parent()
++
++
++func _mp8_turn_to(to: Vector2, seconds: float, after: float = 0.0) -> void :
++
++	var t := _mp8_turner()
++	if _mp8_turn_tween != null:
++		_mp8_turn_tween.kill()
++	_mp8_turn_tween = create_tween()
++	if after > 0.0:
++		_mp8_turn_tween.tween_interval(after)
++	_mp8_turn_tween.tween_property(t, "pose", to, seconds).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
++
++
++# A seat's shot from the aim's fire pose: the turn (none at the stock seats), and how far to draw the gun back
++# so that no living player's head is within MP8_GUN_CLEAR of its muzzle.
++func _mp8_turn_for(seat: int, anim_name: String) -> Vector2 :
++
++	var who: GreenPeaPlayer = null
++	for player: GreenPeaPlayer in player_spawn_parent.get_children():
++		if player.player_seat_position == seat:
++			who = player
++	var pose := _mp8_fire_pose(anim_name)
++	if who == null or pose.is_empty():
++		return Vector2.ZERO
++
++	var yaw := 0.0 if seat == _mp8_anim_index(seat) else _mp8_yaw_through(_mp8_head(who), pose)
++	var piv: Vector3 = pose["pivot"]
++	var gun: Vector3 = piv + (pose["gun"] - piv).rotated(Vector3.UP, yaw)
++	var tip: Vector3 = piv + (pose["tip"] - piv).rotated(Vector3.UP, yaw)
++	var d := _mp8_flat((pose["barrel"] as Vector3).rotated(Vector3.UP, yaw)).normalized()
++	var reach: float = _mp8_flat(tip - gun).dot(d)
++	var pull := 0.0
++	for player: GreenPeaPlayer in player_spawn_parent.get_children():
++		if player.is_dead:
++			continue
++		var h := _mp8_flat(_mp8_head(player) - gun)
++		var across: float = absf(d.x * h.y - d.y * h.x)
++		var ahead: float = h.dot(d)
++		if across < MP8_HEAD_WIDE and ahead > 0.0:
++			pull = maxf(pull, reach + MP8_GUN_CLEAR - ahead)
++	return Vector2(yaw, clampf(pull, 0.0, MP8_PULL_MAX))
++
++
++# The turn about the spine's origin that puts the barrel through the head. With h and v the head and the gun from
++# that origin and d the barrel, all flat, a turn t needs cross(d, R(-t) h) = cross(d, v), so
++# t = yaw(h) - yaw(d) + asin(cross(d, v) / |h|).
++func _mp8_yaw_through(head: Vector3, pose: Dictionary) -> float:
++
++	var h := _mp8_flat(head - pose["pivot"])
++	var v := _mp8_flat(pose["gun"] - pose["pivot"])
++	var d := _mp8_flat(pose["barrel"]).normalized()
++	if h.length() < 0.01 or d.is_zero_approx():
++		return 0.0
++	var k: float = d.x * v.y - d.y * v.x
++	var t: float = atan2(h.x, h.y) - atan2(d.x, d.y) + asin(clampf(k / h.length(), -1.0, 1.0))
++	return clampf(wrapf(t, -PI, PI), -MP8_TURN_MAX, MP8_TURN_MAX)
++
++
++func _mp8_flat(v: Vector3) -> Vector2:
++	return Vector2(v.x, v.z)
++
++
++func _mp8_head(who: GreenPeaPlayer) -> Vector3:
++
++	for sk: Skeleton3D in who.find_children("*", "Skeleton3D", true, false):
++		var b := sk.find_bone("head")
++		if b >= 0:
++			return sk.global_transform * sk.get_bone_global_pose(b).origin
++	return who.global_position
++
++
++# The spine's origin, the gun, its muzzle and its barrel (local +z) in world space, MP8_FIRE_AT into the aim: the
++# animation's rotation tracks chained over the bones' own positions and scales (the aims key rotations only).
++func _mp8_fire_pose(anim_name: String) -> Dictionary:
++
++	var sk := _mp8_skeleton()
++	var att := _mp8_gun().get_parent() as BoneAttachment3D
++	var anim: Animation = anim_coach.get_animation(anim_name) if anim_coach.has_animation(anim_name) else null
++	var hand: int = sk.find_bone(att.bone_name) if att != null else -1
++	var spine := sk.find_bone("spine")
++	if anim == null or hand < 0 or spine < 0:
++		return {}
++
++	var prefix := str(anim_coach.get_node(anim_coach.root_node).get_path_to(sk)) + ":"
++	var local := {}
++	var b := hand
++	while b >= 0:
++		var q: Quaternion = sk.get_bone_pose_rotation(b)
++		var tr := anim.find_track(NodePath(prefix + sk.get_bone_name(b)), Animation.TYPE_ROTATION_3D)
++		if tr >= 0:
++			q = anim.rotation_track_interpolate(tr, MP8_FIRE_AT)
++		local[b] = Transform3D(Basis(q) * Basis.from_scale(sk.get_bone_pose_scale(b)), sk.get_bone_pose_position(b))
++		b = sk.get_bone_parent(b)
++	if not local.has(spine):
++		return {}
++
++	var mesh := _mp8_gun() as MeshInstance3D
++	var box: AABB = mesh.get_aabb() if mesh != null else AABB()
++	var gun: Transform3D = _mp8_chain(sk, local, hand) * _mp8_gun().transform
++	return {"pivot": _mp8_chain(sk, local, spine).origin, "gun": gun.origin,
++		"tip": gun * Vector3(box.get_center().x, box.get_center().y, box.end.z), "barrel": gun.basis.z}
++
++
++func _mp8_chain(sk: Skeleton3D, local: Dictionary, to: int) -> Transform3D:
++
++	var x := Transform3D.IDENTITY
++	var c := to
++	while c >= 0:
++		x = local[c] * x
++		c = sk.get_bone_parent(c)
++	return sk.global_transform * x
++
++
++# A second name for an aim: AnimationPlayer doesn't restart or blend into the animation it is playing.
++func _mp8_again(anim_name: String) -> String:
++
++	if not anim_coach.has_animation_library(&"mp8"):
++		anim_coach.add_animation_library(&"mp8", AnimationLibrary.new())
++	var lib := anim_coach.get_animation_library(&"mp8")
++	if not lib.has_animation(StringName(anim_name)) and anim_coach.has_animation(anim_name):
++		lib.add_animation(StringName(anim_name), anim_coach.get_animation(anim_name))
++	return "mp8/" + anim_name
++
++
++func _mp8_same_side(seat_a: int, seat_b: int) -> bool:
++
++	var xs := []
++	for seat in [seat_a, seat_b]:
++		for player: GreenPeaPlayer in player_spawn_parent.get_children():
++			if player.player_seat_position == seat:
++				xs.append(signf(player.global_position.x - global_position.x))
++	return xs.size() == 2 and xs[0] == xs[1]
++
++func gun_shot_visuals(seat_position_to_shoot: int, mp8_after: float = MP8_FIRE_AT):
++
++	# [MP8] A mixed room runs the game's gun_shot_visuals.
 +	if not NetworkManager.mp8_room_extended():
 +		await _mp8_game_gun_shot_visuals(seat_position_to_shoot)
 +		return
-+	await get_tree().create_timer(0.93, false).timeout
++	await get_tree().create_timer(mp8_after, false).timeout
 +	deagle_slide_back()
 +	speaker_drone.stop()
 +	speaker_shoot.play()
@@ -130,6 +391,8 @@ diff --git a/minigames/green_pea/components/coach_handler/green_pea_coach.gd b/m
 +
 +	for player: GreenPeaPlayer in player_spawn_parent.get_children():
 +		if player.player_seat_position == seat_position_to_shoot:
++			# [MP8] A double's second bang comes while the first's flash still plays, which play() would not restart.
++			anim_gun_fire.stop()
 +			anim_gun_fire.play("shoot")
 +			shaker_camera.force_stop_shake()
 +			shaker_camera.play_shake()
@@ -141,17 +404,17 @@ diff --git a/minigames/green_pea/components/coach_handler/green_pea_coach.gd b/m
 +					dec.visible = true
 +			player.blood_decal_parent.visible = true
 +
-+# The game's gun_shot_visuals, for a mixed room (D120).
++# The game's gun_shot_visuals, for a mixed room.
 +func _mp8_game_gun_shot_visuals(seat_position_to_shoot: int):
  	await get_tree().create_timer(0.93, false).timeout
  	deagle_slide_back()
  	speaker_drone.stop()
-@@ -106,14 +229,49 @@ func gun_shot_visuals(seat_position_to_shoot: int):
+@@ -106,14 +491,49 @@ func gun_shot_visuals(seat_position_to_shoot: int):
  			player.blood_decal_parent.visible = true
  
  func pause_eating_for_players(position_being_shot: int):
 +
-+	# [MP8] A mixed room runs the game's pause_eating_for_players (D120).
++	# [MP8] A mixed room runs the game's pause_eating_for_players.
 +	if not NetworkManager.mp8_room_extended():
 +		await _mp8_game_pause_eating_for_players(position_being_shot)
 +		return
@@ -162,7 +425,7 @@ diff --git a/minigames/green_pea/components/coach_handler/green_pea_coach.gd b/m
 +			# [MP8] Same budget as `continue_eating_for_players`, so the two ramps stay matched.
 +			await get_tree().create_timer(_mp8_stagger()).timeout
 +
-+# The game's pause_eating_for_players, for a mixed room (D120).
++# The game's pause_eating_for_players, for a mixed room.
 +func _mp8_game_pause_eating_for_players(position_being_shot: int):
  	if multiplayer.is_server():
  		for player in players:
@@ -180,7 +443,7 @@ diff --git a/minigames/green_pea/components/coach_handler/green_pea_coach.gd b/m
 +
  func continue_eating_for_players():
  
-+	# [MP8] A mixed room runs the game's continue_eating_for_players (D120).
++	# [MP8] A mixed room runs the game's continue_eating_for_players.
 +	if not NetworkManager.mp8_room_extended():
 +		await _mp8_game_continue_eating_for_players()
 +		return
@@ -190,7 +453,7 @@ diff --git a/minigames/green_pea/components/coach_handler/green_pea_coach.gd b/m
 +			player.continue_eating_rpc.rpc()
 +			await get_tree().create_timer(_mp8_stagger()).timeout
 +
-+# The game's continue_eating_for_players, for a mixed room (D120).
++# The game's continue_eating_for_players, for a mixed room.
 +func _mp8_game_continue_eating_for_players():
 +
  	if multiplayer.is_server():

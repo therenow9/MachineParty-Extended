@@ -172,11 +172,11 @@ def main():
     if strap_kind == "yes":
         parts.append(strap())
     materials = [
-        # Blue moulded frame (owner, round 3).
+        # Blue moulded frame.
         common.worn("frame", "1f4f9c", "15243a", grime=0.25, grain=0.06, edge_hex="5a8ad0", edge=0.6, scratches=0.2),
         glass_material(),
-        # Clear silicone, which can only be painted (owner, round 3): pale blue-white
-        # with bright glassy streaks where light would catch it. The strap is the same (round 4).
+        # Clear silicone, which can only be painted: pale blue-white
+        # with bright glassy streaks where light would catch it. The strap is the same.
         common.worn("skirt", "c3d3dc", "8597a3", grime=0.25, grime_scale=6.0, grain=0.04, edge_hex="f2fbff", edge=0.9,
                     pattern=("e9f4fa", 9.0, "WAVE")),
         common.worn("strap", "c3d3dc", "8597a3", grime=0.2, grain=0.04, edge_hex="f2fbff", edge=0.9,

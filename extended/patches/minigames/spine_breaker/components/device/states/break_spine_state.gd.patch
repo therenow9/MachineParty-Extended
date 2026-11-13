@@ -6,7 +6,7 @@ diff --git a/minigames/spine_breaker/components/device/states/break_spine_state.
  
  func enter(_msg: Dictionary = {}) -> void :
 +
-+	# [MP8] A mixed room runs the game's enter (D120).
++	# [MP8] A mixed room runs the game's enter.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_enter(_msg)
 +		return
@@ -42,7 +42,7 @@ diff --git a/minigames/spine_breaker/components/device/states/break_spine_state.
 +	target.spine_broken.connect(_on_spine_broken, CONNECT_ONE_SHOT)
 +	target.break_spine_rpc.rpc()
 +
-+# The game's enter, for a mixed room (D120).
++# The game's enter, for a mixed room.
 +func _mp8_game_enter(_msg: Dictionary = {}) -> void :
  	state_time = 0.0
  
@@ -51,7 +51,7 @@ diff --git a/minigames/spine_breaker/components/device/states/break_spine_state.
  
  func _on_spine_broken():
  
-+	# [MP8] A mixed room runs the game's _on_spine_broken (D120).
++	# [MP8] A mixed room runs the game's _on_spine_broken.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_on_spine_broken()
 +		return
@@ -82,7 +82,7 @@ diff --git a/minigames/spine_breaker/components/device/states/break_spine_state.
 +		"after_break": true
 +	})
 +
-+# The game's _on_spine_broken, for a mixed room (D120).
++# The game's _on_spine_broken, for a mixed room.
 +func _mp8_game_on_spine_broken():
 +
  	owner.global_position = fallback_position

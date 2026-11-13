@@ -90,7 +90,7 @@ diff --git a/minigames/smoke_break/scripts/smoke_break.gd b/minigames/smoke_brea
 +# With 4 players or fewer nothing changes.
 +func _mp8_setup_seats() -> void :
 +
-+	# A mixed room keeps the game's 4 seats and tables (D120); they change above 4 players only.
++	# A mixed room keeps the game's 4 seats and tables; they change above 4 players only.
 +	if not NetworkManager.mp8_room_extended():
 +		return
 +
@@ -264,7 +264,7 @@ diff --git a/minigames/smoke_break/scripts/smoke_break.gd b/minigames/smoke_brea
 +func _mp8_load_seats() -> Array :
 +	# No seat file -> MP8_SEATS_BAKED, not the arc fill: peers never have the file.
 +	# `mp8smokenofile` gives the arc fill alone.
-+	# [MP8] The editor's file, read only in a test build: a shipped build plays the built-in layout (D116).
++	# [MP8] The editor's file, read only in a test build: a shipped build plays the built-in layout.
 +	if not NetworkManager.mp8_development_tools_allowed() or not FileAccess.file_exists(MP8_SEAT_FILE):
 +		return _mp8_baked_seats()
 +	var f := FileAccess.open(MP8_SEAT_FILE, FileAccess.READ)
@@ -750,7 +750,7 @@ diff --git a/minigames/smoke_break/scripts/smoke_break.gd b/minigames/smoke_brea
 +
  func spawn_players():
  
-+	# [MP8] A mixed room spawns as the game does (D120).
++	# [MP8] A mixed room spawns as the game does.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_spawn_players()
 +		return
@@ -789,7 +789,7 @@ diff --git a/minigames/smoke_break/scripts/smoke_break.gd b/minigames/smoke_brea
 +
 +		counter += 1
 +
-+# The game's spawn_players, for a mixed room (D120).
++# The game's spawn_players, for a mixed room.
 +func _mp8_game_spawn_players():
 +
  
@@ -799,7 +799,7 @@ diff --git a/minigames/smoke_break/scripts/smoke_break.gd b/minigames/smoke_brea
  	finished_players.append(player_character)
  
  func player_disconnected(_network_id: int):
-+	# [MP8] A mixed room keeps the game's own handler, its raw read included (D120).
++	# [MP8] A mixed room keeps the game's own handler, its raw read included.
 +	var mp8_ext: bool = NetworkManager.mp8_room_extended()
  	super.player_disconnected(_network_id)
  
@@ -823,7 +823,7 @@ diff --git a/minigames/smoke_break/scripts/smoke_break.gd b/minigames/smoke_brea
 +
 +	player_instance.queue_free()
 +
-+# The game's player_disconnected after its super call, for a mixed room (D120).
++# The game's player_disconnected after its super call, for a mixed room.
 +func _mp8_game_player_disconnected_tail(_network_id: int):
 +
  	var player_instance = player_characters[_network_id]

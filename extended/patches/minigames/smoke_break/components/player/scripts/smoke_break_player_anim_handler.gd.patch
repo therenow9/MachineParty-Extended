@@ -9,7 +9,7 @@ diff --git a/minigames/smoke_break/components/player/scripts/smoke_break_player_
 +	# [MP8] The butt toss is in the finish looks, and the match covers seats 0-3; seats 4-7 would play
 +	# "" and keep the butt. They take the nearest original seat's look: the game pairs the seats as its
 +	# deaths do (window seats look left, fan seats right), so it follows the death animation setup_rpc sent.
-+	# A mixed room plays the game's match alone (D120).
++	# A mixed room plays the game's match alone.
 +	if NetworkManager.mp8_room_extended() and finish_animation == "":
 +		finish_animation = "finish_look_right" if String(player.mp8_death_anim) == "death_fan" else "finish_look_left"
 +		if String(player.mp8_death_anim) == "":
@@ -25,7 +25,7 @@ diff --git a/minigames/smoke_break/components/player/scripts/smoke_break_player_
 +	# [MP8] Death animations are made per seat and the match covers seats 0-3; seats 4-7 would play ""
 +	# and the shot player would not fall. They use the animation of the nearest original seat, sent
 +	# with setup_rpc. With 4 players or fewer the match always hits and this does nothing. A mixed room
-+	# plays the game's match alone (D120).
++	# plays the game's match alone.
 +	if NetworkManager.mp8_room_extended():
 +		if death_anim_active == "":
 +			death_anim_active = String(player.mp8_death_anim)

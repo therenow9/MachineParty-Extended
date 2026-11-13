@@ -35,11 +35,12 @@
 #                                      --look hi: 3D drawn at the window's size instead (cl_playtest's look=hi; the trailer's look test).
 #                                      Movie Maker can't record it (it keeps a 960x540 corner), so it takes no --record:
 #                                      MP_LOOK_STILLS=<existing dir> in the environment saves a still every 30 frames instead.
+#                                      MP_LAUNCH_EXTRA="<key=value;...>" appends cl_playtest launch keys (tmstage, tmcam).
 #                                      --difficulty easy|normal|hard: the bots' level for this launch only; the saved
 #                                      Offline Bots config is neither read for it nor changed.
 #                                      --extra <mod dir>: also install that mod for the run (repeatable), such as
 #                                      tools/selftest/perf_probe (PERF_PROBE=inventory|ablate in the environment).
-#                                      --shot <id>: a trailer take (docs/plans/2026-10-31-trailer.md): installs
+#                                      --shot <id>: a trailer take: installs
 #                                      tools/trailer_cast with that shot of its trailer.json, so every seat is the cast,
 #                                      the music bus is muted and the shot's camera, HUD and choreography run; its event
 #                                      log goes beside --record's frames (events.csv), or to %TEMP%/machine-party-tests/trailer.
@@ -279,7 +280,7 @@ case "${1:-}" in
     mkdir -p "$perf_dir"
     touch "$scratch/started"
     echo "launch: $minigame, $mode, $bots bots${difficulty:+ ($difficulty)}, overtime $ot${fork:+ ($fork)}${mp8:+ ($mp8)}${compat[*]:+, compat set}"
-    MP_LAUNCH="minigame=$minigame;mode=$mode;bots=$bots${auto:+;auto=$auto}${drop:+;drop=$drop}${stall:+;stall=$stall}${grace:+;grace=$grace}${look:+;look=$look}${difficulty:+;difficulty=$difficulty}" MP_OVERTIME_FORK="$fork" MP_MP8_BUILD="$mp8" \
+    MP_LAUNCH="minigame=$minigame;mode=$mode;bots=$bots${auto:+;auto=$auto}${drop:+;drop=$drop}${stall:+;stall=$stall}${grace:+;grace=$grace}${look:+;look=$look}${difficulty:+;difficulty=$difficulty}${MP_LAUNCH_EXTRA:+;$MP_LAUNCH_EXTRA}" MP_OVERTIME_FORK="$fork" MP_MP8_BUILD="$mp8" \
       MP_TRAILER_SHOT="$shot" MP_TRAILER_LOG="$shot_log" \
       bash "$REPO/tools/run_selftest.sh" cl_playtest --windowed --play ${record:+"--movie=$record"} ${fps:+"--movie-fps=$fps"} "${res[@]}" "${ot_flags[@]}" "${compat[@]}" "$scratch/offline_bots" "${extra[@]}"
     rc=$?

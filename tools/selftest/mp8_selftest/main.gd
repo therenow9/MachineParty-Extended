@@ -54,7 +54,7 @@ func _run() -> void:
 		finish()
 		return
 	# Chosen by the folders installed, not by the refusal it checks. Either copy's main.gd may be the one
-	# dir_of() names, and one built before D157 has no scan to test.
+	# dir_of() names, and an older one has no scan to test.
 	var copies := _extended_folders()
 	if copies.size() >= 2:
 		_twice(log_text, copies)
@@ -72,9 +72,10 @@ func _run() -> void:
 		_hosting(log_text)
 		await _chisel_pad()
 		await _title_word()
+		await _leave_menu_twice()
 	finish()
 
-# Machine Party: Extended's word beside the main menu's logo (D106): one, right after the logo, at its scale, on
+# Machine Party: Extended's word beside the main menu's logo: one, right after the logo, at its scale, on
 # screen and clear of the buttons; still one after the menu leaves and re-enters the tree (the hook fires again).
 func _title_word() -> void:
 	say("step: title word")
@@ -86,7 +87,7 @@ func _title_word() -> void:
 	if menu == null:
 		return
 	var corner = menu.get("version_label")
-	ok("the corner shows the game version and the tag (D173)", corner is Label and corner.text == Globals.game_version + "+" + TAG, corner.text if corner is Label else corner)
+	ok("the corner shows the game version and the tag", corner is Label and corner.text == Globals.game_version + "+" + TAG, corner.text if corner is Label else corner)
 	var logo: Control = menu.find_child("logo", true, false)
 	var words := func() -> Array: return logo.get_parent().find_children("mp8_extended", "", false, false)
 	ok("one word", words.call().size() == 1, words.call().size())
@@ -109,6 +110,45 @@ func _title_word() -> void:
 	for i in 3:
 		await get_tree().process_frame
 	ok("still one after re-entering", words.call().size() == 1, words.call().size())
+
+const LOCAL_LOBBY := "res://scenes/local_lobby/local_lobby.tscn"
+
+# Host, Local and Customization each fade, then change scene. A second press during the fade releases both
+# waits, and without the fix the second calls get_tree() on the menu the first took out, so the build dies here.
+# Last, since it leaves the menu: Local, then Host twice and Customization, 0.1 s apart; only the first may act.
+func _leave_menu_twice() -> void:
+	say("step: the main menu's scene buttons pressed during the fade")
+	var menu: Node = null
+	for n in get_tree().current_scene.find_children("*", "Control", true, false):
+		if n.get_script() != null and str(n.get_script().resource_path).ends_with("main_menu/scripts/main_menu.gd"):
+			menu = n
+	ok("main menu up for the presses", menu != null)
+	if menu == null:
+		return
+	var waited := 0
+	while waited < 50 and GlobalOverlay.get("overlay_tween") is Tween and GlobalOverlay.overlay_tween.is_running():
+		await get_tree().create_timer(0.1).timeout
+		waited += 1
+	ok("the menu declares its leaving flag", "mp8_leaving" in menu)
+	var host_before: bool = GameManager.host_game
+	menu.local_original_button.pressed.emit()
+	ok("the first press sets it", menu.get("mp8_leaving") == true, menu.get("mp8_leaving"))
+	await get_tree().create_timer(0.1).timeout
+	menu.host_original_button.pressed.emit()
+	menu.host_custom_button.pressed.emit()
+	ok("a later Host press leaves the first press's mode alone", GameManager.host_game == host_before and not GameManager.custom_game, [GameManager.host_game, GameManager.custom_game])
+	await get_tree().create_timer(0.1).timeout
+	menu.customization_button.pressed.emit()
+	var t0 := Time.get_ticks_msec()
+	while Time.get_ticks_msec() - t0 < 10000:
+		await get_tree().process_frame
+		var scene = get_tree().current_scene
+		if is_instance_valid(scene) and scene.scene_file_path == LOCAL_LOBBY:
+			break
+	for i in 30:
+		await get_tree().process_frame
+	var now = get_tree().current_scene
+	ok("one scene change, the first press's: the local lobby", is_instance_valid(now) and now.scene_file_path == LOCAL_LOBBY, now.scene_file_path if is_instance_valid(now) else now)
 
 # The folder scan on a made-up mods folder: a mod.json whose id, or folder name when it has none, is the one asked for.
 func _scan_rule() -> void:
@@ -221,8 +261,9 @@ func _mounted(log_text: String, nm: Node) -> void:
 	await _countdown_out_of_tree(nm)
 	await _thrown_unstick(nm)
 	await _follow_unstick(nm)
+	await _throw_grace(nm)
 
-# The dev switches (D116, D119): every switch of ours is read from mp8_dev_args(), empty outside a test build.
+# The dev switches: every switch of ours is read from mp8_dev_args(), empty outside a test build.
 # Every run checks the list against the build's verdict. With MP8_DEV_EXPECT=release|test and DEV_ARGS on
 # the command line (MP_GAME_ARGS), only this step runs: the verdict must be the expected one, and a few real
 # read sites must take the switch in a test build and their default in a shipped one.
@@ -429,8 +470,8 @@ func _fill_room(active, n: int) -> void:
 	for i in n:
 		active.connected_players[100 + i] = {"mp8": TAG}
 
-# The audit's "Every minigame" rows (D116): each gate's Extended path and the game's own, in a room held by the
-# latch (D118), as a minigame sees it. With no real peers only the latch can make a room mixed.
+# The audit's "Every minigame" rows: each gate's Extended path and the game's own, in a room held by the
+# latch, as a minigame sees it. With no real peers only the latch can make a room mixed.
 func _stage(nm: Node, extended: bool) -> void:
 	GameManager.local_game = false
 	nm.set("_mp8_room_latch", 1 if extended else 0)
@@ -447,12 +488,12 @@ func _shared_rows(nm: Node) -> void:
 	await _game_rows(nm)
 	await _intermission_rows(nm)
 	_minigame_rows(nm)
-	_d120_rows(nm)
-	_d120_slice_rows(nm)
-	_d120_debris_rows(nm)
-	_d120_spine_rows(nm)
-	_d120_filter_rows(nm)
-	await _d120_shared_rows(nm)
+	_mixed_rows(nm)
+	_mixed_slice_rows(nm)
+	_mixed_debris_rows(nm)
+	_mixed_spine_rows(nm)
+	_mixed_filter_rows(nm)
+	await _mixed_shared_rows(nm)
 	nm.call("mp8_unlatch_room")
 	GameManager.local_game = was_local
 	Globals.current_minigame_identifier = was_minigame
@@ -472,7 +513,7 @@ func _runtime_script(label: String, source: String) -> GDScript:
 	ok("%s compiles" % label, err == OK, err)
 	return s if err == OK else null
 
-# D120's rows: a stand-in on a game script, its frame callbacks replaced and each named copy of the game's code
+# The mixed-room copies' rows: a stand-in on a game script, its frame callbacks replaced and each named copy of the game's code
 # (`_mp8_game_<name>`, full signature) counting its calls instead of running. That a copy equals src/ is checked
 # outside the game, line for line.
 func _copy_script(label: String, path: String, copies: Array, extra: Array = []) -> GDScript:
@@ -484,7 +525,7 @@ func _copy_script(label: String, path: String, copies: Array, extra: Array = [])
 		lines.append("func %s:\n\tmp8_test_copies += 1" % c)
 	return _runtime_script(label, "\n".join(lines + extra + [""]))
 
-# Whether a script declares a method itself: a build before D120's copies has none, and its rows FAIL here
+# Whether a script declares a method itself: an older build has none, and its rows FAIL here
 # rather than run a path that needs a scene.
 func _declares(path: String, method: String) -> bool:
 	var s := load(path) as GDScript
@@ -519,10 +560,10 @@ const COLLAR := "res://minigames/exploding_collar_race/scripts/exploding_collar_
 const DISCO := "res://minigames/disco_dodge/scrips/disco_dodge.gd"
 const OVERLAY := "res://modules/minigame/components/overlay/scripts/minigame_overlay.gd"
 
-# D120 on sessions 4-6's minigames and the overlay: a mixed room runs the game's function, an Extended one its own.
+# The mixed-room copies in the first minigames and the overlay: a mixed room runs the game's function, an Extended one its own.
 # Where Extended's path needs a scene, only the mixed call is made.
-func _d120_rows(nm: Node) -> void:
-	say("step: D120's copies, sessions 4-6 (%d presences)" % PlayerManager.player_presences.size())
+func _mixed_rows(nm: Node) -> void:
+	say("step: the mixed-room copies, the first minigames (%d presences)" % PlayerManager.player_presences.size())
 	for extended in [true, false]:
 		var room := "Extended" if extended else "mixed"
 		_stage(nm, extended)
@@ -577,10 +618,10 @@ const HUNTER_SCRIPT := "res://minigames/duck_hunt/components/hunter_player/scrip
 const DUCK_LOCAL := "res://minigames/duck_hunt/scripts/duck_hunt_local_handler.gd"
 const DUCK_REVEAL := "res://minigames/duck_hunt/states/role_reveal_state.gd"
 
-# D120 on Table Manners, Chisel and Duck Hunt (session 9): a mixed room runs the game's function, an Extended one
+# The mixed-room copies in Table Manners, Chisel and Duck Hunt: a mixed room runs the game's function, an Extended one
 # its own. Extended's path is called only where a stand-in returns early (an end flag, no players, inactive).
-func _d120_slice_rows(nm: Node) -> void:
-	say("step: D120's copies, Table Manners, Chisel and Duck Hunt")
+func _mixed_slice_rows(nm: Node) -> void:
+	say("step: the mixed-room copies, Table Manners, Chisel and Duck Hunt")
 	for extended in [true, false]:
 		var room := "Extended" if extended else "mixed"
 		_stage(nm, extended)
@@ -685,7 +726,7 @@ func _d120_slice_rows(nm: Node) -> void:
 					ok("Table Manners seats, mixed: the game's 4", seats.get_child_count() == 4 and tm.get("_mp8_seat_z").is_empty(), seats.get_child_count())
 					tm.free()
 			else:
-				ok("Table Manners seats, mixed: the build has session 9's copies", false)
+				ok("Table Manners seats, mixed: the build has the mixed-room copies", false)
 	# The game's two hunter tables, read by its shoot and set_active_rpc (the scene sets neither).
 	var hunter: Node = load(HUNTER_SCRIPT).new()
 	ok("hunter: the game's magazine table", str(hunter.get("magazine_capacity_by_duck_count")) == str({0: 7, 1: 7, 2: 8, 3: 10}), hunter.get("magazine_capacity_by_duck_count"))
@@ -699,11 +740,11 @@ const JP_CUBE := "res://minigames/junk_platform/components/junk_cube_rigidbody/j
 const JP_PLAYER := "res://minigames/junk_platform/components/player/scripts/junk_platform_player.gd"
 const JP_HANDLER := "res://minigames/junk_platform/scripts/junk_handler.gd"
 
-# D120 on Debris Platforms (session 10): a mixed room runs the game's function, an Extended one its own. Extended's
+# The mixed-room copies in Debris Platforms: a mixed room runs the game's function, an Extended one its own. Extended's
 # path is called only where a stand-in returns early (an end flag, a body that is no player, a path that resolves
 # to nothing, a hit player, the pause).
-func _d120_debris_rows(nm: Node) -> void:
-	say("step: D120's copies, Debris Platforms")
+func _mixed_debris_rows(nm: Node) -> void:
+	say("step: the mixed-room copies, Debris Platforms")
 	for extended in [true, false]:
 		var room := "Extended" if extended else "mixed"
 		_stage(nm, extended)
@@ -777,11 +818,11 @@ func _d120_debris_rows(nm: Node) -> void:
 
 const JP_DECK := "res://minigames/junk_platform/components/platform/junk_platform_platform.tscn"
 
-# PD20, D155: a deck still blinking when it leaves the tree. The game's loop then never yields, so a build without
+# A deck still blinking when it leaves the tree. The game's loop then never yields, so a build without
 # the fix hangs here to the runner's kill; with it the loop ends, in both rooms. The minigame's scene sets the
 # circles and the alarm, so the lone deck gets an empty circle parent and no alarm.
 func _deck_blink(nm: Node) -> void:
-	say("step: a Debris deck leaving the tree mid-blink (PD20)")
+	say("step: a Debris deck leaving the tree mid-blink")
 	var scene := load(JP_DECK) as PackedScene
 	if scene == null:
 		ok("Debris deck scene loads", false, JP_DECK)
@@ -808,11 +849,11 @@ func _deck_blink(nm: Node) -> void:
 
 const COUNTDOWN := "res://minigames/shared/states/countdown_state.gd"
 
-# PD22, D155: a minigame's countdown whose tick comes after a scene change has taken the minigame out of the tree
+# A minigame's countdown whose tick comes after a scene change has taken the minigame out of the tree
 # but not yet freed it. The game's loop then awaits get_tree() on null, so a build without the fix dies here; with
 # it the countdown ends, in both rooms. The stand-in owner answers only what enter() reads.
 func _countdown_out_of_tree(nm: Node) -> void:
-	say("step: a countdown leaving the tree mid-tick (PD22)")
+	say("step: a countdown leaving the tree mid-tick")
 	var overlay_s := _runtime_script("countdown overlay stand-in", "extends Node\nvar countdown_screen := Control.new()\nfunc set_countdown(_s):\n\tpass\n")
 	var owner_s := _runtime_script("countdown owner stand-in", "extends Node\nvar minigame_overlay\n")
 	var state_s := load(COUNTDOWN) as GDScript
@@ -842,11 +883,11 @@ func _countdown_out_of_tree(nm: Node) -> void:
 	nm.call("mp8_unlatch_room")
 	GameManager.local_game = was_local
 
-# PD8, D155: a thrown device held where move_and_slide never reports a floor (in the room, a vertical edge of the
+# A thrown device held where move_and_slide never reports a floor (in the room, a vertical edge of the
 # hidden Placeholder's collision boxes) stays in Thrown for good on a build without the fix; with it, the device
 # moves to the nearest navmesh point, in both rooms. Here the hold is a free fall high above a navmesh quad.
 func _thrown_unstick(nm: Node) -> void:
-	say("step: a thrown device that never lands (PD8)")
+	say("step: a thrown device that never lands")
 	var owner_s := _runtime_script("thrown device stand-in", "extends CharacterBody3D\nvar gravity := 10.0\n" +
 		"var throw_speed_decay := 50.0\nvar players_node: Node3D = null\nvar navigation_agent: NavigationAgent3D\nvar mp8_index := 1\n")
 	var state_s := load(SB_STATES + "thrown_state.gd") as GDScript
@@ -884,11 +925,11 @@ func _thrown_unstick(nm: Node) -> void:
 	nm.call("mp8_unlatch_room")
 	GameManager.local_game = was_local
 
-# PD8, D155: a device chasing from inside one of the room's hidden collision boxes (a throw can start in there)
+# A device chasing from inside one of the room's hidden collision boxes (a throw can start in there)
 # never gets out on a build without the fix; with it, still for 3 s, it moves to the nearest navmesh point, in
 # both rooms. Here the box is five static walls round the device, 20 m off a navmesh quad.
 func _follow_unstick(nm: Node) -> void:
-	say("step: a chasing device that cannot move (PD8)")
+	say("step: a chasing device that cannot move")
 	var owner_s := _runtime_script("chasing device stand-in", "extends CharacterBody3D\nvar gravity := 10.0\n" +
 		"var speed := 5.0\nvar speed_increase_duration := 10.0\nvar speed_increase_over_time := 1.0\n" +
 		"var players_in_proximity: Array = []\nvar game_instance = null\nvar navigation_agent: NavigationAgent3D\nvar mp8_index := 1\n")
@@ -944,6 +985,245 @@ func _follow_unstick(nm: Node) -> void:
 	nm.call("mp8_unlatch_room")
 	GameManager.local_game = was_local
 
+# Spine Breaker's second spider and a carrier: a player who throws a device off their back can't be chased or
+# grabbed by another device for the throw grace, while a device thrown at them still attaches; a kick grants none;
+# a dead end retargets in the same frame, not after the post-kill wait. A mixed room runs the game's code.
+func _throw_grace(nm: Node) -> void:
+	say("step: the throw grace and the dead end")
+	var sm_s := _runtime_script("state machine stand-in", "\n".join(["extends \"res://modules/state_machine/StateMachine.gd\"",
+		"var mp8_test_to: Array = []", "func _ready() -> void:\n\tpass", "func _process(_d: float) -> void:\n\tpass",
+		"func _physics_process(_d: float) -> void:\n\tpass",
+		"func transition_to(target_state_name: String, msg: Dictionary = {}, force: bool = false) -> void:\n\tmp8_test_to.append([String(target_state_name), msg])", ""]))
+	var rpc_pass := "@rpc(\"any_peer\", \"call_local\", \"reliable\")"
+	var mg_s := _copy_script("grace minigame stand-in", SB, [])
+	var mg_rec_s := _copy_script("retarget-recording minigame stand-in", SB, [], ["var mp8_test_retargets: Array = []",
+		"func mp8_retarget_now(dev) -> void:\n\tmp8_test_retargets.append(dev)"])
+	var mg_cnt_s := _copy_script("target-counting minigame stand-in", SB, [], ["var mp8_test_chosen: Array = []",
+		"func choose_new_target(which = null):\n\tmp8_test_chosen.append(which)"])
+	var pl_s := _copy_script("grace player stand-in", SB_PLAYER, [], [rpc_pass,
+		"func set_spine_breaker_rpc(_has_spine_breaker: bool, _thrown: bool = false, _from_direction: int = 0):\n\tpass"])
+	var dev_s := _copy_script("grace device stand-in", SB_DEVICE, [], [rpc_pass, "func laugh_rpc():\n\tpass"])
+	var follow_s := load(SB_STATES + "follow_state.gd") as GDScript
+	var thrown_s := load(SB_STATES + "thrown_state.gd") as GDScript
+	if sm_s == null or mg_s == null or mg_rec_s == null or mg_cnt_s == null or pl_s == null or dev_s == null or follow_s == null or thrown_s == null:
+		ok("the throw grace's stand-ins load", false)
+		return
+	var was_local: bool = GameManager.local_game
+	var trash: Array = []
+	var room := Node3D.new()
+	add_child(room)
+	var ground := StaticBody3D.new()
+	var fcs := CollisionShape3D.new()
+	var fbox := BoxShape3D.new()
+	fbox.size = Vector3(40, 0.2, 40)
+	fcs.shape = fbox
+	ground.add_child(fcs)
+	room.add_child(ground)
+	ground.position = Vector3(100, -0.1, 100)
+	var players := Node3D.new()
+	room.add_child(players)
+
+	var mk_player := func(nid: int, at: Vector3) -> Node:
+		var p: Node = pl_s.new()
+		var pp := PlayerPresence.new()
+		pp.network_id = nid
+		trash.append(pp)
+		p.set("player_presence", pp)
+		p.set("active", true)
+		players.add_child(p)
+		p.global_position = at
+		return p
+	var mk_dev := func(mg: Node, index: int, at: Vector3) -> Node:
+		var d: Node = dev_s.new()
+		var sm: Node = sm_s.new()
+		var cur := State.new()
+		cur.name = "Follow"
+		sm.set("current_state", cur)
+		trash.append(cur)
+		trash.append(sm)
+		d.set("state_machine", sm)
+		d.set("game_instance", mg)
+		d.set("mp8_index", index)
+		d.set("players_node", players)
+		var body := CollisionShape3D.new()
+		var ball := SphereShape3D.new()
+		ball.radius = 0.5
+		body.shape = ball
+		d.add_child(body)
+		room.add_child(d)
+		d.global_position = at
+		return d
+	var mk_state := func(s: GDScript, d: Node) -> Node:
+		var st: Node = s.new()
+		d.add_child(st)
+		st.owner = d
+		st.set("state_machine", d.get("state_machine"))
+		st.set("active", true)
+		return st
+	var to_of := func(d: Node) -> Array:
+		return d.get("state_machine").get("mp8_test_to")
+
+	# A dead end asks for its new target in the same frame (before the gate: a build without the change emits
+	# request_new_target, which waits out MP8_DEVICE_WAIT).
+	_stage(nm, true)
+	var mg_rec: Node = mg_rec_s.new()
+	add_child(mg_rec)
+	var c: Node = mk_dev.call(mg_rec, 2, Vector3(105, 0.6, 105))
+	var carrier: Node = mk_player.call(43, Vector3(106, 0.5, 106))
+	var emitted := [0]
+	c.connect("request_new_target", func(): emitted[0] += 1)
+	var fc: Node = mk_state.call(follow_s, c)
+	carrier.set("has_spine_breaker", true)
+	fc.set("target", carrier)
+	fc.call("_mp8_check_dead_end", 1.0 / 60.0)
+	var recs: Array = mg_rec.get("mp8_test_retargets")
+	ok("Extended: a dead end (the target took another device) retargets in the same frame",
+		recs.size() == 1 and recs[0] == c and emitted[0] == 0, [recs.size(), emitted[0]])
+	fc.free()
+
+	var mg: Node = mg_s.new()
+	add_child(mg)
+	if not (mg.has_method("mp8_note_throw") and mg.has_method("mp8_in_throw_grace") and mg.has_method("mp8_retarget_now")):
+		ok("the minigame declares mp8_note_throw, mp8_in_throw_grace and mp8_retarget_now", false)
+	else:
+		_stage(nm, true)
+		var grace: float = mg.call("_mp8_throw_grace")
+		var frames := int(grace * Engine.physics_ticks_per_second)
+		ok("the throw grace is set (%.1f s)" % grace, grace > 0.0, grace)
+		var throws: Dictionary = mg.get("_mp8_throws")
+		var a: Node = mk_dev.call(mg, 1, Vector3(100, 0.6, 100))
+		var b: Node = mk_dev.call(mg, 2, Vector3(103, 0.6, 100))
+		var p: Node = mk_player.call(41, Vector3(100, 0.5, 101))
+		var q: Node = mk_player.call(42, Vector3(110, 0.5, 110))
+
+		# A throw off the back starts the grace; a kick does not.
+		a.call("try_throw_rpc", Vector3(100, 2, 100), Vector3.FORWARD, 1.0, p.get_path(), true)
+		ok("Extended: a kick grants no throw grace", throws.is_empty(), throws)
+		a.call("try_throw_rpc", Vector3(100, 2, 100), Vector3.FORWARD, 1.0, p.get_path(), false)
+		ok("Extended: a throw off the back is noted", throws.has(41), throws)
+		ok("Extended: the thrower is in grace from the other device", mg.call("mp8_in_throw_grace", p, b))
+		ok("Extended: but not from the device they threw", not mg.call("mp8_in_throw_grace", p, a))
+		throws[41][1] -= frames - 2
+		ok("Extended: still in grace just before it ends", mg.call("mp8_in_throw_grace", p, b))
+		throws[41][1] -= 2
+		ok("Extended: out of grace once it ends", not mg.call("mp8_in_throw_grace", p, b))
+		throws[41][1] = Engine.get_physics_frames()
+
+		# Target choice prefers anyone else; the thrower only when nobody else is left.
+		var actives: Dictionary = mg.get("active_players")
+		actives[41] = p
+		actives[42] = q
+		var picks := {}
+		for i in 30:
+			picks[mg.call("_mp8_pick_prey", b)] = true
+		ok("Extended: the other device's target choice skips the thrower", picks.size() == 1 and picks.has(q), picks.keys())
+		actives.erase(42)
+		ok("Extended: and takes them when nobody else is left", mg.call("_mp8_pick_prey", b) == p)
+		actives.clear()
+
+		# The chasing device: no contact and no target during the grace, contact after it; the thrown one's own chase
+		# ignores it.
+		var fb: Node = mk_state.call(follow_s, b)
+		var bp: Array = b.get("players_in_proximity")
+		bp.append(p)
+		b.global_position = p.global_position + Vector3(0.8, 0, 0)
+		fb.call("update_proximity_check")
+		fb.call("_on_player_attach_entered", p)
+		ok("Extended: the other device's chase neither grabs nor targets a thrower in grace",
+			to_of.call(b).is_empty() and fb.get("target") != p, [to_of.call(b), fb.get("target")])
+		throws[41][1] -= frames
+		fb.call("update_proximity_check")
+		ok("Extended: after the grace its chase grabs them", to_of.call(b).size() == 1 and to_of.call(b)[0][0] == "Attached", to_of.call(b))
+		throws[41][1] = Engine.get_physics_frames()
+		to_of.call(a).clear()
+		var fa: Node = mk_state.call(follow_s, a)
+		fa.call("_on_player_attach_entered", p)
+		ok("Extended: the thrown device's own chase grabs its thrower", to_of.call(a).size() == 1 and to_of.call(a)[0][0] == "Attached", to_of.call(a))
+		fb.free()
+		fa.free()
+		to_of.call(a).clear()
+		to_of.call(b).clear()
+
+		# A thrower whose contact was refused during the grace and who is still inside the attach area is taken when it
+		# ends, though the device is past the 1.45 m contact distance (the area reaches them up to about 1.7 m away).
+		var h: Node = mk_dev.call(mg, 2, Vector3(120, 0.5, 120))
+		var area := Area3D.new()
+		var acs := CollisionShape3D.new()
+		var asph := SphereShape3D.new()
+		asph.radius = 1.0
+		acs.shape = asph
+		area.add_child(acs)
+		h.add_child(area)
+		h.set("player_attach_area", area)
+		var pcs := CollisionShape3D.new()
+		var cap := CapsuleShape3D.new()
+		cap.radius = 0.7
+		pcs.shape = cap
+		p.add_child(pcs)
+		p.global_position = Vector3(121.6, 0.5, 120)
+		throws[41][1] = Engine.get_physics_frames()
+		for i in 3:
+			await get_tree().physics_frame
+		var fh: Node = mk_state.call(follow_s, h)
+		fh.call("_on_player_attach_entered", p)
+		fh.call("update_proximity_check")
+		var held_ok: bool = area.overlaps_body(p) and to_of.call(h).is_empty()
+		throws[41][1] -= frames
+		fh.call("update_proximity_check")
+		ok("Extended: a thrower still touching when the grace ends is taken, 1.6 m away",
+			held_ok and to_of.call(h).size() == 1 and to_of.call(h)[0][0] == "Attached", [held_ok, to_of.call(h)])
+		fh.free()
+		h.free()
+		pcs.free()
+		p.global_position = Vector3(100, 0.5, 101)
+		throws[41][1] = Engine.get_physics_frames()
+
+		# A device thrown at a player in grace still attaches.
+		var tb: Node = mk_state.call(thrown_s, b)
+		tb.call("_on_player_attach_entered", p)
+		ok("Extended: a device thrown at a thrower in grace attaches", to_of.call(b).size() == 1 and to_of.call(b)[0][0] == "Attached", to_of.call(b))
+		to_of.call(b).clear()
+
+		# A device landing beside a thrower in grace follows someone else.
+		b.global_position = Vector3(100.5, 0.6, 101)
+		b.set("velocity", Vector3.ZERO)
+		for i in 60:
+			await get_tree().physics_frame
+			tb.call("update_physics", 1.0 / 60.0)
+			if not to_of.call(b).is_empty():
+				break
+		var landed: Array = to_of.call(b)
+		ok("Extended: a device landing beside a thrower in grace follows someone else",
+			landed.size() == 1 and landed[0][0] == "Follow" and landed[0][1].get("target") == q, landed)
+		tb.free()
+
+		var mg_cnt: Node = mg_cnt_s.new()
+		add_child(mg_cnt)
+		mg_cnt.call("mp8_retarget_now", c)
+		var chosen: Array = mg_cnt.get("mp8_test_chosen")
+		ok("Extended: mp8_retarget_now chooses at once, with no wait", chosen.size() == 1 and chosen[0] == c, chosen)
+
+		# A mixed room: the game's throw notes nothing, and the game's chase grabs a player whatever the grace.
+		_stage(nm, false)
+		throws.clear()
+		a.call("try_throw_rpc", Vector3(100, 2, 100), Vector3.FORWARD, 1.0, p.get_path(), false)
+		ok("mixed: a throw notes no grace", throws.is_empty(), throws)
+		throws[41] = [a, Engine.get_physics_frames()]
+		to_of.call(b).clear()
+		var fm: Node = mk_state.call(follow_s, b)
+		fm.call("_on_player_attach_entered", p)
+		ok("mixed: the chase grabs a player in grace", to_of.call(b).size() == 1 and to_of.call(b)[0][0] == "Attached", to_of.call(b))
+		fm.free()
+		mg_cnt.free()
+	mg.free()
+	mg_rec.free()
+	room.free()
+	for t in trash:
+		if is_instance_valid(t):
+			t.free()
+	nm.call("mp8_unlatch_room")
+	GameManager.local_game = was_local
+
 const SB := "res://minigames/spine_breaker/scripts/spine_breaker.gd"
 const SB_DEVICE := "res://minigames/spine_breaker/components/device/spine_breaker_device.gd"
 const SB_STATES := "res://minigames/spine_breaker/components/device/states/"
@@ -974,11 +1254,11 @@ func _frame_row(label: String, path: String, sig: String, method: String, args: 
 	ok("%s, mixed: the game's copy" % label, got == 1, got)
 	n.free()
 
-# D120 on Spine Breaker (session 11). Extended's path is called only where a stand-in returns early (an end flag,
+# The mixed-room copies in Spine Breaker. Extended's path is called only where a stand-in returns early (an end flag,
 # no such player, one player left, a retired device, an inactive state or player); the rest of Extended's code
 # reads the scene's nodes or the device, so those rows run in the mixed room only.
-func _d120_spine_rows(nm: Node) -> void:
-	say("step: D120's copies, Spine Breaker")
+func _mixed_spine_rows(nm: Node) -> void:
+	say("step: the mixed-room copies, Spine Breaker")
 	var follow := SB_STATES + "follow_state.gd"
 	var thrown := SB_STATES + "thrown_state.gd"
 	for extended in [true, false]:
@@ -1039,11 +1319,11 @@ const BR := "res://minigames/burn_recycle/scripts/burn_recycle.gd"
 const BR_LOCAL := "res://minigames/burn_recycle/scripts/burn_recycle_local_handler.gd"
 const BR_PLAYER := "res://minigames/burn_recycle/components/player/burn_recycle_player.gd"
 
-# D120 on The Filter (session 12). Extended's path is called only where a stand-in has nothing to act on (no items
+# The mixed-room copies in The Filter. Extended's path is called only where a stand-in has nothing to act on (no items
 # on the belt) or by effect (the local handler's _ready); the rest reads the scene's stations or sends and awaits,
 # so those rows run in the mixed room only.
-func _d120_filter_rows(nm: Node) -> void:
-	say("step: D120's copies, The Filter")
+func _mixed_filter_rows(nm: Node) -> void:
+	say("step: the mixed-room copies, The Filter")
 	for extended in [true, false]:
 		var room := "Extended" if extended else "mixed"
 		_stage(nm, extended)
@@ -1105,10 +1385,10 @@ const USER_ROW := "res://minigames/intermission_new/components/intermission_user
 const USER_ROW_2D := "res://minigames/intermission_new/components/intermission_user_container_2d.gd"
 const INPUT := "res://addons/multiplayer_input/multiplayer_input.gd"
 
-# D120 on the shared flow (b75): the intermission's game layout and intro, the input addon's erase, and the lobby
-# (D121). The score board and the name rows follow the show's layout flag, the intro and the erase the live room.
-func _d120_shared_rows(nm: Node) -> void:
-	say("step: D120's copies, the shared flow and the lobby")
+# The mixed-room copies in the shared flow: the intermission's game layout and intro, the input addon's erase, and the lobby.
+# The score board and the name rows follow the show's layout flag, the intro and the erase the live room.
+func _mixed_shared_rows(nm: Node) -> void:
+	say("step: the mixed-room copies, the shared flow and the lobby")
 	for extended in [true, false]:
 		var room := "Extended" if extended else "mixed"
 		_stage(nm, extended)
@@ -1130,7 +1410,7 @@ func _d120_shared_rows(nm: Node) -> void:
 	_seat_rows(nm)
 	await _lobby_layout_rows(nm)
 
-# D121: the seat map, fitted before the game's loop takes the first free seat.
+# The seat map, fitted before the game's loop takes the first free seat.
 func _seat_rows(nm: Node) -> void:
 	if not _declares("res://modules/multiplayer/network_manager.gd", "mp8_fit_seats"):
 		ok("seat map: mp8_fit_seats exists", false)
@@ -1147,7 +1427,7 @@ func _seat_rows(nm: Node) -> void:
 		var got = nm.call("mp8_fit_seats", c[1], c[2])
 		ok("seat map, %s" % c[0], got == _ints(c[3]), got)
 
-# D121: a lobby handler built as the lobby scene has it (4 slots, each with its assigner and tag; the camera
+# A lobby handler built as the lobby scene has it (4 slots, each with its assigner and tag; the camera
 # and the chairs beside the slots' parent), extended by the real _mp8_extend_lobby, then switched both ways.
 func _lobby_layout_rows(nm: Node) -> void:
 	if not nm.has_method("mp8_lobby_layout"):
@@ -1169,6 +1449,11 @@ func _lobby_layout_rows(nm: Node) -> void:
 	var chair := Node3D.new()
 	chair.name = "chair1"
 	env.add_child(chair)
+	# Seat 2's chair in the lobby scene: its copy, seat 6's, takes a further nudge.
+	var chair2 := Node3D.new()
+	chair2.name = "chair_001"
+	env.add_child(chair2)
+	chair2.position = Vector3(-1.0, 0.8, 0.4)
 	var slots := Node3D.new()
 	root.add_child(slots)
 	var h: Node = hs.new()
@@ -1189,6 +1474,23 @@ func _lobby_layout_rows(nm: Node) -> void:
 	var ext_cam := cam.position
 	ok("lobby layout: extended to 8 slots, a chair row and the camera moved", h.get("players").size() == 8 and chairs != null and ext_cam != Vector3(0, 2, 6),
 		[h.get("players").size(), chairs != null, ext_cam])
+	var consts: Dictionary = nm.get_script().get_script_constant_map()
+	var row2: Vector3 = consts.get("MP8_ROW2_OFFSET", Vector3.INF)
+	var nudge: Vector3 = consts.get("MP8_ROW2_SEAT6_NUDGE", Vector3.INF)
+	var copy6: Node3D = chairs.get_node_or_null("MP8chair_001") if chairs else null
+	var copy1: Node3D = chairs.get_node_or_null("MP8chair1") if chairs else null
+	ok("lobby layout: seat 6 and its chair's copy at the row offset plus the nudge, the other chair at the offset",
+		h.get("players")[5].position.is_equal_approx(row2 + nudge) and copy6 != null and copy6.position.is_equal_approx(chair2.position + row2 + nudge)
+		and copy1 != null and copy1.position.is_equal_approx(row2) and h.get("players")[4].position.is_equal_approx(row2),
+		[h.get("players")[5].position, copy6.position if copy6 else null, copy1.position if copy1 else null, row2, nudge])
+	# The nudge finds seat 2's chair by name, and a missing name leaves it where it was without an error.
+	var scene: PackedScene = load("res://scenes/lobby/lobby_scene.tscn")
+	var authored: Node = scene.instantiate() if scene else null
+	var named: Node = authored.find_child("chair_001", true, false) if authored else null
+	ok("lobby layout: the online lobby scene has a shown chair_001 in lobby environment1",
+		named is Node3D and named.visible and named.get_parent().name == "lobby environment1", authored.get_path_to(named) if named else null)
+	if authored:
+		authored.free()
 	h.get("players")[5].visible = true
 	nm.call("mp8_lobby_layout", h, false)
 	ok("lobby layout, a mixed room: the game's 4 slots", h.get("players") == game_slots and h.get("customization_assigners").size() == 4 and h.get("nametags").size() == 4,
@@ -1300,7 +1602,7 @@ func _topup(nm: Node) -> void:
 		holder.free()
 	nm.call("mp8_unlatch_room")
 
-# The audit's "By minigame" rows (D116), each on its own function: the real check_game_end and the round end's
+# The audit's "By minigame" rows, each on its own function: the real check_game_end and the round end's
 # enter() go on to RPCs and a null state machine, which end a release build. A method b69 lacks is a FAIL.
 func _minigame_rows(nm: Node) -> void:
 	say("step: the per-minigame rows' gates")
@@ -1312,7 +1614,7 @@ func _minigame_rows(nm: Node) -> void:
 		ok("server-only broadcasts, %s: the server sends" % room, server, server)
 		ok("server-only broadcasts, %s: a client %s" % [room, "doesn't" if extended else "sends too, as the game does"], client != extended, client)
 		_dvd_spawns(extended, room)
-		# A mixed room runs the game's check_game_end, which scores player_count (D120's rows).
+		# A mixed room runs the game's check_game_end, which scores player_count (the mixed-room rows).
 		for name in (["dvd_roomba", "train_race"] if extended else []):
 			var s := _guard_script(name)
 			if s == null:
@@ -1983,7 +2285,7 @@ func _hunter_hud(local: bool) -> void:
 	presence.free()
 	GameManager.local_game = was_local
 
-# 1.1.0's Chinese (D173): the language read as the game sets it, and a sample of each script's strings in
+# 1.1.0's Chinese: the language read as the game sets it, and a sample of each script's strings in
 # ZHS and ZHT. extended/tools/check_text_triples.ps1 checks every triple's shape at build time.
 func _chinese(nm: Node) -> void:
 	say("step: Chinese text")
@@ -2046,7 +2348,7 @@ func _has_cjk(text: String) -> bool:
 			return true
 	return false
 
-# The 0.7.0 strings (D88), on bare script instances: Duck Hunt's online reveal line, The Filter's board.
+# The 0.7.0 strings, on bare script instances: Duck Hunt's online reveal line, The Filter's board.
 func _text_checks() -> void:
 	var duck: Node = load("res://minigames/duck_hunt/scripts/duck_hunt.gd").new()
 	duck.set("mp8_hunter_names", ["THEO"])
@@ -2067,13 +2369,13 @@ func _text_checks() -> void:
 	_filter_rounds()
 	_table_catch_limit()
 
-# Table Manners (0.21.0, D114): a round that starts with 6 or more players catches two a glance, below it one.
+# Table Manners (0.21.0): a round that starts with 6 or more players catches two a glance, below it one.
 func _table_catch_limit() -> void:
 	var C: GDScript = load("res://minigames/green_pea/components/coach_handler/coach_handler.gd")
 	var got: Array = range(1, 9).map(func(k): return C.call("mp8_catch_limit", k))
 	ok("Table Manners catch limit at 1-8 seated", got == [1, 1, 1, 1, 1, 2, 2, 2], got)
 
-# The Filter at 5-8 players (0.16.0, D105): 4 rounds without ties, at most 2 out a round, the game's zero and
+# The Filter at 5-8 players (0.16.0): 4 rounds without ties, at most 2 out a round, the game's zero and
 # tie rules per slot.
 func _filter_rounds() -> void:
 	var B: GDScript = load("res://minigames/burn_recycle/scripts/burn_recycle.gd")
@@ -2111,11 +2413,11 @@ func _refused(log_text: String, nm: Node) -> void:
 	ok("mp8_support did not mount", not log_text.contains("mp8_support: [MOUNTED]"))
 	ok("overtime mounted", log_text.contains("overtime: [MOUNTED]"))
 	ok("Overtime's tag is live", str(nm.get("MP8_VERSION_TAG")).begins_with("overtime-"), nm.get("MP8_VERSION_TAG"))
-	# All or nothing (D157): a refused Extended starts none of the mods in its bundle.
+	# All or nothing: a refused Extended starts none of the mods in its bundle.
 	ok("no bundled mod started", _hosted_nodes().is_empty() and not log_text.contains("mp8_support: hosting"), _hosted_nodes())
 
 # Extended in two folders (the bundle's machine_party_extended beside a build's mp8_support): every copy
-# with the check refuses before mounting, so both do when both have it; one built before D157 mounts alone.
+# with the check refuses before mounting, so both do when both have it; an older one mounts alone.
 # Either way no bundle's mods start and at most one overlay mounts.
 func _twice(log_text: String, copies: Array) -> void:
 	say("step: installed in two folders %s" % str(copies))
@@ -2126,7 +2428,7 @@ func _twice(log_text: String, copies: Array) -> void:
 	ok("one overlay at most, and none when both copies refused", mounts == 2 - refusals, [refusals, mounts])
 	ok("no bundled mod started", _hosted_nodes().is_empty() and not log_text.contains("mp8_support: hosting"), _hosted_nodes())
 
-# A bundle's mods sit in its folder's subfolders (D157). Each starts once, under the loader and named by its id,
+# A bundle's mods sit in its folder's subfolders. Each starts once, under the loader and named by its id,
 # with its folder in "mpml_dir", unless a separate copy of it is installed, which runs alone.
 func _hosting(log_text: String) -> void:
 	say("step: bundled mods")
@@ -2218,7 +2520,7 @@ func _intro_rack(players: int, again := false) -> void:
 			ok("tags 5-8 are their own nodes", range(4).all(func(i): return tags[i + 4] != tags[i] and tags[i + 4].is_inside_tree()))
 	scene.free()
 
-# A rack stacked at a start of 5 or more, in a room that has since turned mixed (session 8's review R1-2): the
+# A rack stacked at a start of 5 or more, in a room that has since turned mixed: the
 # mixed intro unstacks it first, so the game's copy runs on the game's 4 slots, each where the scene has it.
 # An Extended room keeps the stack, and the rack stacks again after.
 func _intro_unstack(nm: Node) -> void:
@@ -2265,7 +2567,7 @@ func _intro_unstack(nm: Node) -> void:
 	ok("intro rack: stacks again after", intro.rack_nametags.size() == 8 and copies.call() == 25, [intro.rack_nametags.size(), copies.call()])
 	scene.free()
 
-# 0.8.0's renders nobody sees (D89): the intermission's terminal screen draws only while the scene shows, and the
+# 0.8.0's renders nobody sees: the intermission's terminal screen draws only while the scene shows, and the
 # window's 3D is skipped only behind an opaque, visible, full-window ColorRect as a tile layer's first child.
 func _hidden_renders() -> void:
 	var scene: Node = load(INTERMISSION).instantiate()
@@ -2404,7 +2706,7 @@ func _chisel_pad() -> void:
 	ok("nothing that way gives the table fallback, an id no segment has", none < -2 and _chisel_steps(H, 0, Vector2.UP) == none and _chisel_steps(H, 14, Vector2.DOWN) == none, none)
 	await _chisel_diagonals(H, none)
 
-# 0.11: the honeycomb's diagonal neighbours (PC6, the owner's 2026-10-11 play) are one stick press away.
+# 0.11: the honeycomb's diagonal neighbours are one stick press away.
 func _chisel_diagonals(H: GDScript, none: int) -> void:
 	say("step: chisel diagonal steps")
 	ok("the handler reads 8 directions", H.get_script_method_list().any(func(m): return m.name == "_mp8_stick_press"))

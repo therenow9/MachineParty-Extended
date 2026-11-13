@@ -10,7 +10,7 @@ diff --git a/scenes/local_lobby/scripts/local_lobby.gd b/scenes/local_lobby/scri
  
  @export var players_node: Node3D
  @export var local_lobby_player_controls: Array[LocalLobbyPlayerControls]
-@@ -48,6 +48,57 @@ signal player_joined(player, data)
+@@ -48,6 +48,64 @@ signal player_joined(player, data)
  signal player_left(player)
  signal player_ready_toggled(player)
  
@@ -34,13 +34,15 @@ diff --git a/scenes/local_lobby/scripts/local_lobby.gd b/scenes/local_lobby/scri
 +		_mp8_remap_clone_exports(model_source, model, model_source, model)
 +		players_node.add_child(model)
 +		model.position = model_source.position + MP8_LOCAL_ROW2_OFFSET
++		if seat % n == 1:
++			model.position += MP8_LOCAL_SEAT6_NUDGE
 +		var controls = control_source.duplicate(14) as LocalLobbyPlayerControls
 +		_mp8_remap_clone_exports(control_source, controls, control_source, controls)
 +		controls.customization_assigner = model.get_node(assigner_path)
 +		controls.seat_index = seat
 +		control_source.get_parent().add_child(controls)
 +		local_lobby_player_controls.append(controls)
-+	NetworkManager._mp8_clone_chairs(players_node, MP8_LOCAL_ROW2_OFFSET)
++	NetworkManager._mp8_clone_chairs(players_node, MP8_LOCAL_ROW2_OFFSET, {"chair_001": MP8_LOCAL_SEAT6_NUDGE})
 +	var cam = players_node.get_parent().get_node_or_null("Camera3D")
 +	if cam:
 +		cam.position = Vector3(cam.position.x, cam.position.y * 1.08, cam.position.z * 1.22)
@@ -48,6 +50,11 @@ diff --git a/scenes/local_lobby/scripts/local_lobby.gd b/scenes/local_lobby/scri
 +# Further forward and more central than the online lobby's offset: at this offset the second row
 +# hides no first-row head (measured on in-game screenshots).
 +const MP8_LOCAL_ROW2_OFFSET := Vector3(0.2, 0.0, 5.8)
++
++# Seat 6 copies seat 2, and seat 2's chair (chair_001), shifted, stands where seat 3's crossed legs
++# reach: seat 6 and its chair sit this much further toward the camera, where seat 3's leg bones
++# clear the chair by 0.32 m.
++const MP8_LOCAL_SEAT6_NUDGE := Vector3(0.0, 0.0, 0.6)
 +
 +func _mp8_remap_clone_exports(source: Node, copy: Node, source_root: Node, copy_root: Node) -> void:
 +	for property in source.get_property_list():
@@ -68,7 +75,7 @@ diff --git a/scenes/local_lobby/scripts/local_lobby.gd b/scenes/local_lobby/scri
  func _ready():
  
  	Globals.locale_changed.connect(check_if_locale_requires_vertical_adjustment)
-@@ -95,6 +146,7 @@ func _ready():
+@@ -95,6 +153,7 @@ func _ready():
  	for local_control in local_lobby_player_controls:
  		local_control.set_speakers(speaker_hover, speaker_press)
  		local_control.player_ready_changed.connect(_on_player_ready_changed)
@@ -76,7 +83,7 @@ diff --git a/scenes/local_lobby/scripts/local_lobby.gd b/scenes/local_lobby/scri
  
  	if GameManager.local_game:
  		try_rejoin_existing_players()
-@@ -117,12 +169,17 @@ func try_rejoin_existing_players():
+@@ -117,12 +176,17 @@ func try_rejoin_existing_players():
  	var rejoin_player_data: Array
  	for player_id in PlayerManager.player_presences.keys():
  		var player_presence: PlayerPresence = PlayerManager.player_presences[player_id]
@@ -95,7 +102,7 @@ diff --git a/scenes/local_lobby/scripts/local_lobby.gd b/scenes/local_lobby/scri
  		})
  
  	PlayerManager.reset()
-@@ -212,6 +269,8 @@ func register_buttons():
+@@ -212,6 +276,8 @@ func register_buttons():
  
  func _process(_delta):
  
@@ -104,7 +111,7 @@ diff --git a/scenes/local_lobby/scripts/local_lobby.gd b/scenes/local_lobby/scri
  	if not active:
  		return
  
-@@ -243,12 +302,12 @@ func tick_countdown(delta):
+@@ -243,12 +309,12 @@ func tick_countdown(delta):
  		label_countdown.text = "! %s !" % str("%0.2f" % countdown_progress)
  
  func countdown_end_reached():
@@ -118,7 +125,7 @@ diff --git a/scenes/local_lobby/scripts/local_lobby.gd b/scenes/local_lobby/scri
  
  	set_ambience(false)
  	MusicManager.fade_out_menu_music(1)
-@@ -313,6 +372,8 @@ func next_player() -> int:
+@@ -313,6 +379,8 @@ func next_player() -> int:
  	return -1
  
  func join(device: int, is_joystick: bool):
@@ -127,7 +134,7 @@ diff --git a/scenes/local_lobby/scripts/local_lobby.gd b/scenes/local_lobby/scri
  	var player = next_player()
  	if player >= 0:
  
-@@ -348,7 +409,9 @@ func join(device: int, is_joystick: bool):
+@@ -348,7 +416,9 @@ func join(device: int, is_joystick: bool):
  				MultiplayerInput.set_ui_action_device(device)
  
  func rejoin(data):
@@ -138,7 +145,7 @@ diff --git a/scenes/local_lobby/scripts/local_lobby.gd b/scenes/local_lobby/scri
  	if player >= 0:
  		player_data[player] = {
  			"device": data.device_id, 
-@@ -383,6 +446,8 @@ func rejoin(data):
+@@ -383,6 +453,8 @@ func rejoin(data):
  	pass
  
  func leave(player_id: int):
@@ -147,7 +154,7 @@ diff --git a/scenes/local_lobby/scripts/local_lobby.gd b/scenes/local_lobby/scri
  	if player_data.has(player_id):
  
  		if player_id == 0:
-@@ -403,7 +468,7 @@ func leave(player_id: int):
+@@ -403,7 +475,7 @@ func leave(player_id: int):
  		players_ready.erase(player_id)
  		player_left.emit(player_id)
  
@@ -156,7 +163,7 @@ diff --git a/scenes/local_lobby/scripts/local_lobby.gd b/scenes/local_lobby/scri
  
  func main_player_left():
  
-@@ -423,7 +488,7 @@ func get_unjoined_devices():
+@@ -423,7 +495,7 @@ func get_unjoined_devices():
  
  func update_player_manager():
  
@@ -165,7 +172,7 @@ diff --git a/scenes/local_lobby/scripts/local_lobby.gd b/scenes/local_lobby/scri
  
  	var presence: PlayerPresence
  	for player_id in player_data.keys():
-@@ -433,6 +498,8 @@ func update_player_manager():
+@@ -433,6 +505,8 @@ func update_player_manager():
  		presence = PlayerPresence.new()
  		presence.local = true
  		presence.local_main = player_data[player_id]["is_main"]
@@ -174,7 +181,7 @@ diff --git a/scenes/local_lobby/scripts/local_lobby.gd b/scenes/local_lobby/scri
  		presence.device_id = player_data[player_id]["device"]
  		presence.using_joystick = player_data[player_id]["is_joystick"]
  		presence.network_name = local_lobby_player_controls[player_id].player_name
-@@ -444,6 +511,7 @@ func update_player_manager():
+@@ -444,6 +518,7 @@ func update_player_manager():
  		]
  		presence.active = false
  		presence.debug_player = false
@@ -182,7 +189,7 @@ diff --git a/scenes/local_lobby/scripts/local_lobby.gd b/scenes/local_lobby/scri
  		presence.set_local()
  
  		PlayerManager.player_presences[player_data[player_id]["device"]] = presence
-@@ -468,6 +536,8 @@ func set_skip_intro_text(skipping_intro: bool):
+@@ -468,6 +543,8 @@ func set_skip_intro_text(skipping_intro: bool):
  
  
  func _on_joy_connection_changed(_device: int, _connected: bool):
@@ -191,7 +198,7 @@ diff --git a/scenes/local_lobby/scripts/local_lobby.gd b/scenes/local_lobby/scri
  
  	for player_id in player_data.keys():
  		var data = player_data[player_id]
-@@ -494,6 +564,8 @@ func _on_player_left(player_id):
+@@ -494,6 +571,8 @@ func _on_player_left(player_id):
  
  func _on_player_ready_changed(_player_id: int, _is_ready: bool):
  
@@ -200,7 +207,7 @@ diff --git a/scenes/local_lobby/scripts/local_lobby.gd b/scenes/local_lobby/scri
  	if players_ready.has(_player_id):
  		players_ready[_player_id] = _is_ready
  
-@@ -505,7 +577,7 @@ func _on_player_ready_changed(_player_id: int, _is_ready: bool):
+@@ -505,7 +584,7 @@ func _on_player_ready_changed(_player_id: int, _is_ready: bool):
  		else:
  			all_ready = false
  

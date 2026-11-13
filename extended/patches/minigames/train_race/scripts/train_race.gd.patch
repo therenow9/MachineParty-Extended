@@ -32,7 +32,7 @@ diff --git a/minigames/train_race/scripts/train_race.gd b/minigames/train_race/s
  
  func spawn_players():
  
-+	# [MP8] A mixed room spawns as the game does (D120).
++	# [MP8] A mixed room spawns as the game does.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_spawn_players()
 +		return
@@ -69,7 +69,7 @@ diff --git a/minigames/train_race/scripts/train_race.gd b/minigames/train_race/s
 +
 +		counter += 1
 +
-+# The game's spawn_players, for a mixed room (D120).
++# The game's spawn_players, for a mixed room.
 +func _mp8_game_spawn_players():
 +
  	var player_spawn_positions = player_spawn_positions_node.get_children()
@@ -84,7 +84,7 @@ diff --git a/minigames/train_race/scripts/train_race.gd b/minigames/train_race/s
 +# The shipped 4 are untouched.
 +func _mp8_expand_spawns() -> void :
 +
-+	# A mixed room keeps the game's 4 spawns (D120); they change above 4 players only.
++	# A mixed room keeps the game's 4 spawns; they change above 4 players only.
 +	if not NetworkManager.mp8_room_extended():
 +		return
 +
@@ -195,7 +195,7 @@ diff --git a/minigames/train_race/scripts/train_race.gd b/minigames/train_race/s
  
  func check_game_end():
  
-+	# [MP8] A mixed room ends and scores as the game does (D116, D120).
++	# [MP8] A mixed room ends and scores as the game does.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_check_game_end()
 +		return
@@ -235,7 +235,7 @@ diff --git a/minigames/train_race/scripts/train_race.gd b/minigames/train_race/s
 +	state_machine.transition_to_rpc.rpc(&"Finished")
 +	set_effects_visibility_rpc.rpc(false)
 +
-+# The game's check_game_end, for a mixed room (D120).
++# The game's check_game_end, for a mixed room.
 +func _mp8_game_check_game_end():
 +
  	if game_end:
@@ -271,7 +271,7 @@ diff --git a/minigames/train_race/scripts/train_race.gd b/minigames/train_race/s
 +
 +# [MP8] dead_players.size() + 1, not vanilla's player_count (the starting count): a player who
 +# disconnects never enters dead_players, so player_count would overpay the winner. The + 1 keeps
-+# vanilla's 2-point gap over the last to die. A mixed room runs the game's check_game_end (D120).
++# vanilla's 2-point gap over the last to die. A mixed room runs the game's check_game_end.
 +func _mp8_survivor_score() -> int :
 +	return dead_players.size() + 1
 +
@@ -301,7 +301,7 @@ diff --git a/minigames/train_race/scripts/train_race.gd b/minigames/train_race/s
  
  func player_disconnected(_network_id: int):
 +	# [MP8] The room is read before the await, which can outlast this minigame's latch. A mixed room
-+	# keeps the game's own end check (D116).
++	# keeps the game's own end check.
 +	var mp8_ext: bool = NetworkManager.mp8_room_extended()
  	super.player_disconnected(_network_id)
  

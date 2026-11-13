@@ -16,7 +16,7 @@ const RENDERS := [
 	{"name": "b_inside_walls", "offset": Vector3(0.6, 0.0, 4.2), "cam_y": 1.08, "cam_z": 1.22},
 	{"name": "c_no_overlap", "offset": Vector3(0.2, 0.0, 5.8), "cam_y": 1.08, "cam_z": 1.22},
 ]
-# The owner's round 1 pick; the panel labels are rendered on it.
+# The picked layout; the panel labels are rendered on it.
 const PICKED := {"offset": Vector3(0.2, 0.0, 5.8), "cam_y": 1.08, "cam_z": 1.22}
 # Overtime's _mp8_refresh_identity writes "P%d  %s\n%s  %s" (seat, name, device, ready).
 const LABELS := [

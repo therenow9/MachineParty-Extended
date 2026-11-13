@@ -18,6 +18,11 @@ const HATS := [
 	"xc_football_helmet",
 	"xc_beret",
 	"xc_dragonborn_helmet",
+	"xc_party_hat",
+	"xc_pharaoh_headdress",
+	"xc_turban",
+	"xc_cowboy_hat",
+	"xc_royal_crown",
 ]
 const GLASSES := [
 	"xc_disguise_glasses",
@@ -26,10 +31,12 @@ const GLASSES := [
 	"xc_eyepatch_glasses",
 	"xc_tanning_glasses",
 	"xc_scuba_glasses",
+	"xc_3d_glasses",
+	"xc_nightvision_glasses",
 ]
 const NO_GLASSES_HATS := ["xc_diving_helmet", "xc_dragonborn_helmet"]
 # The cloth's mid-tone; suit_recolor.gd keeps the suit's own painted shading
-# around it. The owner's picks (plan, Phase 4): change one only with a new pick.
+# around it. Picked from in-game renders: change one only with a new pick.
 const COLORS := {
 	"xc_teal": Color8(42, 85, 82),
 	"xc_pink": Color8(139, 76, 91),

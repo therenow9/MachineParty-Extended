@@ -59,7 +59,7 @@ diff --git a/minigames/intermission_new/components/intermission_user_container_2
 +		label.add_theme_font_override("font", fv)
 +
 +
-+# [MP8] Mixed rooms (D116): the game's name cut and font, set by the briefing screen at each reset.
++# [MP8] Mixed rooms: the game's name cut and font, set by the briefing screen at each reset.
 +var mp8_extended: bool = true
 +var _mp8_fonts: Dictionary = {}  # Label -> [its own font override or null, the bold one]
 +
@@ -82,7 +82,7 @@ diff --git a/minigames/intermission_new/components/intermission_user_container_2
  
  func set_user_data(_score: int, _name: String):
 +
-+	# [MP8] The game's layout fills the row as the game does, its 9-character cut included (D120).
++	# [MP8] The game's layout fills the row as the game does, its 9-character cut included.
 +	if not mp8_extended:
 +		_mp8_game_set_user_data(_score, _name)
 +		return
@@ -94,7 +94,7 @@ diff --git a/minigames/intermission_new/components/intermission_user_container_2
 +	label_score.text = "%04d" % _score
 +	label_name.text = formatted_name
 +
-+# The game's set_user_data, for the game's layout (D120).
++# The game's set_user_data, for the game's layout.
 +func _mp8_game_set_user_data(_score: int, _name: String):
  	state = ContainerState.Normal
  

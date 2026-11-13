@@ -1,4 +1,4 @@
-"""xc_monocle_glasses: a tarnished brass monocle on the right eye, its short chain hanging loose.
+"""xc_monocle_glasses: a polished gold monocle on the right eye, its chain hanging loose.
 
   "C:/Program Files/Blender Foundation/Blender 5.2/blender.exe" -b --factory-startup --python tools/cosmetics/xc_monocle_glasses.py [-- --preview DIR]
 
@@ -7,6 +7,7 @@ along +y, z is across, +z the character's right) and converted for export. The
 rim sits in the eye socket, turned out with the face like the eyepatch; the
 chain leaves its lower outer edge and hangs down the cheek, just off the head's
 measured radius. The lens is opaque in the game, so it is painted as glare.
+Large, bright and heavy so it reads from across the room.
 """
 import math
 import os
@@ -25,9 +26,14 @@ NORMAL = Vector((0.0, math.cos(TILT), math.sin(TILT)))
 UP = Vector((-1.0, 0.0, 0.0))
 ACROSS = NORMAL.cross(UP)  # toward the right temple
 CENTER = EYE + NORMAL * 0.016
-RIM = 0.047
+RIM = 0.058
+RIM_TUBE = 0.008
 LINKS = 15
-LINK = 0.0115
+LINK = 0.014
+LINK_WIDTH = 0.0058
+WIRE = 0.0026
+DROP = 0.21  # how far the chain falls down the cheek
+CLIP = 0.008
 
 
 def g(v):
@@ -41,7 +47,7 @@ def rim_point(a, r=RIM, depth=0.0):
 
 def rim():
     path = [g(rim_point(2 * math.pi * k / 24)) for k in range(24)]
-    return common.tube("rim", path, 0.0058, 6, BRASS, closed=True, up=tuple(g(NORMAL)))
+    return common.tube("rim", path, RIM_TUBE, 6, BRASS, closed=True, up=tuple(g(NORMAL)))
 
 
 def lens():
@@ -62,7 +68,7 @@ def chain():
     pts = [start]
     for i in range(1, 40):
         f = i / 39
-        x = start.x + 0.17 * f
+        x = start.x + DROP * f
         t = math.atan2(start.z, start.y - common.HEAD_AXIS_Y) + 0.22 * f
         p = common.around_sunglasses_head(x, t, 0.014 + 0.012 * math.sin(math.pi * f))
         pts.append(start.lerp(p, min(1.0, f * 6)))
@@ -79,11 +85,39 @@ def chain():
         d = (b - a).normalized()
         side = d.cross(NORMAL if i % 2 == 0 else d.cross(NORMAL)).normalized()
         mid = (a + b) / 2
-        loop = [g(mid + d * (LINK * 0.62 * math.cos(2 * math.pi * k / 6)) + side * (0.0045 * math.sin(2 * math.pi * k / 6)))
+        loop = [g(mid + d * (LINK * 0.62 * math.cos(2 * math.pi * k / 6)) + side * (LINK_WIDTH * math.sin(2 * math.pi * k / 6)))
                 for k in range(6)]
-        parts.append(common.tube("link", loop, 0.0017, 4, CHAIN, closed=True, up=tuple(g(side.cross(d)))))
-    parts.append(common.ellipsoid("clip", tuple(g(out[-1] + (out[-1] - out[-2]).normalized() * 0.008)), (0.006, 0.006, 0.006), 6, 3, CHAIN))
+        parts.append(common.tube("link", loop, WIRE, 4, CHAIN, closed=True, up=tuple(g(side.cross(d)))))
+    parts.append(common.ellipsoid("clip", tuple(g(out[-1] + (out[-1] - out[-2]).normalized() * 0.008)), (CLIP, CLIP, CLIP), 6, 3, CHAIN))
     return parts
+
+
+def glass_material():
+    """Pale glass under a broad white flash, painted in since nothing in the
+    game reflects."""
+    mat, nodes, links, color = common.diffuse_material("glass")
+    coord = nodes.new("ShaderNodeTexCoord")
+    mapping = nodes.new("ShaderNodeMapping")
+    mapping.inputs["Rotation"].default_value = (0.0, 0.0, math.radians(35))
+    mapping.inputs["Scale"].default_value = (9.0, 9.0, 9.0)
+    links.new(coord.outputs["Object"], mapping.inputs["Vector"])
+    sheen = nodes.new("ShaderNodeTexGradient")
+    links.new(mapping.outputs["Vector"], sheen.inputs["Vector"])
+    wave = nodes.new("ShaderNodeMath")
+    wave.operation = "PINGPONG"
+    wave.inputs[1].default_value = 0.5
+    links.new(sheen.outputs["Fac"], wave.inputs[0])
+    band = nodes.new("ShaderNodeMapRange")
+    band.inputs["From Min"].default_value = 0.30
+    band.inputs["From Max"].default_value = 0.42
+    links.new(wave.outputs[0], band.inputs["Value"])
+    mix = nodes.new("ShaderNodeMix")
+    mix.data_type = "RGBA"
+    links.new(band.outputs["Result"], mix.inputs["Factor"])
+    mix.inputs["A"].default_value = common.srgb("aebcc0")
+    mix.inputs["B"].default_value = common.srgb("fbfdfd")
+    links.new(mix.outputs["Result"], color)
+    return mat
 
 
 def main():
@@ -91,8 +125,9 @@ def main():
     common.reset()
     parts = [rim(), lens()] + chain()
     materials = [
-        common.worn("brass", "9c7a3c", "3e3018", grime=0.45, grain=0.08, edge_hex="d6b56c", edge=0.7),
-        common.worn("glass", "b9c6c8", "6b7476", grime=0.3, grime_scale=3.0, grain=0.03, pattern=("e8eeee", 6.0, "WAVE")),
+        # Polished gold, worn only at the edges, so the ring catches the light.
+        common.worn("brass", "c9a046", "6a5222", grime=0.18, grain=0.05, edge_hex="f6e3a0", edge=0.9),
+        glass_material(),
         common.worn("chain", "8a6c36", "3a2c16", grime=0.4, grain=0.06, edge_hex="c9a862", edge=0.6),
     ]
     ob = common.assemble(ID, parts, materials)

@@ -199,7 +199,7 @@ static func duplicate_problem(pads: Array, hidapi_disabled: bool, lang := "EN") 
 	return ""
 
 # The game's language as "EN", "ZHS" or "ZHT": the game sets its loc sheet's codes, and the zh_* forms are
-# taken too. Only the toasts follow it (D173); the log and the console stay English.
+# taken too. Only the toasts follow it; the log and the console stay English.
 static func lang_of(raw: String) -> String:
 	var value := raw.to_upper().replace("-", "_")
 	if value == "ZHT" or value == "ZH_TW" or value == "ZH_HK" or value == "ZH_MO" or value.begins_with("ZH_HANT"):

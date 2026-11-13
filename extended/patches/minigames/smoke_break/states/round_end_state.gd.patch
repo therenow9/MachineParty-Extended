@@ -5,7 +5,7 @@ diff --git a/minigames/smoke_break/states/round_end_state.gd b/minigames/smoke_b
  
  func enter(_msg: Dictionary = {}) -> void :
  
-+	# [MP8] A mixed room ends the round as the game does, its scoring included (D116, D120).
++	# [MP8] A mixed room ends the round as the game does, its scoring included.
 +	if not NetworkManager.mp8_room_extended():
 +		await _mp8_game_enter(_msg)
 +		return
@@ -71,7 +71,7 @@ diff --git a/minigames/smoke_break/states/round_end_state.gd b/minigames/smoke_b
 +		(" | ".join(mp8_rows) if mp8_rows.size() > 0 else "nobody finished, everyone scores 0")
 +	])
 +
-+# The game's enter, for a mixed room (D120).
++# The game's enter, for a mixed room.
 +func _mp8_game_enter(_msg: Dictionary = {}) -> void :
 +
  	state_time = 0.0

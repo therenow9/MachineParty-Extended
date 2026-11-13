@@ -51,7 +51,7 @@ diff --git a/minigames/dvd_roomba/scripts/dvd_roomba.gd b/minigames/dvd_roomba/s
 +
 +# [MP8] dead_players.size() + 1, not vanilla's player_count: remove_player_rpc only erases a
 +# disconnected player from active_players, never adds them to dead_players, so player_count would
-+# overpay the winner. The + 1 keeps vanilla's 2-point lead. A mixed room runs the game's check_game_end (D120).
++# overpay the winner. The + 1 keeps vanilla's 2-point lead. A mixed room runs the game's check_game_end.
 +func _mp8_survivor_score() -> int :
 +	return dead_players.size() + 1
 +
@@ -60,7 +60,7 @@ diff --git a/minigames/dvd_roomba/scripts/dvd_roomba.gd b/minigames/dvd_roomba/s
 +# untouched. Adds only what is missing, so a scene that has 8 is left alone.
 +func _mp8_topup_spawns() -> void :
 +
-+	# The room is latched before this scene's add_child (game.gd). A mixed room keeps the game's 4 (D116).
++	# The room is latched before this scene's add_child (game.gd). A mixed room keeps the game's 4.
 +	if not NetworkManager.mp8_room_extended():
 +		print("[MP8] Lethal Rebound: a mixed room, the game's spawns unchanged")
 +		return
@@ -153,7 +153,7 @@ diff --git a/minigames/dvd_roomba/scripts/dvd_roomba.gd b/minigames/dvd_roomba/s
  
  func check_game_end():
  
-+	# [MP8] A mixed room ends and scores as the game does (D116, D120).
++	# [MP8] A mixed room ends and scores as the game does.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_check_game_end()
 +		return
@@ -184,7 +184,7 @@ diff --git a/minigames/dvd_roomba/scripts/dvd_roomba.gd b/minigames/dvd_roomba/s
 +	state_machine.transition_to_rpc.rpc(&"Finished")
 +	set_effects_visibility_rpc.rpc(false)
 +
-+# The game's check_game_end, for a mixed room (D120).
++# The game's check_game_end, for a mixed room.
 +func _mp8_game_check_game_end():
 +
  	if finished:
@@ -195,7 +195,7 @@ diff --git a/minigames/dvd_roomba/scripts/dvd_roomba.gd b/minigames/dvd_roomba/s
  
  func player_disconnected(_network_id: int):
 +	# [MP8] The room is read before the await, which can outlast this minigame's latch. A mixed room
-+	# keeps the game's own end check (D116).
++	# keeps the game's own end check.
 +	var mp8_ext: bool = NetworkManager.mp8_room_extended()
  	super.player_disconnected(_network_id)
  

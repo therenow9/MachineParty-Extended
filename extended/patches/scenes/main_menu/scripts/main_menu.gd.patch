@@ -1,0 +1,112 @@
+diff --git a/scenes/main_menu/scripts/main_menu.gd b/scenes/main_menu/scripts/main_menu.gd
+--- a/scenes/main_menu/scripts/main_menu.gd
++++ b/scenes/main_menu/scripts/main_menu.gd
+@@ -58,6 +58,11 @@ var current_active_back_button_container: VBoxContainer
+ var current_active_container: StringName
+ var current_back_button: Button
+ var max_button_appear_delay_counter: int = 99
++# [MP8] Set by the first of Host, Local or Customization: a second press during the fade would wait on the
++# same fade_finished (fade_overlay emits it early when restarted) and call get_tree() on the menu the first
++# has already taken out of the tree, which kills a release build. Each handler returns before it
++# writes GameManager, so the first press's mode is the one the next scene gets.
++var mp8_leaving := false
+ 
+ signal container_hidden()
+ 
+@@ -271,9 +276,14 @@ func set_button_signals():
+ 	)
+ 
+ 	customization_button.pressed.connect( func():
++		if mp8_leaving:
++			return
++		mp8_leaving = true
+ 		GameManager.main_menu_last_button_pressed_path = customization_button.get_path()
+ 		GlobalOverlay.fade_overlay(Color.BLACK, 1.0)
+ 		await GlobalOverlay.fade_finished
++		if not is_inside_tree():
++			return
+ 		MusicManager.filter_controller.begin_shift(MusicManager.filter_controller.effect_low_pass.cutoff_hz, 300, 1, 1)
+ 		get_tree().change_scene_to_file("res://scenes/character_customization.tscn")
+ 	)
+@@ -390,6 +400,8 @@ func set_button_signals():
+ 
+ 	host_original_button.pressed.connect( func():
+ 
++		if mp8_leaving:
++			return
+ 		GameManager.host_game = true
+ 		GameManager.custom_game = false
+ 		GameManager.arcade_game = false
+@@ -398,6 +410,8 @@ func set_button_signals():
+ 	)
+ 	host_custom_button.pressed.connect( func():
+ 
++		if mp8_leaving:
++			return
+ 		GameManager.host_game = true
+ 		GameManager.custom_game = true
+ 		GameManager.arcade_game = false
+@@ -406,6 +420,8 @@ func set_button_signals():
+ 	)
+ 	host_arcade_button.pressed.connect( func():
+ 
++		if mp8_leaving:
++			return
+ 		GameManager.host_game = true
+ 		GameManager.custom_game = true
+ 		GameManager.arcade_game = true
+@@ -421,16 +437,22 @@ func set_button_signals():
+ 
+ 
+ 	local_original_button.pressed.connect( func():
++		if mp8_leaving:
++			return
+ 		GameManager.custom_game = false
+ 		GameManager.arcade_game = false
+ 		switch_to_local_lobby_scene()
+ 	)
+ 	local_custom_button.pressed.connect( func():
++		if mp8_leaving:
++			return
+ 		GameManager.custom_game = true
+ 		GameManager.arcade_game = false
+ 		switch_to_local_lobby_scene()
+ 	)
+ 	local_arcade_button.pressed.connect( func():
++		if mp8_leaving:
++			return
+ 		GameManager.custom_game = true
+ 		GameManager.arcade_game = true
+ 		switch_to_local_lobby_scene()
+@@ -442,21 +464,31 @@ func set_button_signals():
+ 
+ func switch_to_lobby_scene():
+ 
++	if mp8_leaving:
++		return
++	mp8_leaving = true
+ 	MusicManager.filter_controller.begin_shift(MusicManager.filter_controller.effect_low_pass.cutoff_hz, 300, 4, 1)
+ 	hide_active_container()
+ 
+ 	GlobalOverlay.fade_overlay(Color.BLACK, 1.0)
+ 	await GlobalOverlay.fade_finished
++	if not is_inside_tree():
++		return
+ 
+ 	get_tree().change_scene_to_file("res://scenes/lobby/lobby_scene.tscn")
+ 
+ func switch_to_local_lobby_scene():
+ 
++	if mp8_leaving:
++		return
++	mp8_leaving = true
+ 	MusicManager.filter_controller.begin_shift(MusicManager.filter_controller.effect_low_pass.cutoff_hz, 300, 4, 1)
+ 	hide_active_container()
+ 
+ 	GlobalOverlay.fade_overlay(Color.BLACK, 1.0)
+ 	await GlobalOverlay.fade_finished
++	if not is_inside_tree():
++		return
+ 
+ 	get_tree().change_scene_to_file("res://scenes/local_lobby/local_lobby.tscn")
+ 

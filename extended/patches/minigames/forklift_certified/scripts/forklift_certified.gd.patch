@@ -47,7 +47,7 @@ diff --git a/minigames/forklift_certified/scripts/forklift_certified.gd b/miniga
  	spawn_players()
 -	crate_manager.spawn_crates(PlayerManager.player_presences.keys().size() * 2)
 +
-+	# A mixed room asks for the game's crates (D120).
++	# A mixed room asks for the game's crates.
 +	if NetworkManager.mp8_room_extended():
 +		crate_manager.spawn_crates(_mp8_apply_crate_profile(PlayerManager.player_presences.keys().size()))
 +	else:
@@ -146,7 +146,7 @@ diff --git a/minigames/forklift_certified/scripts/forklift_certified.gd b/miniga
  
  func player_disconnected(_network_id: int):
 +	# [MP8] The room is read before the await, which can outlast this minigame's latch. A mixed room
-+	# keeps the game's own end check (D116).
++	# keeps the game's own end check.
 +	var mp8_ext: bool = NetworkManager.mp8_room_extended()
  	super.player_disconnected(_network_id)
  
@@ -301,7 +301,7 @@ diff --git a/minigames/forklift_certified/scripts/forklift_certified.gd b/miniga
 +	if not dead_players.has(_network_id):
 +		dead_players.append(_network_id)
 +
-+# [MP8] The game's tail of disconnect_player_rpc, for a mixed room (D120): the leaver's bay leaves delivery_areas,
++# [MP8] The game's tail of disconnect_player_rpc, for a mixed room: the leaver's bay leaves delivery_areas,
 +# so its crates stop counting toward the lead.
 +func _mp8_game_disconnect_bay(_network_id: int) -> void :
 +
@@ -407,7 +407,7 @@ diff --git a/minigames/forklift_certified/scripts/forklift_certified.gd b/miniga
 +	da.set_indicator_light_rpc.rpc(winning)
 +	_mp8_light_team(da, winning)
 +
-+# [MP8] The game's _on_crate_numbers_changed, for a mixed room (D116): every bay's light re-sent on each change.
++# [MP8] The game's _on_crate_numbers_changed, for a mixed room: every bay's light re-sent on each change.
 +func _mp8_game_crate_numbers_changed() -> void :
 +
  	var highest_score: int = 0
@@ -420,7 +420,7 @@ diff --git a/minigames/forklift_certified/scripts/forklift_certified.gd b/miniga
 +
 +
 +# ============================================================== [MP8] The game's own, for a mixed room
-+# Verbatim copies of the game's functions that Extended changed; a mixed room calls these (D120).
++# Verbatim copies of the game's functions that Extended changed; a mixed room calls these.
 +
 +func _mp8_game_spawn_players():
 +
@@ -607,7 +607,7 @@ diff --git a/minigames/forklift_certified/scripts/forklift_certified.gd b/miniga
 +# that could not expand doubles players up.
 +func _mp8_refresh_score_mults() -> void :
 +
-+	# A mixed room sends neither the multipliers nor their counter refresh; every bay keeps 1 (D116).
++	# A mixed room sends neither the multipliers nor their counter refresh; every bay keeps 1.
 +	if not NetworkManager.mp8_room_extended():
 +		return
 +
@@ -727,7 +727,7 @@ diff --git a/minigames/forklift_certified/scripts/forklift_certified.gd b/miniga
 +const MP8V_BORDER_SHRINK: float = 0.9
 +const MP8V_READOUT_GAP_FALLBACK: float = 2.16
 +# The yard's (x, z) scale above four players: the room's art, walls, lights and bay positions grow about the
-+# origin; bays, forklifts and crates keep their size. The owner's pick from in-game renders (D104);
++# origin; bays, forklifts and crates keep their size. The owner's pick from in-game renders;
 +# `mp8forkyard=<sx>,<sz>` overrides it, and `mp8forkyard=1,1` is the shipped yard.
 +const MP8V_YARD_SCALE: Vector2 = Vector2(1.3, 1.3)
 +const MP8V_ROOM: String = "forklift certified visuals1"

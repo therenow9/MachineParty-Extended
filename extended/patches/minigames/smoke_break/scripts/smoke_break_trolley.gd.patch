@@ -71,7 +71,7 @@ diff --git a/minigames/smoke_break/scripts/smoke_break_trolley.gd b/minigames/sm
  
  func shoot_player(seat: int):
  
-+	# [MP8] A mixed room shoots as the game does (D120).
++	# [MP8] A mixed room shoots as the game does.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_shoot_player(seat)
 +		return
@@ -124,7 +124,7 @@ diff --git a/minigames/smoke_break/scripts/smoke_break_trolley.gd b/minigames/sm
 +	if si in _mp8_fan_seats:
 +		blood_decal_fan.visible = true
 +
-+# The game's shoot_player, for a mixed room (D120).
++# The game's shoot_player, for a mixed room.
 +func _mp8_game_shoot_player(seat: int):
 +
  	smoke_particle_active_index += 1

@@ -1,7 +1,7 @@
 diff --git a/minigames/spine_breaker/components/device/states/follow_state.gd b/minigames/spine_breaker/components/device/states/follow_state.gd
 --- a/minigames/spine_breaker/components/device/states/follow_state.gd
 +++ b/minigames/spine_breaker/components/device/states/follow_state.gd
-@@ -3,6 +3,25 @@ extends State
+@@ -3,6 +3,30 @@ extends State
  var target: SpineBreakerPlayer
  var elapsed: float = 0.0
  
@@ -20,19 +20,24 @@ diff --git a/minigames/spine_breaker/components/device/states/follow_state.gd b/
 +# [MP8] Dead-end target: a target that can never be taken (already carrying a device) is never
 +# dropped. update_proximity_check skips them and retargets only to another takeable player nearby
 +# (`target_distance` is always INF); request_new_target only follows a kill. So the device asks the
-+# host for a new target, on a cooldown: `_mp8_pick_prey()` may return null and must be asked again.
-+const MP8_DEADEND_RETRY: float = 4.0   # longer than the longest MP8_DEVICE_WAIT (3 s), so it does not race the reassignment
++# host for a new target at once, then on a cooldown: `_mp8_pick_prey()` may return null and must be asked again.
++const MP8_DEADEND_RETRY: float = 4.0
 +var _mp8_deadend_cd: float = 0.0
++
++# [MP8] Players whose contact was refused for their throw grace. They can stay inside the attach area
++# without a new body_entered, and the area reaches them up to about 1.7 m away, past the 1.45 m
++# distance check, so update_proximity_check takes them here once the grace ends.
++var _mp8_grace_held: Array = []
 +
  func init() -> void :
  
  	owner.navigation_update_timer.timeout.connect(_on_navigation_timer_timeout)
-@@ -17,6 +36,32 @@ func can_enter() -> bool:
+@@ -17,6 +41,33 @@ func can_enter() -> bool:
  	return true
  
  func enter(_msg: Dictionary = {}) -> void :
 +
-+	# [MP8] A mixed room runs the game's enter (D120).
++	# [MP8] A mixed room runs the game's enter.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_enter(_msg)
 +		return
@@ -45,6 +50,7 @@ diff --git a/minigames/spine_breaker/components/device/states/follow_state.gd b/
 +	_mp8_dodge_left = 0.0
 +	_mp8_dodge_count = 0
 +	_mp8_deadend_cd = 0.0
++	_mp8_grace_held.clear()
 +
 +	var new_target = _msg.get("target", null)
 +	var is_new_target: bool = _msg.get("new_target", false)
@@ -55,19 +61,19 @@ diff --git a/minigames/spine_breaker/components/device/states/follow_state.gd b/
 +		set_target(new_target, is_new_target)
 +		_on_navigation_timer_timeout()
 +
-+# The game's enter, for a mixed room (D120).
++# The game's enter, for a mixed room.
 +func _mp8_game_enter(_msg: Dictionary = {}) -> void :
  	owner.is_following = true
  	state_time = 0.0
  	elapsed = 0.0
-@@ -39,6 +84,46 @@ func update(_delta: float) -> void :
+@@ -39,6 +90,46 @@ func update(_delta: float) -> void :
  
  func update_physics(_delta: float) -> void :
  
-+	# [MP8] Before the room's dispatch: the rescue runs in every room (PD8, D155).
++	# [MP8] Before the room's dispatch: the rescue runs in every room.
 +	_mp8_unstick(_delta)
 +
-+	# [MP8] A mixed room runs the game's update_physics (D120).
++	# [MP8] A mixed room runs the game's update_physics.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_update_physics(_delta)
 +		return
@@ -101,18 +107,18 @@ diff --git a/minigames/spine_breaker/components/device/states/follow_state.gd b/
 +
 +	update_proximity_check()
 +
-+# The game's update_physics, for a mixed room (D120).
++# The game's update_physics, for a mixed room.
 +func _mp8_game_update_physics(_delta: float) -> void :
 +
  	var increase_ratio = elapsed / owner.speed_increase_duration
  	var elapsed_speed = increase_ratio * owner.speed_increase_over_time
  
-@@ -55,8 +140,164 @@ func update_physics(_delta: float) -> void :
+@@ -55,8 +146,192 @@ func update_physics(_delta: float) -> void :
  
  	update_proximity_check()
  
 +
-+# [MP8] PD8: a throw starts 3 m up and 1.5 m ahead of the thrower, which can be inside one of the room's
++# [MP8] A throw starts 3 m up and 1.5 m ahead of the thrower, which can be inside one of the room's
 +# hidden collision boxes, and a device that lands in there chases on the spot. Still for MP8_STILL_S and over
 +# MP8_STILL_M from the floor's navmesh (eroded by its 0.75 m agent radius: only a device inside a box is that
 +# far), it drops to that navmesh. Server only: position replicates.
@@ -228,11 +234,39 @@ diff --git a/minigames/spine_breaker/components/device/states/follow_state.gd b/
 +	return true
 +
 +
++# [MP8] Did p just throw another device off their back? Then this device neither grabs nor targets them
++# (the minigame's mp8_in_throw_grace), contact included: a device shadowing a carrier gets no free catch.
++func _mp8_in_grace(p) -> bool :
++
++	var gi = owner.game_instance
++	return gi != null and gi.has_method("mp8_in_throw_grace") and gi.mp8_in_throw_grace(p, owner)
++
++
++# [MP8] See `_mp8_grace_held`. True when a held player was taken this frame.
++func _mp8_take_held() -> bool :
++
++	for h in _mp8_grace_held.duplicate():
++		var area: Area3D = owner.player_attach_area
++		if not is_instance_valid(h) or area == null or not area.overlaps_body(h) or not _mp8_can_take(h):
++			_mp8_grace_held.erase(h)
++			continue
++		if _mp8_in_grace(h):
++			continue
++		state_machine.transition_to(&"Attached", {
++			"target": h
++		})
++		return true
++	return false
++
++
  func update_proximity_check():
  
-+	# [MP8] A mixed room runs the game's update_proximity_check (D120).
++	# [MP8] A mixed room runs the game's update_proximity_check.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_update_proximity_check()
++		return
++
++	if _mp8_take_held():                # [MP8]
 +		return
 +
 +	var target_distance: float = INF
@@ -241,7 +275,7 @@ diff --git a/minigames/spine_breaker/components/device/states/follow_state.gd b/
 +	var closest_distance = target_distance
 +	for p in owner.players_in_proximity:
 +
-+		if not _mp8_can_take(p):        # [MP8]
++		if not _mp8_can_take(p) or _mp8_in_grace(p):        # [MP8]
 +			continue
 +
 +		var distance = owner.global_position.distance_to(p.global_position)
@@ -266,19 +300,19 @@ diff --git a/minigames/spine_breaker/components/device/states/follow_state.gd b/
 +		if closest_distance < target_distance:
 +			set_target(closest, false)
 +
-+# The game's update_proximity_check, for a mixed room (D120).
++# The game's update_proximity_check, for a mixed room.
 +func _mp8_game_update_proximity_check():
 +
  	var target_distance: float = INF
  
  	var closest = null
-@@ -78,6 +319,42 @@ func update_proximity_check():
+@@ -78,6 +353,46 @@ func update_proximity_check():
  		if closest_distance < target_distance:
  			set_target(closest, false)
  
 +# [MP8] See MP8_DEADEND_RETRY. `_mp8_can_take` also covers dead targets and freed references.
-+# Server only: spine_breaker.gd connects `request_new_target` only on the server.
-+# Inactive means this frame already left Follow.
++# Server only: the retarget runs on the host. Inactive means this frame already left Follow; after
++# mp8_retarget_now the rest of this frame chases the new target.
 +func _mp8_check_dead_end(_delta: float) -> void :
 +
 +	if not active:
@@ -309,17 +343,21 @@ diff --git a/minigames/spine_breaker/components/device/states/follow_state.gd b/
 +	print("[MP8] Spine Breaker: device %d is chasing %s but can never take them (%s) - requesting a new target" % [
 +		owner.mp8_index, who, why
 +	])
-+	owner.request_new_target.emit()
++	var gi = owner.game_instance
++	if gi != null and gi.has_method("mp8_retarget_now"):
++		gi.mp8_retarget_now(owner)
++	else:
++		owner.request_new_target.emit()
 +
 +
  func set_target(_target: SpineBreakerPlayer, new_target: bool):
  	target = _target
  
-@@ -101,6 +378,27 @@ func _on_navigation_timer_timeout():
+@@ -101,6 +416,32 @@ func _on_navigation_timer_timeout():
  
  func _on_player_attach_entered(body):
  
-+	# [MP8] A mixed room runs the game's _on_player_attach_entered (D120).
++	# [MP8] A mixed room runs the game's _on_player_attach_entered.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_on_player_attach_entered(body)
 +		return
@@ -330,14 +368,19 @@ diff --git a/minigames/spine_breaker/components/device/states/follow_state.gd b/
 +	if body is not SpineBreakerPlayer:
 +		return
 +
-+	if not _mp8_can_take(body):        # [MP8] not a player carrying a device, nor a dead one
++	if not _mp8_can_take(body):        # [MP8] not a carrier, nor a dead player
++		return
++
++	if _mp8_in_grace(body):            # [MP8] nor a thrower in grace, taken when it ends if still touching
++		if not _mp8_grace_held.has(body):
++			_mp8_grace_held.append(body)
 +		return
 +
 +	state_machine.transition_to(&"Attached", {
 +		"target": body
 +	})
 +
-+# The game's _on_player_attach_entered, for a mixed room (D120).
++# The game's _on_player_attach_entered, for a mixed room.
 +func _mp8_game_on_player_attach_entered(body):
 +
  	if not active:

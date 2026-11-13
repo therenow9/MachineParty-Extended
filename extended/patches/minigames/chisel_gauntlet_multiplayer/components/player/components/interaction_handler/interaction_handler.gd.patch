@@ -5,7 +5,7 @@ diff --git a/minigames/chisel_gauntlet_multiplayer/components/player/components/
  
  func process_controller_input(_delta: float):
  
-+	# [MP8] A mixed room runs the game's process_controller_input (D120).
++	# [MP8] A mixed room runs the game's process_controller_input.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_process_controller_input(_delta)
 +		return
@@ -54,7 +54,7 @@ diff --git a/minigames/chisel_gauntlet_multiplayer/components/player/components/
 +
 +	_mp8_step(_mp8_stick_press(_delta))
 +
-+# The game's process_controller_input, for a mixed room (D120).
++# The game's process_controller_input, for a mixed room.
 +func _mp8_game_process_controller_input(_delta: float):
 +
  	if not active:

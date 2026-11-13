@@ -31,7 +31,7 @@ diff --git a/minigames/junk_platform/scripts/junk_handler.gd b/minigames/junk_pl
  
  func _physics_process(_delta: float) -> void :
  
-+	# [MP8] A mixed room runs the game's _physics_process (D120).
++	# [MP8] A mixed room runs the game's _physics_process.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_physics_process(_delta)
 +		return
@@ -52,7 +52,7 @@ diff --git a/minigames/junk_platform/scripts/junk_handler.gd b/minigames/junk_pl
  
  	updata_junk_positions_rpc.rpc(data)
  
-+# The game's _physics_process, for a mixed room (D120).
++# The game's _physics_process, for a mixed room.
 +func _mp8_game_physics_process(_delta: float) -> void :
 +
 +	if not multiplayer.is_server():
@@ -75,7 +75,7 @@ diff --git a/minigames/junk_platform/scripts/junk_handler.gd b/minigames/junk_pl
 +
  func set_active(_active: bool):
 +
-+	# [MP8] A mixed room runs the game's set_active (D120).
++	# [MP8] A mixed room runs the game's set_active.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_set_active(_active)
 +		return
@@ -90,7 +90,7 @@ diff --git a/minigames/junk_platform/scripts/junk_handler.gd b/minigames/junk_pl
 +	if active and not mp8_paused:
 +		timer.start(spawn_interval)
 +
-+# The game's set_active, for a mixed room (D120).
++# The game's set_active, for a mixed room.
 +func _mp8_game_set_active(_active: bool):
  	active = _active
  	if active:
@@ -100,7 +100,7 @@ diff --git a/minigames/junk_platform/scripts/junk_handler.gd b/minigames/junk_pl
  
  func _on_timer_timeout():
 +
-+	# [MP8] A mixed room runs the game's _on_timer_timeout (D120).
++	# [MP8] A mixed room runs the game's _on_timer_timeout.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_on_timer_timeout()
 +		return
@@ -143,7 +143,7 @@ diff --git a/minigames/junk_platform/scripts/junk_handler.gd b/minigames/junk_pl
 +
 +	timer.start(spawn_time)
 +
-+# The game's _on_timer_timeout, for a mixed room (D120).
++# The game's _on_timer_timeout, for a mixed room.
 +func _mp8_game_on_timer_timeout():
  	for p in spawn_points.values():
  		var junk_instance: JunkCubeRigidbody

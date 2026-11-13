@@ -20,7 +20,7 @@ diff --git a/minigames/smoke_break/states/round_play_state.gd b/minigames/smoke_
 +
 +	# [MP8] Only the server plays the beep. tick_rpc is call_local, so every peer runs this, and each
 +	# play_omni_rpc broadcast takes a free voice from a 32-voice pool: with every peer broadcasting,
-+	# each peer plays one stacked beep per player. A mixed room does that, as the game does (D116).
++	# each peer plays one stacked beep per player. A mixed room does that, as the game does.
 +	if not NetworkManager.mp8_sends_broadcast(multiplayer.is_server()):
 +		return
 +

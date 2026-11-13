@@ -248,6 +248,14 @@ func _hook_lobby(loader) -> void:
 		note("failed to load lobby_drop_out.gd, B doesn't drop out of the lobby")
 		return
 	loader.on_scene_script(LOBBY_PANEL, _on_lobby_panel)
+	loader.registry(MOD_ID)["name_back"] = name_back
+
+# Better Couch Lobby's name screen owns back while it is installed and asks here which
+# action is a GameCube pad's B; any other pad gets "".
+func name_back(device: int) -> StringName:
+	if detector == null or not detector.is_gamecube(device):
+		return &""
+	return lobby_drop_out.b_action(config["button_layout"])
 
 # Runs while the scene is entering the tree; the helper is added once it has finished.
 func _on_lobby_panel(panel: Node) -> void:

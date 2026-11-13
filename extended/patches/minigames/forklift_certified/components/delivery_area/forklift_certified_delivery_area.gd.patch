@@ -32,7 +32,7 @@ diff --git a/minigames/forklift_certified/components/delivery_area/forklift_cert
  	body.in_delivery_area = true
  
 -	update_counter_rpc.rpc(crates_in_area.size())
-+	# [MP8] The counter shows the multiplied score; a mixed room sends the game's count (D120).
++	# [MP8] The counter shows the multiplied score; a mixed room sends the game's count.
 +	update_counter_rpc.rpc(crates_in_area.size() * mp8_score_mult if NetworkManager.mp8_room_extended() else crates_in_area.size())
  	crate_number_changed.emit()
  
@@ -51,7 +51,7 @@ diff --git a/minigames/forklift_certified/components/delivery_area/forklift_cert
  	belongs_to_id = network_id
  
 +	# [MP8] The colour is repainted below, so the light cache is reset or the next
-+	# _on_crate_numbers_changed would see no change and skip the broadcast. A mixed room keeps no cache (D120).
++	# _on_crate_numbers_changed would see no change and skip the broadcast. A mixed room keeps no cache.
 +	if NetworkManager.mp8_room_extended():
 +		mp8_indicator_state = -1
 +

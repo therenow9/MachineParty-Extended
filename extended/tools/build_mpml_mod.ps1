@@ -1,6 +1,6 @@
 # Builds the MPML package (the mod folder and its zip) without modifying the installed game or PCK.
-# -TestBuild packs network_manager.gd compiled with MP8_TEST_BUILD = true, which unlocks every dev switch
-# (D119), into a folder whose parent ends in -test; the shipped build never comes from it.
+# -TestBuild packs network_manager.gd compiled with MP8_TEST_BUILD = true, which unlocks every dev switch,
+# into a folder whose parent ends in -test; the shipped build never comes from it.
 param(
     [string]$Godot = '',
     [string]$Out = '',
@@ -39,8 +39,8 @@ foreach ($protected in @('patch','patch_gdc','src','mpml','tools','game','game_t
 foreach ($needed in @($Godot, $OriginalPack, (Join-Path $root 'src'), (Join-Path $root 'patch'),(Join-Path $root 'patch_gdc'), (Join-Path $root 'mpml\mp8_support\main.gd'), (Join-Path $root 'mpml\mp8_support\mp8_net.gd'), (Join-Path $root 'mpml\mp8_support\mod.json'), (Join-Path $root 'mpml\mp8_support\title_extended.png'), (Join-Path $root 'tools\probe\build_mpml_mod.gd'))) {
     if (-not (Test-Path -LiteralPath $needed)) { throw "Missing build input: $needed" }
 }
-# A mixed room with vanilla peers calls RPCs by table index (D115), and a shipped build must read no dev
-# switch (D116), and a text triple whose languages differ in shape empties its label (D173): any of them
+# A mixed room with vanilla peers calls RPCs by table index, and a shipped build must read no dev
+# switch, and a text triple whose languages differ in shape empties its label: any of them
 # refuses the build, test builds included.
 foreach ($check in @('check_rpc_tables.ps1','check_dev_switches.ps1','check_text_triples.ps1')) {
     $report = & pwsh -NoProfile -File (Join-Path $PSScriptRoot $check) -Vanilla (Join-Path $root 'src') -Patched (Join-Path $root 'patch') 2>&1

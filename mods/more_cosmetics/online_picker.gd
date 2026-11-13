@@ -4,8 +4,8 @@ extends Node
 # select_cosmetic asks is_compatible_with_glasses(), which returns null for any
 # name it doesn't know, so under one of our hats it refuses every pair of
 # glasses. After the game handles a tile press, this redoes it with select().
-# It also lays the screen out as one 7-column grid with our colour row (owner's
-# picks, plan Phases 6 and 8) and names our items on the info labels.
+# It also lays the screen out as one 7-column grid with our colour row (as
+# picked from renders) and names our items on the info labels.
 
 const BRANCH_PATH := "res://scripts/components/character customization/customization_selection_branch.gd"
 const GAME_TILE := 89.0
@@ -17,9 +17,9 @@ const ROW_GAP := 22.0
 # Codes after Overtime's last (0010060), in catalog order: hats, glasses, colours.
 const FIRST_CODE := 10061
 # Tile-only emission for ours that render too dark to read in their tiles;
-# xc_screen measures each tile's lit pixels. The amounts are the owner's picks
-# (plan Phases 6 and 8): emission scales the item's own texture.
-const TILE_LIFT := {"xc_eyepatch_glasses": 0.08, "xc_head_mirror": 0.10, "xc_kippah": 0.06}
+# xc_screen measures each tile's lit pixels. The amounts were picked from renders;
+# emission scales the item's own texture.
+const TILE_LIFT := {"xc_eyepatch_glasses": 0.08, "xc_head_mirror": 0.10, "xc_kippah": 0.06, "xc_cowboy_hat": 0.06}
 const LAID_OUT := &"xc_online_layout"
 
 # Set by main.gd on every hook call.

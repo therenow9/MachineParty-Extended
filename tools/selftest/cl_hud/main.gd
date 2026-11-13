@@ -2,14 +2,14 @@ extends Node
 
 # Dev-only acceptance test of the fork's local split-screen HUD, through Overtime's own code:
 # the device list past the lobby, and the name tags of the three minigames that draw one.
-# 8 Player Support draws no device list (D76): there the same reconnect steps are read from each
+# 8 Player Support draws no device list: there the same reconnect steps are read from each
 # seat's status text. On stock Overtime 1.7 it fails by design.
 
 const LOBBY := "res://scenes/local_lobby/local_lobby.tscn"
 const PRESENCE := "res://modules/player_presence/player_presence.tscn"
 const CANVAS := Vector2(1920, 1080)
 # Seat 8's name is wider than its tile even at Knife at the Office's 16 px, so only the trim keeps it inside.
-const NAMES := ["JERM", "ALEX", "SAM", "MAYA", "LEO", "ZOEY", "WWWW", "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW"]
+const NAMES := ["JERM", "ALEX", "SAM", "MAYA", "LEO", "ZOEY", "WWWWWWW", "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW"]
 const HANDLERS := [
 	["chisel gauntlet", "res://minigames/chisel_gauntlet_multiplayer/scripts/chisel_gauntlet_local_handler.gd",
 		"res://minigames/chisel_gauntlet_multiplayer/components/player/chisel_gauntlet_player.tscn"],
@@ -99,8 +99,10 @@ func _tags(label: String, handler_path: String, player_path: String) -> void:
 			tag.horizontal_alignment == HORIZONTAL_ALIGNMENT_LEFT and r.position.x < tile.position.x + 24.0, [tag.horizontal_alignment, r.position.x, tile.position.x])
 		ok("%s P%d tag trims long names" % [label, i + 1], tag.text_overrun_behavior == TextServer.OVERRUN_TRIM_ELLIPSIS, tag.text_overrun_behavior)
 		ok("%s P%d tag inside its screen" % [label, i + 1], tile.grow(0.5).encloses(r), "%s in %s" % [r, tile])
+		var wide := tag.get_theme_font("font").get_string_size(NAMES[i], HORIZONTAL_ALIGNMENT_LEFT, -1, tag.get_theme_font_size("font_size")).x
+		if i == 6:
+			ok("%s seat 7's widest 7-letter name fits its tag untrimmed" % label, wide <= tag.size.x, [wide, tag.size.x])
 		if i == 7:
-			var wide := tag.get_theme_font("font").get_string_size(NAMES[i], HORIZONTAL_ALIGNMENT_LEFT, -1, tag.get_theme_font_size("font_size")).x
 			ok("%s seat 8's name is wider than its screen" % label, wide > tile.size.x, [wide, tile.size.x])
 		ok("%s P%d tag at the bottom" % [label, i + 1],
 			tag.vertical_alignment == VERTICAL_ALIGNMENT_BOTTOM and r.end.y > tile.end.y - 24.0, [tag.vertical_alignment, r.end.y, tile.end.y])
@@ -161,7 +163,7 @@ func _device_list() -> void:
 	ok("confirmed pad listed until A is released", _seat(labels, 101)[0] and "release" in _seat(labels, 101)[1], _seat(labels, 101)[1])
 	# Offline Bots' update_player_manager never adds the presences to the tree, so the release is never seen there.
 	if not pres.is_inside_tree():
-		say("NOTE presence outside the tree (Offline Bots' lobby override): the resume step can't run; docs/issues.md inbox")
+		say("NOTE presence outside the tree (Offline Bots' lobby override): the resume step can't run")
 	else:
 		for i in 3: await get_tree().physics_frame
 		await frames(2)

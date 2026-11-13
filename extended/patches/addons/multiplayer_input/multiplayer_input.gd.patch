@@ -24,7 +24,7 @@ diff --git a/addons/multiplayer_input/multiplayer_input.gd b/addons/multiplayer_
  
  func _delete_actions_for_device(device: int):
 +
-+	# [MP8] A mixed room erases as the game does, by name prefix (D120).
++	# [MP8] A mixed room erases as the game does, by name prefix.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_delete_actions_for_device(device)
 +		return
@@ -35,7 +35,7 @@ diff --git a/addons/multiplayer_input/multiplayer_input.gd b/addons/multiplayer_
 +			InputMap.erase_action(action)
 +	device_actions.erase(device)
 +
-+# The game's _delete_actions_for_device, for a mixed room (D120).
++# The game's _delete_actions_for_device, for a mixed room.
 +func _mp8_game_delete_actions_for_device(device: int):
  	device_actions.erase(device)
  	var actions_to_erase = []

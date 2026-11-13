@@ -18,7 +18,7 @@
 #   --spoof=TAG  van peers send game_version+TAG, as Extended before 0.22 did (an old Extended joiner)
 #   --last       what the last joiner should see (default joined); every other joiner must join. A reason
 #                past the peer's own list (a vanilla peer refused with MP8RoomFull) reads reason_<n>
-#   --cast       a trailer take (docs/plans/2026-10-31-trailer.md, D125): each seat is tools/trailer_cast/trailer.json's
+#   --cast       a trailer take: each seat is tools/trailer_cast/trailer.json's
 #                cast, long name and outfit, and every peer gets mods/more_cosmetics (most of the cast's items)
 #   --window=I   peer I (0 = host) runs windowed, borderless and on top, 960x540 at the desktop's (WIN_X, WIN_Y),
 #                with the music bus muted; the rest stay headless
@@ -307,7 +307,7 @@ if [ "${#joined[@]}" -ge 2 ]; then
     [ "$(grep -o ' SCORES .*' "$out/p${i}_result.txt")" = "$scores_h" ] && echo "PASS p$i scores match the host's at every briefing ($(echo "$scores_h" | grep -c SCORES); the last minigame's are not compared)" || fail "p$i scores differ from the host's"
   done
   # Each peer changes its own copy of Firearm Factory's bench room (zz_mp8v_bench_room_rpc): every Extended peer
-  # that joined logs the same, the host too: its own relay calls run inside a client's RPC (PD19).
+  # that joined logs the same, the host too: its own relay calls run inside a client's RPC.
   room="$(grep -ho '\[MP8\] Firearm Factory 8p: room for .*' "$out"/p*_stdout.txt | sort -u)"
   all_ext=1; for i in "${joined[@]}"; do [ "${roles[$i]}" = ext ] || all_ext=0; done
   if [ -z "$room" ] && [ "$all_ext" = 1 ] && [ "${#joined[@]}" -ge 5 ] && grep -q ' LOAD ManufactureGun ' "$out/p${h}_result.txt"; then

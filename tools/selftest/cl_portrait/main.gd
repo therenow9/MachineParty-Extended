@@ -750,7 +750,7 @@ func _doubles_in_room_copy(packed: PackedScene) -> void:
 		s.cam.cull_mask = 1 | (1 << (SEAT_LAYER_BIT + s.i))
 	say("double scale %s" % _v((seats[0].double.node as Node3D).global_basis.get_scale()))
 
-# Round 5: the menu pose (D84) against head-on, level or keeping the menu's roll.
+# Round 5: the menu pose against head-on, level or keeping the menu's roll.
 func _round5() -> void:
 	say("\n=== round 5")
 	var packed: PackedScene = load(CUSTOMIZATION)
@@ -770,7 +770,7 @@ func _round5() -> void:
 		_aim5(s, "front_level")
 	await _custom_buttons_shot("r5_front_level_custom")
 
-# "menu" is D84's pose. "front" swings the camera round the vertical line through the
+# "menu" is the menu camera's pose. "front" swings the camera round the vertical line through the
 # head onto the face's level direction, keeping the menu camera's distance, height above the
 # head, pitch and lens, and looks straight back at the face.
 func _aim5(s: Dictionary, label: String) -> void:

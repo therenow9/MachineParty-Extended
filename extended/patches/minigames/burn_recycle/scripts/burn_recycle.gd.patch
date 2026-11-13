@@ -79,7 +79,7 @@ diff --git a/minigames/burn_recycle/scripts/burn_recycle.gd b/minigames/burn_rec
  func _ready() -> void :
  	super._ready()
  
-+	# [MP8] A mixed room runs the rest of the game's _ready (D120): no seat init, stations, frames or editor.
++	# [MP8] A mixed room runs the rest of the game's _ready: no seat init, stations, frames or editor.
 +	if not NetworkManager.mp8_room_extended():
 +		await _mp8_game_ready_tail()
 +		return
@@ -135,7 +135,7 @@ diff --git a/minigames/burn_recycle/scripts/burn_recycle.gd b/minigames/burn_rec
 +		var particle_mesh: Mesh = spark_particles.get_draw_pass_mesh(0)
 +		particle_mesh.size = local_spark_particles_size
 +
-+# The game's _ready after its super call, for a mixed room (D120).
++# The game's _ready after its super call, for a mixed room.
 +func _mp8_game_ready_tail():
 +
  	multiplayer_synchronizer.set_multiplayer_authority(1)
@@ -166,7 +166,7 @@ diff --git a/minigames/burn_recycle/scripts/burn_recycle.gd b/minigames/burn_rec
  
  func spawn_players():
  
-+	# [MP8] A mixed room runs the game's spawn_players (D120).
++	# [MP8] A mixed room runs the game's spawn_players.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_spawn_players()
 +		return
@@ -218,7 +218,7 @@ diff --git a/minigames/burn_recycle/scripts/burn_recycle.gd b/minigames/burn_rec
 +		local_handler.set_players(players.values())
 +		local_handler.show_all_tags()
 +
-+# The game's spawn_players, for a mixed room (D120).
++# The game's spawn_players, for a mixed room.
 +func _mp8_game_spawn_players():
 +
  	var random_type_byte_array: PackedByteArray
@@ -228,7 +228,7 @@ diff --git a/minigames/burn_recycle/scripts/burn_recycle.gd b/minigames/burn_rec
  
  func round_finished():
  
-+	# [MP8] A mixed room runs the game's round_finished (D120).
++	# [MP8] A mixed room runs the game's round_finished.
 +	if not NetworkManager.mp8_room_extended():
 +		await _mp8_game_round_finished()
 +		return
@@ -260,7 +260,7 @@ diff --git a/minigames/burn_recycle/scripts/burn_recycle.gd b/minigames/burn_rec
 +	for player in players.values():
 +		player.clear_item_queue_rpc.rpc()
 +
-+# The game's round_finished, for a mixed room (D120).
++# The game's round_finished, for a mixed room.
 +func _mp8_game_round_finished():
 +
  
@@ -281,7 +281,7 @@ diff --git a/minigames/burn_recycle/scripts/burn_recycle.gd b/minigames/burn_rec
  
  func eliminate_players():
  
-+	# [MP8] A mixed room runs the game's eliminate_players (D120).
++	# [MP8] A mixed room runs the game's eliminate_players.
 +	if not NetworkManager.mp8_room_extended():
 +		await _mp8_game_eliminate_players()
 +		return
@@ -332,7 +332,7 @@ diff --git a/minigames/burn_recycle/scripts/burn_recycle.gd b/minigames/burn_rec
 +
 +	check_game_end()
 +
-+# The game's eliminate_players, for a mixed room (D120).
++# The game's eliminate_players, for a mixed room.
 +func _mp8_game_eliminate_players():
 +
  	var players_by_score: Dictionary[int, Array]
@@ -342,7 +342,7 @@ diff --git a/minigames/burn_recycle/scripts/burn_recycle.gd b/minigames/burn_rec
  
  func start_new_round():
  
-+	# [MP8] A mixed room runs the game's start_new_round (D120).
++	# [MP8] A mixed room runs the game's start_new_round.
 +	if not NetworkManager.mp8_room_extended():
 +		await _mp8_game_start_new_round()
 +		return
@@ -371,7 +371,7 @@ diff --git a/minigames/burn_recycle/scripts/burn_recycle.gd b/minigames/burn_rec
 +	start_round_timer()
 +	_mp8_log_round("starts")
 +
-+# The game's start_new_round, for a mixed room (D120).
++# The game's start_new_round, for a mixed room.
 +func _mp8_game_start_new_round():
 +
  	countdown_time = max(countdown_time - 1, min_countdown_time)
@@ -382,7 +382,7 @@ diff --git a/minigames/burn_recycle/scripts/burn_recycle.gd b/minigames/burn_rec
  
  func player_disconnected(_network_id: int):
 +	# [MP8] The room is read before the await, which can outlast this minigame's latch. A mixed room
-+	# keeps the game's own end check (D116).
++	# keeps the game's own end check.
 +	var mp8_ext: bool = NetworkManager.mp8_room_extended()
  
  	if active_players.has(_network_id):
@@ -620,7 +620,7 @@ diff --git a/minigames/burn_recycle/scripts/burn_recycle.gd b/minigames/burn_rec
 +
 +# [MP8] The frame is the station's housing: the lever block, the hatch the items come out of and the box
 +# around the counter. Each of the scene's four is copied to the seat after it, as the presses are, so every
-+# station looks the same (D132). A frame sits at the arena centre, turned, so its seat is read from its meshes.
++# station looks the same. A frame sits at the arena centre, turned, so its seat is read from its meshes.
 +func _mp8_copy_frames() -> void :
 +
 +	var root: Node = find_child(MP8_VISUALS_ROOT_NAME, true, false)
@@ -698,7 +698,7 @@ diff --git a/minigames/burn_recycle/scripts/burn_recycle.gd b/minigames/burn_rec
 +
 +# [MP8] The clientside lights (two over the centre, one over a station) are turned to each peer's own seat online
 +# (the player's setup_clientside_visuals), never in a couch game, where they light seat 4 and spill onto seat 5.
-+# On the couch every seat gets its own copy of the station's light, dimmed to MP8_SEAT_LIGHT_ENERGY (D132), with no
++# On the couch every seat gets its own copy of the station's light, dimmed to MP8_SEAT_LIGHT_ENERGY, with no
 +# shadow: each split-screen tile draws every shadowed light again, and eight more of them halve the frame rate at 8.
 +const MP8_SEAT_LIGHT_ENERGY: float = 0.35
 +
@@ -1471,7 +1471,7 @@ diff --git a/minigames/burn_recycle/scripts/burn_recycle.gd b/minigames/burn_rec
 +
 +	_mp8_layout_reset()
 +
-+	# [MP8] The editor's file, read only in a test build: a shipped build plays the built-in layout (D116).
++	# [MP8] The editor's file, read only in a test build: a shipped build plays the built-in layout.
 +	if not NetworkManager.mp8_development_tools_allowed() or not FileAccess.file_exists(MP8_BURN_LAYOUT_FILE):
 +		return
 +

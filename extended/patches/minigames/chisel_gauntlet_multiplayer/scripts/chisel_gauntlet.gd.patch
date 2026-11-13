@@ -305,7 +305,7 @@ diff --git a/minigames/chisel_gauntlet_multiplayer/scripts/chisel_gauntlet.gd b/
 +
 +
 +# [MP8] Every split-screen tile redraws each omni light's shadow every frame; dual paraboloid is 2 passes
-+# to the cube's 6 (D90). Local only: online keeps the game's cube shadows. Runs after the players spawn,
++# to the cube's 6. Local only: online keeps the game's cube shadows. Runs after the players spawn,
 +# so their own small lights are included.
 +func _mp8_paraboloid_omni_shadows() -> void:
 +	for light in find_children("*", "OmniLight3D", true, false):
@@ -372,7 +372,7 @@ diff --git a/minigames/chisel_gauntlet_multiplayer/scripts/chisel_gauntlet.gd b/
  
 +	# [MP8] Seat expansion runs before spawn_players() and on every machine (the desks are local scene nodes),
 +	# so not in initialize(), which runs only on the server. A mixed room keeps the game's seats, shotgun order
-+	# and dead-lobby screen (D120).
++	# and dead-lobby screen.
 +	if NetworkManager.mp8_room_extended():
 +		_mp8_setup_seats()
 +
@@ -388,7 +388,7 @@ diff --git a/minigames/chisel_gauntlet_multiplayer/scripts/chisel_gauntlet.gd b/
  
  func spawn_players():
  
-+	# [MP8] A mixed room runs the game's spawn_players (D120).
++	# [MP8] A mixed room runs the game's spawn_players.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_spawn_players()
 +		return
@@ -451,7 +451,7 @@ diff --git a/minigames/chisel_gauntlet_multiplayer/scripts/chisel_gauntlet.gd b/
 +		player_count, spectate_positions.size(), ", ".join(seats)
 +	])
 +
-+# The game's spawn_players, for a mixed room (D120).
++# The game's spawn_players, for a mixed room.
 +func _mp8_game_spawn_players():
 +
  
@@ -461,7 +461,7 @@ diff --git a/minigames/chisel_gauntlet_multiplayer/scripts/chisel_gauntlet.gd b/
  
  func generate_random_cube_instructions():
  
-+	# [MP8] A mixed room runs the game's generate_random_cube_instructions (D120).
++	# [MP8] A mixed room runs the game's generate_random_cube_instructions.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_generate_random_cube_instructions()
 +		return
@@ -478,7 +478,7 @@ diff --git a/minigames/chisel_gauntlet_multiplayer/scripts/chisel_gauntlet.gd b/
 +	# [MP8] Memorise phase: everyone faces the jumbotron, showing the seats opposite
 +	NetworkManager.mp8_rpc(self, &"mp8_shot_rpc", ["memorize", 3.0])
 +
-+# The game's generate_random_cube_instructions, for a mixed room (D120).
++# The game's generate_random_cube_instructions, for a mixed room.
 +func _mp8_game_generate_random_cube_instructions():
 +
  	var instructions: Array[int] = []
@@ -488,7 +488,7 @@ diff --git a/minigames/chisel_gauntlet_multiplayer/scripts/chisel_gauntlet.gd b/
  
  func start_round_timer(_duration: float):
  
-+	# [MP8] A mixed room runs the game's start_round_timer (D120).
++	# [MP8] A mixed room runs the game's start_round_timer.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_start_round_timer(_duration)
 +		return
@@ -500,7 +500,7 @@ diff --git a/minigames/chisel_gauntlet_multiplayer/scripts/chisel_gauntlet.gd b/
 +	# [MP8] Carve phase: everyone looks at their own desk, showing whether new seats have visible desks
 +	NetworkManager.mp8_rpc(self, &"mp8_shot_rpc", ["desk", 2.0])
 +
-+# The game's start_round_timer, for a mixed room (D120).
++# The game's start_round_timer, for a mixed room.
 +func _mp8_game_start_round_timer(_duration: float):
 +
  	round_time_remaining = carving_duration

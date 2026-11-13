@@ -1,9 +1,17 @@
 diff --git a/scenes/local_lobby/scripts/local_lobby_player_controls.gd b/scenes/local_lobby/scripts/local_lobby_player_controls.gd
 --- a/scenes/local_lobby/scripts/local_lobby_player_controls.gd
 +++ b/scenes/local_lobby/scripts/local_lobby_player_controls.gd
-@@ -164,31 +164,17 @@ func connect_clickable_controls():
+@@ -163,32 +163,41 @@ func connect_clickable_controls():
+ 		press_speaker.play()
  	)
  
++# Eight cards at 75%, each centred in its 118 px slot.
++const MP8_CARD_SCALE := 0.75
++const MP8_SLOT_CENTRE := 67.25
++# The outfit icons are 26 px drawings in 32 px boxes; on screen they show at this multiple of their
++# size. Below 1x, nearest filtering drops whole pixel rows.
++const MP8_OUTFIT_ICON := 1.15
++
  func set_container_position(set_to_default: bool):
 -	var pos: Vector2
 -	if set_to_default:
@@ -29,12 +37,28 @@ diff --git a/scenes/local_lobby/scripts/local_lobby_player_controls.gd b/scenes/
 -	position = pos
 +	# Eight fixed cards in the scene's 960x540 logical canvas; never compact holes.
 +	set_anchors_preset(Control.PRESET_TOP_LEFT)
-+	scale = Vector2.ONE * 0.65
-+	position = Vector2(12 + seat_index * 118, 235 if set_to_default else 285)
++	scale = Vector2.ONE * MP8_CARD_SCALE
++	size.x = floorf(116.0 / MP8_CARD_SCALE)
++	position = Vector2(MP8_SLOT_CENTRE + seat_index * 118 - size.x * MP8_CARD_SCALE / 2.0, 235 if set_to_default else 285)
 +	# The host's crown is a row of this VBox and pushes the card down; shift up by that row so all 8 names line up.
 +	if main_player_icon.visible:
 +		position.y -= (main_player_icon.get_combined_minimum_size().y + get_theme_constant("separation")) * scale.y
-+	size.x = 170
++	_mp8_size_outfit()
++
++# Every outfit row (any HBox of the card but the name letters, so a mod's added row too) and the
++# ready box, grown from the scene's own sizes, kept as meta the first time.
++func _mp8_size_outfit() -> void:
++	var f := MP8_OUTFIT_ICON * 26.0 / (MP8_CARD_SCALE * 32.0)
++	var boxes: Array = [ready_toggle]
++	for row in get_children():
++		if row is HBoxContainer and row != name_entry_selector:
++			boxes.append_array(row.get_children().filter(func(n): return n is TextureRect))
++	for t in boxes.filter(func(n): return n is TextureRect):
++		if not t.has_meta(&"mp8_base"):
++			t.set_meta(&"mp8_base", t.custom_minimum_size if t.custom_minimum_size != Vector2.ZERO else (t.texture.get_size() if t.texture else Vector2.ZERO))
++		t.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
++		t.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
++		t.custom_minimum_size = t.get_meta(&"mp8_base") * f
  
  func set_container_position_name_selection():
 -	position = Vector2(position.x, 127)
@@ -42,7 +66,7 @@ diff --git a/scenes/local_lobby/scripts/local_lobby_player_controls.gd b/scenes/
  
  func set_active_element_from_mouse(_active_element, _direction: int = 0):
  
-@@ -219,6 +205,7 @@ func clear_active_element():
+@@ -219,6 +228,7 @@ func clear_active_element():
  
  func set_player_ready(_is_ready: bool):
  	is_ready = _is_ready
@@ -50,7 +74,7 @@ diff --git a/scenes/local_lobby/scripts/local_lobby_player_controls.gd b/scenes/
  
  	if is_ready:
  		ready_toggle.texture = ready_texture
-@@ -258,7 +245,7 @@ func set_active(
+@@ -258,7 +268,7 @@ func set_active(
  
  	if rejoin_player_data:
  		var customization = rejoin_player_data.get("customization", [
@@ -59,7 +83,7 @@ diff --git a/scenes/local_lobby/scripts/local_lobby_player_controls.gd b/scenes/
  		])
  		customization_assigner.assign_hat(customization[0])
  		customization_assigner.assign_glasses(customization[1])
-@@ -266,7 +253,7 @@ func set_active(
+@@ -266,7 +276,7 @@ func set_active(
  	else:
  		customization_assigner.assign_hat("none")
  		customization_assigner.assign_glasses("none")
@@ -68,7 +92,7 @@ diff --git a/scenes/local_lobby/scripts/local_lobby_player_controls.gd b/scenes/
  
  	for child in get_children():
  		child.visible = false
-@@ -495,15 +482,14 @@ func _on_name_confirmed(_name):
+@@ -495,15 +505,14 @@ func _on_name_confirmed(_name):
  	if is_joystick:
  		press_speaker.play()
  
@@ -86,7 +110,7 @@ diff --git a/scenes/local_lobby/scripts/local_lobby_player_controls.gd b/scenes/
  
  	name_entry_selector.set_inactive()
  	name_accept_button.visible = false
-@@ -514,3 +500,15 @@ func _on_name_confirmed(_name):
+@@ -514,3 +523,15 @@ func _on_name_confirmed(_name):
  
  	active = true
  	can_control = true

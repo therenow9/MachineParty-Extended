@@ -185,7 +185,7 @@ diff --git a/minigames/duck_hunt/scripts/duck_hunt.gd b/minigames/duck_hunt/scri
  
  func spawn_players():
  
-+	# [MP8] A mixed room runs the game's spawn_players (D120).
++	# [MP8] A mixed room runs the game's spawn_players.
 +	if not NetworkManager.mp8_room_extended():
 +		await _mp8_game_spawn_players()
 +		return
@@ -329,7 +329,7 @@ diff --git a/minigames/duck_hunt/scripts/duck_hunt.gd b/minigames/duck_hunt/scri
 +		# Local identities include keyboard -1 and controller 0; neither is a peer ID.
 +		_mp8_ack_local_roles()
 +
-+# The game's spawn_players, for a mixed room (D120).
++# The game's spawn_players, for a mixed room.
 +func _mp8_game_spawn_players():
 +
  	await get_tree().create_timer(1, false).timeout
@@ -378,7 +378,7 @@ diff --git a/minigames/duck_hunt/scripts/duck_hunt.gd b/minigames/duck_hunt/scri
  
  func check_game_end():
  
-+	# [MP8] A mixed room runs the game's check_game_end (D120).
++	# [MP8] A mixed room runs the game's check_game_end.
 +	if not NetworkManager.mp8_room_extended():
 +		await _mp8_game_check_game_end()
 +		return
@@ -406,7 +406,7 @@ diff --git a/minigames/duck_hunt/scripts/duck_hunt.gd b/minigames/duck_hunt/scri
 +		state_machine.transition_to_rpc.rpc(&"Finished")
 +		set_effects_visibility_rpc.rpc(false)
 +
-+# The game's check_game_end, for a mixed room (D120).
++# The game's check_game_end, for a mixed room.
 +func _mp8_game_check_game_end():
 +
  	if resetting:
@@ -497,7 +497,7 @@ diff --git a/minigames/duck_hunt/scripts/duck_hunt.gd b/minigames/duck_hunt/scri
  @rpc("any_peer", "call_local", "reliable")
  func acknowledge_role_rpc(_network_id: int):
 +
-+	# [MP8] A mixed room runs the game's acknowledge_role_rpc (D120).
++	# [MP8] A mixed room runs the game's acknowledge_role_rpc.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_acknowledge_role_rpc(_network_id)
 +		return
@@ -518,7 +518,7 @@ diff --git a/minigames/duck_hunt/scripts/duck_hunt.gd b/minigames/duck_hunt/scri
 +			first_round = false
 +			state_machine.transition_to_rpc.rpc(&"RoleReveal")
 +
-+# The game's acknowledge_role_rpc, for a mixed room (D120).
++# The game's acknowledge_role_rpc, for a mixed room.
 +func _mp8_game_acknowledge_role_rpc(_network_id: int):
  	if not multiplayer.is_server():
  		return
@@ -527,7 +527,7 @@ diff --git a/minigames/duck_hunt/scripts/duck_hunt.gd b/minigames/duck_hunt/scri
  @rpc("any_peer", "call_local", "reliable")
  func remove_player_rpc(_network_id: int):
  
-+	# [MP8] A mixed room runs the game's remove_player_rpc (D120).
++	# [MP8] A mixed room runs the game's remove_player_rpc.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_remove_player_rpc(_network_id)
 +		return
@@ -554,7 +554,7 @@ diff --git a/minigames/duck_hunt/scripts/duck_hunt.gd b/minigames/duck_hunt/scri
 +	possible_hunters.erase(_network_id)
 +	players_acknowledged.erase(_network_id)
 +
-+# The game's remove_player_rpc, for a mixed room (D120).
++# The game's remove_player_rpc, for a mixed room.
 +func _mp8_game_remove_player_rpc(_network_id: int):
 +
  	var player_instance = null
@@ -565,7 +565,7 @@ diff --git a/minigames/duck_hunt/scripts/duck_hunt.gd b/minigames/duck_hunt/scri
  
  func player_disconnected(_network_id: int):
 +	# [MP8] The room is read before the await, which can outlast this minigame's latch. A mixed room
-+	# keeps the game's own end check (D116).
++	# keeps the game's own end check.
 +	var mp8_ext: bool = NetworkManager.mp8_room_extended()
  	super.player_disconnected(_network_id)
  
@@ -589,7 +589,7 @@ diff --git a/minigames/duck_hunt/scripts/duck_hunt.gd b/minigames/duck_hunt/scri
  
  func _on_player_finished(_network_id: int):
  
-+	# [MP8] A mixed room runs the game's _on_player_finished (D120).
++	# [MP8] A mixed room runs the game's _on_player_finished.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_on_player_finished(_network_id)
 +		return
@@ -615,7 +615,7 @@ diff --git a/minigames/duck_hunt/scripts/duck_hunt.gd b/minigames/duck_hunt/scri
 +
 +	check_game_end()
 +
-+# The game's _on_player_finished, for a mixed room (D120).
++# The game's _on_player_finished, for a mixed room.
 +func _mp8_game_on_player_finished(_network_id: int):
 +
  	if GameManager.local_game:
@@ -625,7 +625,7 @@ diff --git a/minigames/duck_hunt/scripts/duck_hunt.gd b/minigames/duck_hunt/scri
  
  func _on_player_died(_network_id: int):
  
-+	# [MP8] A mixed room runs the game's _on_player_died (D120).
++	# [MP8] A mixed room runs the game's _on_player_died.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_on_player_died(_network_id)
 +		return
@@ -651,7 +651,7 @@ diff --git a/minigames/duck_hunt/scripts/duck_hunt.gd b/minigames/duck_hunt/scri
 +
 +	check_game_end()
 +
-+# The game's _on_player_died, for a mixed room (D120).
++# The game's _on_player_died, for a mixed room.
 +func _mp8_game_on_player_died(_network_id: int):
 +
  	if GameManager.local_game:

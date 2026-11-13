@@ -41,7 +41,7 @@ diff --git a/minigames/manufacture_gun/scripts/manufacture_gun.gd b/minigames/ma
 +	mp8_player_count = PlayerManager.player_presences.size()
 +	# Every peer's MultiplayerSpawner enforces spawn_limit on the spawns it receives, so PlayerSpawner's
 +	# shipped limit of 4 is raised on each machine. The scene gives the other two no limit (0, unlimited).
-+	# A mixed room keeps the scene's limits (D120).
++	# A mixed room keeps the scene's limits.
 +	if NetworkManager.mp8_room_extended():
 +		for spawner_name in ["PlayerSpawner", "WorkstationSpawner", "ItemSpawner"]:
 +			var sp: MultiplayerSpawner = get_node_or_null(NodePath(spawner_name)) as MultiplayerSpawner
@@ -114,7 +114,7 @@ diff --git a/minigames/manufacture_gun/scripts/manufacture_gun.gd b/minigames/ma
 +
 +	if not multiplayer.is_server():
 +		return
-+	# A mixed room leaves the players where the game put them (D116).
++	# A mixed room leaves the players where the game put them.
 +	if not NetworkManager.mp8_room_extended():
 +		print("[MP8] Firearm Factory: a mixed room, no start-of-game stuck check")
 +		return
@@ -197,7 +197,7 @@ diff --git a/minigames/manufacture_gun/scripts/manufacture_gun.gd b/minigames/ma
  func initialize(_round_number: int, _total_rounds: int, _scores: Dictionary = {}):
  	super.initialize(_round_number, _total_rounds, _scores)
  
-+	# A mixed room runs only the game's three spawns here (D120).
++	# A mixed room runs only the game's three spawns here.
 +	var mp8_ext: bool = NetworkManager.mp8_room_extended()
 +	if mp8_ext:
 +		_mp8v_expand_for_roster()
@@ -311,7 +311,7 @@ diff --git a/minigames/manufacture_gun/scripts/manufacture_gun.gd b/minigames/ma
 +		return
 +	_mp8v_spawn_items()
 +
-+# The game's spawn_items, for a mixed room (D120).
++# The game's spawn_items, for a mixed room.
 +func _mp8_game_spawn_items():
 +
  	var spawn_positions: Array[Vector3]
@@ -368,7 +368,7 @@ diff --git a/minigames/manufacture_gun/scripts/manufacture_gun.gd b/minigames/ma
  
 +
 +# [MP8] The game's spawned_workstation_rpc, refused unless the server sent it; the relay sends it in an
-+# Extended room. A mixed room takes it from any peer, as the game does (D116).
++# Extended room. A mixed room takes it from any peer, as the game does.
 +func mp8_spawned_workstation_rpc():
 +	if NetworkManager.mp8_room_extended() and not _mp8_host_command():
 +		return
@@ -379,7 +379,7 @@ diff --git a/minigames/manufacture_gun/scripts/manufacture_gun.gd b/minigames/ma
  
  @rpc("any_peer", "call_local", "reliable")
  func request_item_sequence_rpc(network_id: int):
-+	# [MP8] A mixed room runs the game's body, without the sender, bench and repeat checks (D116).
++	# [MP8] A mixed room runs the game's body, without the sender, bench and repeat checks.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_item_sequence(network_id)
 +		return
@@ -435,7 +435,7 @@ diff --git a/minigames/manufacture_gun/scripts/manufacture_gun.gd b/minigames/ma
 +
 +
 +# [MP8] The game's receive_item_sequence_rpc, refused unless the server sent a well-formed sequence;
-+# the relay sends it in an Extended room. A mixed room takes any sequence from any peer, as the game does (D116).
++# the relay sends it in an Extended room. A mixed room takes any sequence from any peer, as the game does.
 +func mp8_receive_item_sequence_rpc(sequence: Array):
 +	if not NetworkManager.mp8_room_extended():
 +		update_sequence(sequence)
@@ -485,7 +485,7 @@ diff --git a/minigames/manufacture_gun/scripts/manufacture_gun.gd b/minigames/ma
 +
  
  func player_disconnected(_network_id: int):
-+	# [MP8] A mixed room keeps the game's own handler (D116, D120).
++	# [MP8] A mixed room keeps the game's own handler.
 +	var mp8_ext: bool = NetworkManager.mp8_room_extended()
  	super.player_disconnected(_network_id)
  
@@ -515,7 +515,7 @@ diff --git a/minigames/manufacture_gun/scripts/manufacture_gun.gd b/minigames/ma
 +
 +	check_game_end()
 +
-+# The game's player_disconnected after its super call, for a mixed room (D120).
++# The game's player_disconnected after its super call, for a mixed room.
 +func _mp8_game_player_disconnected_tail(_network_id: int):
 +
  	var player_instance = active_players[_network_id]
@@ -528,7 +528,7 @@ diff --git a/minigames/manufacture_gun/scripts/manufacture_gun.gd b/minigames/ma
 +
 +
 +# [MP8V] Firearm Factory at 5-8 players: the item copies and the vanilla gun are machine-party-8p's, adapted from
-+# its manufacture_gun.gd; the bench layout is the owner's (D128). Every step is gated on roster > 4, so a 1-4 game
++# its manufacture_gun.gd; the bench layout is the owner's. Every step is gated on roster > 4, so a 1-4 game
 +# plays the shipped scene.
 +const MP8V_VANILLA_SLOTS: int = 4
 +# Two items stop touching at (w1 + w2) / 2, 1.07 for the average pair. World space, because 25 of the 26

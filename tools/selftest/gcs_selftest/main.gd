@@ -434,12 +434,12 @@ func _run() -> void:
 	await _lobby_drop_out()
 
 	say("step: the adapter hint's folder")
-	# Shown only when SDL claims the adapter twice, which headless never sees; the bundle's folder is D157's.
+	# Shown only when SDL claims the adapter twice, which headless never sees; the folder is the bundle's.
 	var hint: String = api._duplicate_hint()
 	var where := "mods/machine_party_extended/gamecube_support" if api.has_meta("mpml_dir") else "mods/gamecube_support"
 	ok("the hint names this mod's folder (%s)" % where, hint.contains("in the %s folder" % where), hint)
 
-	say("step: the toasts follow the game's language (D173)")
+	say("step: the toasts follow the game's language")
 	var sixteen := []
 	for i in 16:
 		sixteen.append({"name": "Nintendo GameCube Controller", "guid": "x"})
@@ -452,7 +452,7 @@ func _run() -> void:
 	ok("the console's style line stays English", not _has_cjk(api._style_label()), api._style_label())
 	api.show_toast("", 0.0)
 	var toast: Label = api.get("_toast")
-	ok("the toast wraps inside a margin (D173)", toast != null and toast.autowrap_mode != TextServer.AUTOWRAP_OFF and toast.offset_left > 0 and toast.offset_right < 0, [toast.autowrap_mode, toast.offset_left, toast.offset_right] if toast != null else null)
+	ok("the toast wraps inside a margin", toast != null and toast.autowrap_mode != TextServer.AUTOWRAP_OFF and toast.offset_left > 0 and toast.offset_right < 0, [toast.autowrap_mode, toast.offset_left, toast.offset_right] if toast != null else null)
 
 	say("step: console")
 	var con = _loader.get_node_or_null("console")
@@ -469,7 +469,7 @@ func _run() -> void:
 		ok("gc layout command works", api.config["button_layout"] == "positional")
 		input.text_submitted.emit("mods")
 		var log_text: String = con.get("_log").get_parsed_text()
-		# The console itself, since a mod hosted in Extended's bundle is not in the loader's list (D157).
+		# The console itself, since a mod hosted in Extended's bundle is not in the loader's list.
 		ok("other console commands still work", log_text.contains("console v"), log_text.right(200))
 		input.text_submitted.emit("gc pads")
 		if not cfg_before.is_empty():
@@ -587,7 +587,7 @@ func _press(device: int, button: int) -> void:
 	_button(device, button, false)
 	await frames(2)
 
-# PC8: a GameCube pad's B on its name screen drops its player out of the local lobby.
+# A GameCube pad's B on its name screen drops its player out of the local lobby.
 func _lobby_drop_out() -> void:
 	say("step: lobby drop-out")
 	var D: GDScript = api.lobby_drop_out
@@ -603,6 +603,14 @@ func _lobby_drop_out() -> void:
 		return
 	var layout0: String = api.config["button_layout"]
 	api.set_layout("nintendo", false)
+	# Better Couch Lobby opens a name screen on its saved names when there are any: B must still drop out there.
+	var names = _loader.registry("couch_lobby").get("names")
+	var names0: Array = names.names.duplicate() if names != null else []
+	var persist0: bool = names.persist if names != null else true
+	if names != null:
+		names.persist = false
+		names.names = ["GCNAME"]
+	var on_list := func(p): return names == null or p.name_entry_selector.get_node_or_null("CouchLobbyNameList") != null
 	get_tree().change_scene_to_file("res://scenes/local_lobby/local_lobby.tscn")
 	await frames(30)
 	await get_tree().create_timer(1.0).timeout
@@ -626,18 +634,32 @@ func _lobby_drop_out() -> void:
 	await frames(3)
 	await _press(fg, JOY_BUTTON_B)
 	ok("GameCube B in the outfit panel: the name screen, still seated", lobby.player_data.has(1) and panels[1].name_entry_selector.active, lobby.player_data.keys())
+	ok("the name screen opened on the saved names' list", on_list.call(panels[1]))
 	await _press(fg, JOY_BUTTON_B)
 	ok("GameCube B on the name screen: dropped out", not lobby.player_data.has(1) and panels[1].assigned_player_id == -1, lobby.player_data.keys())
+	ok("name_back: a GameCube pad's B is action_2, another pad gets nothing", api.name_back(fg) == &"action_2" and api.name_back(fo) == &"", [api.name_back(fg), api.name_back(fo)])
+	ok("Better Couch Lobby's panels are marked when it is installed, so this helper stands aside", panels.all(func(p): return p.has_meta(&"couch_lobby_name_back") == (names != null)))
+	if names != null:
+		lobby.join(fg, true)
+		await frames(3)
+		await _press(fg, JOY_BUTTON_A)
+		ok("A on the pencil: the letters", not on_list.call(panels[1]) and panels[1].name_entry_selector.character_selectors[0].visible)
+		await _press(fg, JOY_BUTTON_B)
+		ok("GameCube B on the letters: back on the list, still seated", lobby.player_data.has(1) and on_list.call(panels[1]), lobby.player_data.keys())
+		await _press(fg, JOY_BUTTON_B)
+		ok("GameCube B on the list: dropped out", not lobby.player_data.has(1), lobby.player_data.keys())
 	await _press(fo, JOY_BUTTON_B)
 	await _press(fo, JOY_BUTTON_B)
 	ok("another pad's B on the name screen: still seated", lobby.player_data.has(0) and panels[0].name_entry_selector.active, lobby.player_data.keys())
 	api.set_layout("positional", false)
 	lobby.join(fg, true)
 	await frames(3)
+	ok("positional: the join opened on the saved names' list", on_list.call(panels[1]))
 	await _press(fg, JOY_BUTTON_B)
 	ok("positional: the east button (labelled X) doesn't drop out", lobby.player_data.has(1), lobby.player_data.keys())
 	await _press(fg, JOY_BUTTON_X)
 	ok("positional: GameCube B (west) drops out", not lobby.player_data.has(1), lobby.player_data.keys())
+	ok("name_back under positional: action_3", api.name_back(fg) == &"action_3", api.name_back(fg))
 	api.set_layout("nintendo", false)
 	await _press(fo, JOY_BUTTON_START)
 	ok("Start still drops any pad out", not lobby.player_data.has(0), lobby.player_data.keys())
@@ -646,6 +668,9 @@ func _lobby_drop_out() -> void:
 	_drop_clones(fg)
 	_drop_clones(fo)
 	api.set_layout(layout0, false)
+	if names != null:
+		names.names = names0
+		names.persist = persist0
 	PlayerManager.reset()
 	get_tree().change_scene_to_file(MAIN_MENU_SCENE)
 	await frames(10)

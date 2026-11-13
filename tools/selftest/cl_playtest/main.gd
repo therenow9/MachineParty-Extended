@@ -19,6 +19,9 @@ extends Node
 # ";stall=<seconds>" (default AUTO_STALL_SEC) is how long without a new load is a stall.
 # ";drop=<seconds>" then disconnects that fake pad (the game's own joy_connection_changed) that long into the match.
 # ";catches=1" runs Table Manners' forced catches (_check_table_catches) in the first Table Manners load, for a recording.
+# ";tmstage=0+2,6/3+7" stages Table Manners' shots instead, for the renders (_table_stage): one list per load, each
+# entry a seat or seats caught in that order; ";tmcam=game/close" films each load from the game's camera or from
+# closer on the coach.
 # ";look=hi" renders 3D at the window's size for the trailer's look test: the root window scales canvas items
 # instead of the game's 960x540 viewport, and each SubViewport (the split-screen tiles) is scaled by the same factor.
 # Movie Maker keeps the size it started at and records only the top-left corner of that, so with MP_LOOK_STILLS=<dir>
@@ -62,10 +65,10 @@ const AUTO_DEVICE := 100
 const AUTO_GRACE_SEC := 20
 # An unattended run with no new load for this long has stalled: it records that and ends.
 const AUTO_STALL_SEC := 600
-# The minigames whose 8-player layout a launch counts (docs/plans/2026-10-07-8p-variants.md).
+# The minigames whose 8-player layout a launch counts.
 const LAYOUT_MINIGAMES := ["EscalatorPit", "ForkliftCertified", "SpineBreaker", "BurnRecycle", "DuckHunt",
 	"ChiselGauntlet", "KnifeAtTheOffice", "ManufactureGun", "SmokeBreak", "GreenPea", "JunkPlatform"]
-# 8 Player Support plays machine-party-8p's version of these (D68); every other build plays Overtime's.
+# 8 Player Support plays machine-party-8p's version of these; every other build plays Overtime's.
 const MP8_PICKED_8P := ["EscalatorPit", "ForkliftCertified", "KnifeAtTheOffice", "ManufactureGun"]
 # Offline Bots' bot devices start here (local_lobby_override.gd BOT_DEVICE_BASE).
 const BOT_DEVICE_BASE := 900001
@@ -186,7 +189,7 @@ func _fill_bots() -> void:
 			return
 
 # Overtime 1.7's local game lists seats and pads top-left, over the play (local_game.gd
-# _mp8_create_device_status, labels in _mp8_device_labels); the playtest hides it. 8 Player Support has none (D76).
+# _mp8_create_device_status, labels in _mp8_device_labels); the playtest hides it. 8 Player Support has none.
 func _hide_seat_list() -> void:
 	var game := get_tree().current_scene
 	if game == null or game.scene_file_path != LOCAL_GAME:
@@ -293,7 +296,7 @@ func _wanted(names: PackedStringArray) -> Array:
 static func parse_launch(text: String) -> Dictionary:
 	if text.strip_edges().is_empty():
 		return {}
-	var out := {"ok": true, "error": "", "minigame": "", "mode": "split", "bots": MAX_BOTS, "headless_join": -1, "auto": 0, "drop": 0, "stall": AUTO_STALL_SEC, "grace": AUTO_GRACE_SEC, "catches": false, "throwtest": false, "look": "native", "difficulty": -1}
+	var out := {"ok": true, "error": "", "minigame": "", "mode": "split", "bots": MAX_BOTS, "headless_join": -1, "auto": 0, "drop": 0, "stall": AUTO_STALL_SEC, "grace": AUTO_GRACE_SEC, "catches": false, "throwtest": false, "look": "native", "difficulty": -1, "tmstage": "", "tmcam": ""}
 	for part in text.split(";", false):
 		var kv: PackedStringArray = part.split("=", true, 1)
 		var key: String = kv[0].strip_edges()
@@ -316,6 +319,10 @@ static func parse_launch(text: String) -> Dictionary:
 			out["grace"] = int(val)
 		elif key == "catches" and val == "1":
 			out["catches"] = true
+		elif key == "tmstage" and not val.is_empty():
+			out["tmstage"] = val
+		elif key == "tmcam" and Array(val.split("/")).all(func(c): return c == "game" or c == "close"):
+			out["tmcam"] = val
 		elif key == "throwtest" and val == "1":
 			out["throwtest"] = true
 		elif key == "look" and val == "hi":
@@ -708,7 +715,7 @@ func _dress_presences() -> void:
 		if _frame_log != null:
 			_frame_log.comment(line)
 
-# The trailer's cast (tools/trailer_cast's registry, D123), in seat order; empty without that dev mod.
+# The trailer's cast (tools/trailer_cast's registry), in seat order; empty without that dev mod.
 func _cast() -> Array:
 	return _loader.registry("trailer_cast").get("cast", [])
 
@@ -777,6 +784,8 @@ func _drive_auto(delta: float) -> void:
 		_auto_bot_state.clear()
 		if _auto_loads >= int(_launch["auto"]):
 			_auto_done_usec = now
+		if not str(_launch.get("tmstage", "")).is_empty() and mg.get("coach_handler") != null:
+			_table_stage(mg, _auto_loads - 1)
 	if is_instance_valid(mg) and mg is Node:
 		_drive_fake_seat(mg, delta)
 		_walk_to_house(mg, now)
@@ -1186,7 +1195,7 @@ func _check_launch() -> void:
 	if int(_launch["auto"]) == 0:
 		get_tree().change_scene_to_file(MAIN_MENU)
 
-# 8 Player Support 0.8.0 (D89): a local game never shows Chisel Gauntlet's dead lobby, so its camera never draws.
+# 8 Player Support 0.8.0: a local game never shows Chisel Gauntlet's dead lobby, so its camera never draws.
 func _check_dead_lobby(mg) -> void:
 	if not is_instance_valid(mg) or not mg.has_method("mp8_show_dead_lobby"):
 		say("NOTE ChiselGauntlet: no mp8_show_dead_lobby in this build; the dead lobby check skipped")
@@ -1194,7 +1203,7 @@ func _check_dead_lobby(mg) -> void:
 	var mode: int = mg.dead_camera.get_viewport().render_target_update_mode
 	ok("Chisel Gauntlet: the dead lobby's camera does not draw in a local game", mode == SubViewport.UPDATE_DISABLED, mode)
 
-# 8 Player Support 0.9.0 (D90): in a local game Chisel's and Knife's omni lights draw dual-paraboloid shadows,
+# 8 Player Support 0.9.0: in a local game Chisel's and Knife's omni lights draw dual-paraboloid shadows,
 # except Knife's fog-of-war lights, whose shadow is each player's line of sight. Overtime keeps the cube.
 func _check_omni_shadows(mg, mg_name: String, n: int) -> void:
 	if _loader.has_mod("overtime") or not _loader.has_mod("mp8_support") or not is_instance_valid(mg):
@@ -1210,6 +1219,17 @@ func _check_omni_shadows(mg, mg_name: String, n: int) -> void:
 	ok("%s: %d omni lights dual paraboloid in a local game, %d fog-of-war lights cube" % [mg_name, lights.size() - fog.size(), fog.size()],
 		lights.size() > fog.size() and fog.size() == (n if mg_name == "KnifeAtTheOffice" else 0) and wrong.is_empty(),
 		wrong.map(func(l): return "%s mode %d" % [mg.get_path_to(l), l.omni_shadow_mode]))
+	# Each flashlight's hand glow draws no shadow in split screen; the beam keeps its own.
+	if mg_name == "KnifeAtTheOffice":
+		var glows: Array = []
+		var beams_shadowed := true
+		for p in mg.players.values():
+			glows.append_array(p.flashlight.find_children("*", "OmniLight3D", true, false))
+			beams_shadowed = beams_shadowed and p.flashlight.shadow_enabled
+		var lit: Array = glows.filter(func(l): return l.shadow_enabled)
+		ok("KnifeAtTheOffice: %d flashlight hand glows without shadow in a local game, every beam still shadowed" % glows.size(),
+			glows.size() == n and lit.is_empty() and beams_shadowed,
+			{"glows": glows.size(), "shadowed": lit.map(func(l): return mg.get_path_to(l)), "beams_shadowed": beams_shadowed})
 
 # 8 Player Support 0.9.0: a local hunt hides every name over a head, the syringe holder's too. Calls the hunt's
 # start directly with the first player marked infected, so it runs after the tile checks: the music, the projector
@@ -1228,9 +1248,15 @@ func _check_hunt_names(mg) -> void:
 	var shown: Array = players.filter(func(p): return p.player_name_label.animation_player.assigned_animation != "hide name")
 	ok("Inside Job: the hunt hides all %d names over heads in a local game, the infected one's too" % players.size(),
 		shown.is_empty(), shown.map(func(p): return p.player_presence.network_name))
+	# The hand glows again once the hunt has started: nothing in the hunt turns a hand glow's shadow back on.
+	var lit: Array = []
+	for p in players:
+		lit.append_array(p.flashlight.find_children("*", "OmniLight3D", true, false).filter(func(l): return l.shadow_enabled))
+	ok("Inside Job: the flashlights' hand glows still draw no shadow once the hunt has started", lit.is_empty(),
+		lit.map(func(l): return mg.get_path_to(l)))
 
 # Wrong Way's hand IKs pull the hands onto the handrails: off where the eight-strip build hid them, as shipped
-# at 4 seats. The torso lean is kept at both (the owner's pick, D101).
+# at 4 seats. The torso lean is kept at both.
 func _check_wrong_way_arms(mg, n: int, rails_hidden: bool) -> void:
 	ok("Wrong Way: the players are spawned", await _wait(func(): return mg.player_characters.size() == n, 60.0), mg.player_characters.size())
 	await get_tree().process_frame
@@ -1246,7 +1272,7 @@ func _check_wrong_way_arms(mg, n: int, rails_hidden: bool) -> void:
 	off = mg.player_characters.values().filter(wrong)
 	ok("Wrong Way: a second into the run the hand IKs are still %s" % state, off.is_empty(), said.call(off))
 
-# Debris Platforms on the couch (D102): at 5-8 seats the decks on the 34 x 18 oval at one height, each compactor
+# Debris Platforms on the couch: at 5-8 seats the decks on the 34 x 18 oval at one height, each compactor
 # hung from its deck's lift node, the stock floor collider off; at 4 seats or fewer the octagon stays.
 func _check_debris_couch(mg, n: int) -> void:
 	if not "_mp8_couch" in mg:
@@ -1340,7 +1366,7 @@ static func _predict_throw(h0: float, speed: float, g: float, damp: float, dt: f
 			break
 	return out
 
-# Aimed throws (D113): on at 5-8 seats, off at 4 (local; online at 5-8 is owed to the two-machine check). Every
+# Aimed throws: on at 5-8 seats, off at 4 (local; online at 5-8 is owed to the two-machine check). Every
 # player finds the minigame among its ancestors. A throw from one end of the oval at the other is strengthened
 # past stock, below the cap, to reach the target's chest; at 4 seats the same throw keeps stock. Needs play: only
 # active players are targets.
@@ -1383,7 +1409,7 @@ func _check_debris_aim(mg, n: int) -> void:
 	ok("Debris Platforms aim: %s at %s, %.1f apart, gets more than stock and less than the cap, reaching their chest" % [thrower.name, target.name, dist],
 		power > thrower.throw_power and power < thrower.throw_power * 1.75 and absf(reach - dist) < 0.5, [power, reach, dist])
 
-# The second spider's look (D103): device 2 near black with the hourglass on its body bone, device 1
+# The second spider's look: device 2 near black with the hourglass on its body bone, device 1
 # neither. On a player's back the hourglass comes with the tint, is scaled to nothing while the back
 # visual is hidden (bone 34's pose scale), and leaves with the white tint.
 func _check_spider_look(mg, n: int) -> void:
@@ -1429,7 +1455,7 @@ func _check_spider_look(mg, n: int) -> void:
 
 # The minigame built its 8-player layout: seats, markers, rooms, desks and devices counted, for n players (above 4).
 # On 8 Player Support (0.2.0 or later) the MP8_PICKED_8P four are machine-party-8p's version; elsewhere all are Overtime's.
-# Beside Overtime it refuses to mount (D51) though has_mod still reports it, so Overtime is checked first.
+# Beside Overtime it refuses to mount though has_mod still reports it, so Overtime is checked first.
 func _check_layout(mg, mg_name: String, n: int) -> void:
 	if not is_instance_valid(mg):
 		ok("%s: the minigame is there to count" % mg_name, false)
@@ -1567,7 +1593,7 @@ func _check_layout(mg, mg_name: String, n: int) -> void:
 			if on_mp8:
 				await _check_smoke_toss(mg, n)
 
-# PD13: every seat's finished cigarette plays a toss look; seats 5-8 the look of the original seat
+# Every seat's finished cigarette plays a toss look; seats 5-8 the look of the original seat
 # nearest them, worked out here from the seats' positions, not from the code's own pick.
 func _check_smoke_toss(mg, n: int) -> void:
 	if not await _wait(func(): return mg.active_players.size() == n, 60.0):
@@ -1590,9 +1616,9 @@ func _check_smoke_toss(mg, n: int) -> void:
 			wrong.append("%d wants %s" % [i + 1, want])
 	ok("Smoke Break: every seat's finish plays its toss look (%d seats)" % n, wrong.is_empty(), [got, wrong])
 
-# D128, the owner's bench layout at 5-8, as picked from in-game renders: [x, z, yaw] in seat order, the 6 layout for
+# The bench layout at 5-8, as picked from in-game renders: [x, z, yaw] in seat order, the 6 layout for
 # 5-6 players and the 8 layout for 7-8, the unused far-right corner keeping one empty desk. The room loses three
-# props and their collision, the right wall's pipe run goes up over the lamps (D133), and the recipe hologram stays down.
+# props and their collision, the right wall's pipe run goes up over the lamps, and the recipe hologram stays down.
 const FF_BENCHES_6 := [[-8.00, -7.50, 0.0], [-8.00, 7.50, 0.0], [1.75, -10.70, 90.0], [1.75, 10.70, 90.0], [11.75, -8.00, 0.0], [11.75, 8.00, 0.0]]
 const FF_BENCHES_8 := [[-7.75, -7.75, 0.0], [-7.75, 7.75, 0.0], [-1.50, -10.70, 90.0], [-1.50, 10.70, 90.0], [5.50, -10.70, 90.0], [5.50, 10.70, 90.0], [11.75, -8.00, 0.0], [11.75, 8.00, 0.0]]
 const FF_GONE := ["manufacture gun artwork pass2/desk left", "manufacture gun artwork pass2/desk trolley", "manufacture gun artwork pass2/pallet"]
@@ -1690,7 +1716,7 @@ func _check_bench_layout(mg, n: int) -> void:
 			moved.append([i + 1, pc.global_position])
 	ok("Firearm Factory 8p: every player starts on their own spawn (the stuck check moves nobody)", moved.is_empty(), moved)
 
-# PD14: the drop's ray (Dropcast: 2.5 up, straight down, mask 3) over another player's bench meets that bench's
+# The drop's ray (Dropcast: 2.5 up, straight down, mask 3) over another player's bench meets that bench's
 # body and the drop is refused; over your own bench and beside the other one it isn't.
 func _check_bench_drop(mg) -> void:
 	if not await _wait(func(): return mg.workstations.size() >= 2 and mg.workstations.all(func(w): return w.player_presence != null), 60.0):
@@ -1714,55 +1740,117 @@ func _down_hit(space: PhysicsDirectSpaceState3D, from: Vector3):
 	var hit := space.intersect_ray(PhysicsRayQueryParameters3D.create(from, from + Vector3(0, -10, 0), 3))
 	return hit.get("collider")
 
-# Table Manners' catches (D107, D114) on forced glances once the round plays. A round of 6 or more catches two
+# Table Manners' catches on forced glances once the round plays. A round of 6 or more catches two
 # a glance to its end: each is frozen at its press and nobody is shot until the second press or the glance's end,
-# then both fall in catch order MP8_NEXT_SHOT (1.6 s) apart. At 1-5, the game's instant shot of the first press only.
+# then both fall in catch order, 1.4 s apart on one side of the table and 2.25 s across it. At 1-5, the
+# game's instant shot of the first press only. At 6+ the lone catch is a borrowed seat and the pair two seats on the
+# right that share the stock aim 3; at 8 a pair across the table follows. Each bang is measured against the head it
+# should hit (_table_watch).
 # Runs once per launch: a headless catches=1 launch would otherwise start it from both paths.
 func _check_table_catches(mg, n: int) -> void:
-	if _catches_running:
+	if _catches_running or not str(_launch.get("tmstage", "")).is_empty():
 		return
 	_catches_running = true
 	if not await _wait(func(): return mg.player_characters.size() == n and mg.player_characters.values().all(func(p): return p.active), 90.0):
 		ok("Table Manners: the round starts, to force the coach's glances", false, mg.player_characters.size())
 		return
 	if n >= 6:
-		await _table_single_catch(mg)
-		await _table_double_catch(mg)
+		await _table_single_catch(mg, [n - 2])
+		await _table_double_catch(mg, [3, n - 1])
+		if n >= 8:
+			await _table_across_catch(mg, [4, 1])
 		await _table_double_late(mg)
 	else:
 		await _table_instant_catch(mg)
 
-func _table_single_catch(mg) -> void:
-	var g: Dictionary = await _table_glance(mg, 1.0, 1, true)
+func _table_single_catch(mg, prefer: Array) -> void:
+	var w := {}
+	_table_watch(mg, prefer, w)
+	var g: Dictionary = await _table_glance(mg, 1.0, 1, true, prefer)
 	if not g["ok"]:
+		w["stop"] = true
 		ok("Table Manners: a glance to force for one catch", false, g)
 		return
 	ok("Table Manners: one catch at %d still eating waits frozen, the coach still looking" % g["eating"],
 		g["paused1"] and not g["exec1"] and not g["reading1"], g)
 	var deaths: Array = await _table_deaths(mg, 2, 5.0)
+	w["stop"] = true
 	var after: float = (deaths[0][1] - g["t0"]) / 1000.0 if deaths.size() > 0 else -1.0
 	ok("Table Manners: the one catch is shot alone when the glance ends (%.2f s after the press; the game's instant shot is 2.0 s)" % after,
 		deaths.map(func(d): return d[0]) == g["ids"] and after > 2.6 and after < 3.6, [deaths, g["ids"]])
+	var b: Array = w["bangs"]
+	ok("Table Manners: the lone shot at seat %d, a borrowed aim, passes within %.2f m of that player's head" % [prefer[0], TABLE_AIM_MISS],
+		g["seats"] == prefer and b.size() == 1 and b[0]["miss"] < TABLE_AIM_MISS, [g["seats"], b])
+	ok("Table Manners: at seat %d no head is within %.2f m of the muzzle (the coach draws his gun back)" % [prefer[0], TABLE_GUN_CLEAR],
+		b.size() == 1 and b[0]["clear"] > TABLE_GUN_CLEAR, b)
 
-func _table_double_catch(mg) -> void:
+func _table_double_catch(mg, prefer: Array) -> void:
 	if mg.active_players.size() < 3:
 		say("NOTE Table Manners: %d still eating, the double-catch check skipped" % mg.active_players.size())
 		return
-	var g: Dictionary = await _table_glance(mg, 3.0, 3, false)
+	var w := {}
+	_table_watch(mg, prefer, w)
+	var g: Dictionary = await _table_glance(mg, 3.0, 3, false, prefer)
 	if not g["ok"]:
+		w["stop"] = true
 		ok("Table Manners: a glance to force for two catches", false, g)
 		return
 	ok("Table Manners: at %d still eating the first catch is frozen, the coach still looking, and the second frozen too" % g["eating"],
 		g["paused1"] and not g["exec1"] and not g["reading1"] and g["paused2"], g)
 	var deaths: Array = await _table_deaths(mg, 3, 7.0)
-	var gap: float = (deaths[1][1] - deaths[0][1]) / 1000.0 if deaths.size() > 1 else -1.0
+	w["stop"] = true
 	ok("Table Manners: two caught in one glance and shot in catch order, the third press ignored",
 		deaths.map(func(d): return d[0]) == g["ids"].slice(0, 2), [deaths, g["ids"]])
-	ok("Table Manners: the second shot %.2f s after the first (1.6 s)" % gap, absf(gap - 1.6) < 0.25, deaths)
+	var b: Array = w["bangs"]
+	var gap: float = (b[1]["t"] - b[0]["t"]) / 1000.0 if b.size() > 1 else -1.0
+	ok("Table Manners: the second bang %.2f s after the first (%.2f s)" % [gap, TABLE_NEXT_SHOT], absf(gap - TABLE_NEXT_SHOT) < 0.1, b)
+	ok("Table Manners: seats %s on one side, the second (a borrowed aim) shot within %.2f m of its head" % [str(prefer), TABLE_AIM_MISS],
+		g["seats"].slice(0, 2) == prefer and b.size() == 2 and b[1]["miss"] < TABLE_AIM_MISS, [g["seats"], b])
+	ok("Table Manners: at the second shot no head is within %.2f m of the muzzle" % TABLE_GUN_CLEAR,
+		b.size() == 2 and b[1]["clear"] > TABLE_GUN_CLEAR, b)
+	_table_check_hold(w)
+	# Between the bangs the arm stays up on the right: the draw's pose is at -41 degrees and the aims lower to -70 pitch.
+	var between: Array = w["yaw"].filter(func(y): return b.size() == 2 and y[0] > b[0]["t"] and y[0] < b[1]["t"])
+	var low_yaw: float = between.reduce(func(m, y): return minf(m, y[1]), INF)
+	var low_pitch: float = between.reduce(func(m, y): return minf(m, y[2]), INF)
+	ok("Table Manners: between the two bangs the arm never drops back (lowest yaw %.0f, lowest pitch %.0f degrees)" % [low_yaw, low_pitch],
+		not between.is_empty() and low_yaw > -20.0 and low_pitch > -15.0, between.size())
 	var h = mg.coach_handler
 	ok("Table Manners: the coach reads again after the two shots", await _wait(func(): return h.reading and not h.executing, 8.0),
 		[h.reading, h.executing])
 	ok("Table Manners: the third press's player eats again", await _wait(func(): return not mg.player_characters[g["ids"][2]].is_player_being_executed, 4.0))
+
+# A pair across the table: the coach swings from the first's recoil, holds, and fires 2.25 s after the first.
+func _table_across_catch(mg, prefer: Array) -> void:
+	if mg.active_players.size() < 4:
+		say("NOTE Table Manners: %d still eating, the across-the-table check skipped" % mg.active_players.size())
+		return
+	var w := {}
+	_table_watch(mg, prefer, w)
+	var g: Dictionary = await _table_glance(mg, 3.0, 2, false, prefer)
+	if not g["ok"]:
+		w["stop"] = true
+		ok("Table Manners: a glance to force for two catches across the table", false, g)
+		return
+	var deaths: Array = await _table_deaths(mg, 2, 8.0)
+	w["stop"] = true
+	var b: Array = w["bangs"]
+	var gap: float = (b[1]["t"] - b[0]["t"]) / 1000.0 if b.size() > 1 else -1.0
+	ok("Table Manners: across the table, seats %s shot in catch order, the second bang %.2f s after the first (%.2f s)" % [str(prefer), gap, TABLE_SWING_NEXT],
+		g["seats"] == prefer and deaths.map(func(d): return d[0]) == g["ids"] and absf(gap - TABLE_SWING_NEXT) < 0.1, [deaths, b])
+	ok("Table Manners: across the table, the first (a borrowed aim) within %.2f m of its head, no head within %.2f m of either muzzle" % [TABLE_AIM_MISS, TABLE_GUN_CLEAR],
+		b.size() == 2 and b[0]["miss"] < TABLE_AIM_MISS and b[0]["clear"] > TABLE_GUN_CLEAR and b[1]["clear"] > TABLE_GUN_CLEAR, b)
+	_table_check_hold(w)
+
+# The second aim holds on its player before the bang, as the first does: its barrel still for the last TABLE_HOLD_MS.
+func _table_check_hold(w: Dictionary) -> void:
+	var b: Array = w["bangs"]
+	var hold: Array = w["yaw"].filter(func(y): return b.size() == 2 and y[0] >= b[1]["t"] - TABLE_HOLD_MS and y[0] <= b[1]["t"])
+	var spread: float = 0.0
+	for y in hold:
+		spread = maxf(spread, maxf(absf(y[1] - hold[-1][1]), absf(y[2] - hold[-1][2])))
+	ok("Table Manners: the second aim holds on its player for the last %.1f s before the bang (the barrel moves %.1f degrees)" % [TABLE_HOLD_MS / 1000.0, spread],
+		hold.size() > 2 and spread < 3.0, hold.size())
 
 # The limit is the round's start, not who is still eating (the owner's pick): with the rest marked finished down
 # to 3 still eating, a glance still catches two and shoots both. Shot players already don't eat, so only the rest need marking.
@@ -1802,13 +1890,22 @@ func _table_instant_catch(mg) -> void:
 # Forces a glance of `seconds` from the coach's reading, then presses for `presses` players still eating, all
 # in that one frame, so no bot slips in between. `hold` keeps every other player still for the glance, as the
 # coach's pause does. Returns the pressers in order and what the first press left.
-func _table_glance(mg, seconds: float, presses: int, hold: bool) -> Dictionary:
+func _table_glance(mg, seconds: float, presses: int, hold: bool, prefer: Array = []) -> Dictionary:
 	var h = mg.coach_handler
 	var out := {"ok": false}
-	if not await _wait(_table_glance_ready.bind(mg, presses), 30.0):
+	if not await _wait(_table_glance_ready.bind(mg, presses, prefer), 30.0):
 		out["why"] = "the coach never read with time left and %d free to press" % presses
 		return out
-	var who: Array = mg.player_characters.values().filter(_table_can_press).slice(0, presses)
+	var free: Array = mg.player_characters.values().filter(_table_can_press)
+	var who: Array = []
+	for seat in prefer:
+		for p in free:
+			if p.player_seat_position == seat and who.size() < presses:
+				who.append(p)
+	for p in free:
+		if not who.has(p) and who.size() < presses:
+			who.append(p)
+	out["seats"] = who.map(func(p): return p.player_seat_position)
 	if hold:
 		for p in mg.player_characters.values():
 			if is_instance_valid(p) and not who.has(p):
@@ -1831,10 +1928,11 @@ func _table_glance(mg, seconds: float, presses: int, hold: bool) -> Dictionary:
 	return out
 
 # The coach reading with time left, and enough players free to press: after a shot they thaw over about 1.7 s.
-func _table_glance_ready(mg, presses: int) -> bool:
+func _table_glance_ready(mg, presses: int, prefer: Array = []) -> bool:
 	var h = mg.coach_handler
+	var free: Array = mg.player_characters.values().filter(_table_can_press)
 	return h.reading and not h.executing and not h.timer.is_stopped() and h.timer.time_left > 0.3 \
-		and mg.player_characters.values().filter(_table_can_press).size() >= presses
+		and free.size() >= presses and prefer.all(func(s): return free.any(func(p): return p.player_seat_position == s))
 
 func _table_can_press(p) -> bool:
 	return is_instance_valid(p) and p.active and not p.is_dead and not p.is_finished and not p.is_currently_eating and not p.is_player_being_executed
@@ -1850,7 +1948,170 @@ func _table_deaths(mg, k: int, seconds: float) -> Array:
 			out.append([mg._mp8_dead_order[start + out.size()], Time.get_ticks_msec()])
 	return out
 
-# The Filter's rounds (D105), over a whole match: run unattended (auto=2) to see one. Each round's pick is read
+# How close a bang's barrel line passes to the head of a borrowed seat's player. The game's own aims at the
+# stock seats pass up to about 0.6 m off; a borrowed aim before the turn, 0.78 m or more.
+const TABLE_AIM_MISS := 0.15
+# A head this close to the barrel's line meets the gun (the coach's MP8_HEAD_WIDE).
+const TABLE_HEAD_WIDE := 0.35
+# The coach leaves 0.45 m (MP8_GUN_CLEAR); the check allows for the bang being read a frame late.
+const TABLE_GUN_CLEAR := 0.3
+# Inside the coach's 0.45 s hold (MP8_AIM_HOLD), with room for the bang being read a frame late.
+const TABLE_HOLD_MS := 300
+# The owner's picks, bang to bang: one side of the table, and across it.
+const TABLE_NEXT_SHOT := 1.4
+const TABLE_SWING_NEXT := 2.25
+# tmcam=close: the camera's place and what it looks at, the coach and both rows of seats.
+const TABLE_CLOSE_CAM := Vector3(3.4, 5.6, 0.6)
+const TABLE_CLOSE_AT := Vector3(0.1, 3.2, -2.7)
+
+# Until out["stop"]: each bang (the gun's own "shoot" starting) as {seat, t, miss, clear}, the k-th bang against the
+# k-th of `seats`: miss the flat distance from the barrel's line (the gun's +z) to that player's head, clear how far
+# past the muzzle the nearest living head on that line is (INF when none); and the
+# barrel's [t, yaw, pitch] in degrees every frame. The gun's pose is the last drawn frame's, the aim still level.
+func _table_watch(mg, seats: Array, out: Dictionary) -> void:
+	var coach = mg.coach_handler.coach
+	var gun: Node3D = coach.anim_gun_fire.get_parent()
+	out["bangs"] = []
+	out["yaw"] = []
+	var on_bang := func(anim_name: StringName) -> void:
+		if anim_name != &"shoot":
+			return
+		var k: int = out["bangs"].size()
+		var seat: int = seats[k] if k < seats.size() else -1
+		var p = _table_seat_player(mg, seat)
+		var miss := INF
+		var clear := -INF
+		if p != null:
+			var d := Vector2(gun.global_basis.z.x, gun.global_basis.z.z).normalized()
+			var hd: Vector3 = _table_head(p) - gun.global_position
+			var w := Vector2(hd.x, hd.z)
+			if w.dot(d) > 0.0:
+				miss = absf(d.x * w.y - d.y * w.x)
+			var box: AABB = (gun as MeshInstance3D).get_aabb() if gun is MeshInstance3D else AABB()
+			var tip: Vector3 = gun.global_transform * Vector3(box.get_center().x, box.get_center().y, box.end.z)
+			clear = INF
+			for q in mg.player_characters.values():
+				if not is_instance_valid(q) or (q.is_dead and q != p):
+					continue
+				var qg: Vector3 = _table_head(q) - gun.global_position
+				var qf := Vector2(qg.x, qg.z)
+				if qf.dot(d) > 0.0 and absf(d.x * qf.y - d.y * qf.x) < TABLE_HEAD_WIDE:
+					var qt: Vector3 = _table_head(q) - tip
+					clear = minf(clear, Vector2(qt.x, qt.z).dot(d))
+		out["bangs"].append({"seat": seat, "t": Time.get_ticks_msec(), "miss": snappedf(miss, 0.01), "clear": snappedf(clear, 0.01)})
+		say("Table Manners: bang at seat %d, %.2f m off its head; the nearest head on the barrel's line %.2f m past the muzzle" % [seat, miss, clear])
+	coach.anim_gun_fire.animation_started.connect(on_bang)
+	# The elbow's side of the shoulder-to-hand line, each frame: a jump near 180 degrees is the elbow flipping.
+	var sk: Skeleton3D = gun.get_parent().get_parent() as Skeleton3D
+	var arm: Array = [sk.find_bone("upper_arm.L"), sk.find_bone("forearm.L"), sk.find_bone("hand.L")] if sk != null else []
+	var last_side := Vector3.ZERO
+	out["elbow_jump"] = 0.0
+	while not out.get("stop", false) and is_instance_valid(gun):
+		var z: Vector3 = gun.global_basis.z.normalized()
+		out["yaw"].append([Time.get_ticks_msec(), rad_to_deg(atan2(z.x, z.z)), rad_to_deg(asin(clampf(z.y, -1.0, 1.0)))])
+		if arm.size() == 3 and not arm.has(-1):
+			var s0: Vector3 = sk.get_bone_global_pose(arm[0]).origin
+			var e0: Vector3 = sk.get_bone_global_pose(arm[1]).origin - s0
+			var line: Vector3 = (sk.get_bone_global_pose(arm[2]).origin - s0).normalized()
+			var side: Vector3 = e0 - line * e0.dot(line)
+			if side.length() > 0.05 * e0.length():
+				if not last_side.is_zero_approx():
+					out["elbow_jump"] = maxf(out["elbow_jump"], rad_to_deg(last_side.angle_to(side)))
+				last_side = side
+		await get_tree().process_frame
+	if is_instance_valid(coach) and coach.anim_gun_fire.animation_started.is_connected(on_bang):
+		coach.anim_gun_fire.animation_started.disconnect(on_bang)
+
+func _table_seat_player(mg, seat: int):
+	for p in mg.player_characters.values():
+		if is_instance_valid(p) and p.player_seat_position == seat:
+			return p
+	return null
+
+func _table_head(p) -> Vector3:
+	for sk: Skeleton3D in p.find_children("*", "Skeleton3D", true, false):
+		var b := sk.find_bone("head")
+		if b >= 0:
+			return sk.global_transform * sk.get_bone_global_pose(b).origin
+	return p.global_position
+
+# The renders' staged shots (tmstage): this load's list, each entry caught in its order on a forced glance, with
+# everyone else held still and the coach kept from glancing on his own; the round ends when the list is done.
+# Each step logs its drawn frame, its place in a recording.
+func _table_stage(mg, load_index: int) -> void:
+	var groups: PackedStringArray = str(_launch["tmstage"]).split("/", false)
+	if load_index >= groups.size():
+		return
+	var h = mg.coach_handler
+	var coach = h.coach
+	if not await _wait(func(): return mg.player_characters.size() >= 2 and mg.player_characters.values().all(func(p): return p.active), 90.0):
+		say("NOTE TMSTAGE: the round never started")
+		return
+	var cams: PackedStringArray = str(_launch["tmcam"]).split("/")
+	if load_index < cams.size() and cams[load_index] == "close":
+		var cam := Camera3D.new()
+		cam.name = "TMStageCamera"
+		mg.add_child(cam)
+		cam.global_position = TABLE_CLOSE_CAM
+		cam.look_at(TABLE_CLOSE_AT)
+		cam.fov = 50.0
+		cam.current = true
+	var state := {"free": [], "on": true}
+	_table_hold(mg, state)
+	say("TMSTAGE load %d: at drawn frame %d" % [load_index + 1, Engine.get_frames_drawn()])
+	for step in groups[load_index].split(",", false):
+		var who: Array = Array(step.split("+", false)).map(func(x): return _table_seat_player(mg, int(x)))
+		if who.has(null):
+			say("NOTE TMSTAGE %s: a seat has no player; skipped" % step)
+			continue
+		if not await _wait(func(): return h.reading and not h.executing, 20.0):
+			say("NOTE TMSTAGE %s: the coach never read again" % step)
+			break
+		h.timer.stop()
+		await get_tree().create_timer(1.5).timeout
+		var w := {}
+		_table_watch(mg, Array(step.split("+", false)).map(func(x): return int(x)), w)
+		say("TMSTAGE %s: the paper drops at drawn frame %d" % [step, Engine.get_frames_drawn()])
+		h.stop_reading_rpc.rpc()
+		await get_tree().create_timer(0.7).timeout
+		h.reading = false
+		h.timer.start(1.0)
+		# Freed and pressed in one frame: a bot let go any earlier starts a bite, and a press mid-bite does nothing.
+		state["free"] = who
+		for p in who:
+			p.is_player_being_executed = false
+			p.try_fork_plate_rpc.rpc()
+		await _wait(func(): return h.executing, 3.0)
+		state["free"] = []
+		await _wait(func(): return h.reading and not h.executing, 15.0)
+		h.timer.stop()
+		w["stop"] = true
+		var b: Array = w["bangs"]
+		var held := ""
+		if b.size() > 1:
+			var marks := PackedStringArray()
+			for back in [1500, 1200, 900, 600, 400, 200, 0]:
+				var upto: Array = w["yaw"].filter(func(y): return y[0] <= b[1]["t"] - back)
+				if not upto.is_empty():
+					marks.append("-%.1f s %.0f/%.0f" % [back / 1000.0, upto[-1][1], upto[-1][2]])
+			held = "; the barrel's yaw/pitch before the 2nd bang: " + ", ".join(marks)
+		say("TMSTAGE %s: done at drawn frame %d; bangs %s, %.2f s apart%s; the elbow's largest turn in a frame %.0f degrees" % [step, Engine.get_frames_drawn(),
+			str(b.map(func(x): return [x["seat"], x["miss"], x["clear"]])), (b[1]["t"] - b[0]["t"]) / 1000.0 if b.size() > 1 else 0.0, held, w["elbow_jump"]])
+	await get_tree().create_timer(1.5).timeout
+	state["on"] = false
+	say("TMSTAGE load %d: done, the round ends at drawn frame %d" % [load_index + 1, Engine.get_frames_drawn()])
+	for nid in mg.active_players.duplicate():
+		mg._on_player_finished(nid)
+
+# Every frame while staging, everyone but this step's players can't eat (the coach's own resume would free them).
+func _table_hold(mg, state: Dictionary) -> void:
+	while state["on"] and is_instance_valid(mg):
+		for p in mg.player_characters.values():
+			if is_instance_valid(p) and not p.is_dead and not state["free"].has(p):
+				p.is_player_being_executed = true
+		await get_tree().process_frame
+
+# The Filter's rounds, over a whole match: run unattended (auto=2) to see one. Each round's pick is read
 # right after the game makes it, on the server, before the crushes zero the victims' counts: above 4 players
 # mp8_elim_slots says how many go out; at 4 or fewer one, as the game. Fewer out only on a tie at the cut.
 func _watch_filter_rounds(mg, n: int) -> void:
@@ -1893,7 +2154,7 @@ func _on_filter_scores(player_scores: Dictionary, n: int, rounds: Array) -> void
 		ties > 0 or rounds.size() == (4 if n > 4 else n - 1), rounds)
 	ok("The Filter at %d: placements distinct, the survivor at %d" % [n, n], pts == want, pts)
 
-# The Filter's aimed looks above 4 seats (D105): once every view has turned to a victim (1.07 s after its camera
+# The Filter's aimed looks above 4 seats: once every view has turned to a victim (1.07 s after its camera
 # call: at the pick, then 3 s apart), its console top is near the middle of every other player's camera.
 func _check_filter_aim(mg, victim: int, wait: float) -> void:
 	var players: Array = mg.player_parent_node.get_children().filter(func(c): return c.get("camera") is Camera3D)
@@ -1927,9 +2188,10 @@ func _check_filter_aim(mg, victim: int, wait: float) -> void:
 	ok("The Filter: seat %d's own view holds look self's pose and zoom" % target.active_seat_index,
 		maxf(d.x, maxf(d.y, d.z)) < 0.05 and absf(fov - want_fov) < 0.5, [rot, want_rot, fov, want_fov])
 
-# Every station the same above 4 seats (D132): a frame at each of the 8 seats, each in the same place against its
+# Every station the same above 4 seats: a frame at each of the 8 seats, each in the same place against its
 # seat's press, no other frame's housing through its pusher, and no belt or last slot on another seat's belt; on the
-# couch a light of its own at each seat, all alike; and at 7-8 each narrow tile's view shifted.
+# couch a light of its own at each seat, all alike, each tile's eye moved 1.2 m sideways, the fov kept horizontal at
+# 5-6 and vertical at 7-8, and at 5-6 no side seat's player in a tile.
 func _check_filter_stations(mg, n: int) -> void:
 	var presses: Array = mg.presses.filter(func(p): return p != null)
 	var root: Node = mg.find_child("burn recycle visuals final", true, false)
@@ -1985,9 +2247,53 @@ func _check_filter_stations(mg, n: int) -> void:
 		ok("The Filter at %d: a station light at each of the 8 seats, alike" % n,
 			_filter_one_per_press(lights.map(func(l): return l.global_position), presses) and energies.all(func(e): return e == energies[0]),
 			[lights.size(), energies])
-		var want: float = 1.2 if n >= 7 else 0.0
+		var want: float = 1.2 if n >= 5 else 0.0
 		var shifts: Array = mg.players.values().map(func(p): return p.local_camera.h_offset)
 		ok("The Filter at %d: every tile's view shifted %.1f" % [n, want], shifts.all(func(h): return is_equal_approx(h, want)), shifts)
+		var aspect: int = Camera3D.KEEP_WIDTH if n <= 6 else Camera3D.KEEP_HEIGHT
+		var aspects: Array = mg.players.values().map(func(p): return p.local_camera.keep_aspect)
+		ok("The Filter at %d: every tile keeps its %s fov" % [n, "horizontal" if n <= 6 else "vertical"],
+			aspects.all(func(a): return a == aspect), aspects)
+		if n <= 6:
+			_check_filter_no_neighbour(mg, n)
+
+# At 5-6 no tile has a side seat's player in view, measured at two points, each neighbour's head (the hat bone)
+# and body centre, against the tile camera's horizontal view at the real tile's aspect (960x540 3D in 3x2), since a
+# headless window's tiles have another shape. h_offset moves the eye sideways in camera space. Read once play has
+# begun, when the tile cameras follow their players, so the shift and fov are read again there too.
+func _check_filter_no_neighbour(mg, n: int) -> void:
+	var row: String = "The Filter at %d: no side seat's head or body centre in a tile, in play" % n
+	var playing: bool = await _wait(func(): return is_instance_valid(mg) and mg.players.values().any(
+		func(p): return is_instance_valid(p) and p.valid_burns + p.valid_recycles > 0), 60.0)
+	if not playing or not is_instance_valid(mg):
+		ok(row, false, "play never started")
+		return
+	var lens: Array = mg.players.values().map(func(p): return [snappedf(p.local_camera.h_offset, 0.01), p.local_camera.keep_aspect])
+	ok("The Filter at %d: in play, every tile still shifted 1.2 with its horizontal fov" % n,
+		lens.all(func(l): return is_equal_approx(l[0], 1.2) and l[1] == Camera3D.KEEP_WIDTH), lens)
+	var tile: Vector2 = BurnRecycleLocalHandler.mp8_layout(n)[0].size * Vector2(960.0, 540.0)
+	var by_seat: Dictionary = {}
+	for p in mg.players.values():
+		by_seat[p.active_seat_index] = p
+	var seen: Array = []
+	for p in mg.players.values():
+		var cam: Camera3D = p.local_camera
+		var half: float = deg_to_rad(cam.fov) / 2.0
+		if cam.keep_aspect == Camera3D.KEEP_HEIGHT:
+			half = atan(tan(half) * tile.x / tile.y)
+		for side in [posmod(p.active_seat_index - 1, 8), posmod(p.active_seat_index + 1, 8)]:
+			var q = by_seat.get(side)
+			if q == null:
+				continue
+			var body: MeshInstance3D = q.customization_assigner.character_mesh
+			var points: Array = [q.customization_assigner.bone_attachment_hat.global_position,
+				body.global_transform * body.get_aabb().get_center()]
+			for w in points:
+				var v: Vector3 = cam.global_transform.affine_inverse() * w
+				if v.z < 0.0 and absf(v.x - cam.h_offset) / -v.z < tan(half):
+					seen.append("seat %d sees seat %d" % [p.active_seat_index, side])
+					break
+	ok(row, seen.is_empty(), seen)
 
 # The pusher at rest and at full stroke, in the player's frame: the piston mesh, and its 0.747 m stroke along its
 # parent's x, which the scene turns inward and up (0.665 m in, 0.34 m up).
@@ -2052,7 +2358,7 @@ func _check_filter_turn(mg) -> void:
 				jumps.append("%s %s -> %s" % [subs[i].get_parent().get_parent().get_parent().name, before[i], subs[i].rotation])
 	ok("The Filter: no view jumps as the second victim's turn starts (%d views)" % subs.size(), jumps.is_empty(), jumps)
 
-# Forklift Certified's yard (D104): above 4 seats the build's pick scales the walls, bays and camera; at 4 or
+# Forklift Certified's yard: above 4 seats the build's pick scales the walls, bays and camera; at 4 or
 # fewer the shipped yard is untouched. The stock walls are 53.57 x 58.57 in the scene.
 func _check_forklift_yard(mg, n: int) -> void:
 	var walls: CSGBox3D = mg.get_node_or_null(mg.MP8V_WALLS) as CSGBox3D
@@ -2094,7 +2400,7 @@ func _check_forklift_yard(mg, n: int) -> void:
 		holder.position.z > 0.0 and absf(beam_z - 46.375 * yard.y) < 0.1 and absf(magnet.pos_home.global_position.z - 43.741 * yard.y) < 0.1,
 		[holder.position, beam_z, magnet.pos_home.global_position])
 
-# PD4: a pad that comes back on its own id is confirmed with A, then released, as the owner does at the couch.
+# A pad that comes back on its own id is confirmed with A, then released, as the owner does at the couch.
 # Overtime's presence runs both steps in its _physics_process.
 func _check_reconnect(pres, dev: int) -> void:
 	var a := -1
@@ -2121,7 +2427,7 @@ func _check_reconnect(pres, dev: int) -> void:
 	steps.append("A up: " + state.call())
 	ok("a pad back on its own id plays again after A is pressed and released", pres.local_controller_connected, steps)
 
-# PD3: a hunter's split-screen tile is its local_camera, which follows its aim camera in hunter_player's _process.
+# A hunter's split-screen tile is its local_camera, which follows its aim camera in hunter_player's _process.
 # Offline Bots switches a bot's _process off (the --auto seat's too), and scopes it by zoom_fov_index alone (no
 # update_zoom), so the tile of a hunter whose _process is off takes its zoom from zoom_fovs, as the fork does. Each frame's sync runs before that frame's aim changes (the hunter's
 # own update_look, Offline Bots' brain), so a tile may show the previous frame's aim and scope, never older.
@@ -2171,7 +2477,7 @@ func _check_hunter_views(mg) -> void:
 	if not scoped.values().any(func(n): return n > 0):
 		say("NOTE no hunter scoped in while sampled: the zoom part of the check didn't run")
 
-# PD7: in The Filter and Knife at the Office a player's tile is its local_camera, which follows its camera only in
+# In The Filter and Knife at the Office a player's tile is its local_camera, which follows its camera only in
 # the player's _process, and Offline Bots switches a bot's _process off. Sampled as the hunters are: a tile may show
 # the previous frame's view. The Filter's look animation moves a camera after both syncs now and then, so a tile
 # synced by its own player misses a frame too (1 of about 580 measured): TILE_OFF_FRAMES allows that, not a frozen tile.
@@ -2208,7 +2514,7 @@ func _check_tile_views(mg) -> void:
 					wrong[p][1] = "first: tile at %s, camera at %s" % [tile.origin, now.origin]
 			last[p] = now
 	# A player still processing syncs its own tile, ahead of its camera's look animation now and then: the game's
-	# timing, not PD7's, so only the tiles the minigame drives are judged.
+	# timing, not a camera that lags, so only the tiles the minigame drives are judged.
 	for p in wrong:
 		if not is_instance_valid(p):
 			continue
@@ -2230,3 +2536,4 @@ func _wait(cond: Callable, seconds: float) -> bool:
 			return false
 		await get_tree().process_frame
 	return true
+

@@ -290,7 +290,7 @@ func _watch() -> void:
 			finish("capped %s" % key)
 
 # What each peer's own copy of an Extended minigame holds after its start, for the runner to compare with the
-# host's: relay calls the host sends from initialize() run inside the last client's player_loaded RPC (PD19).
+# host's: relay calls the host sends from initialize() run inside the last client's player_loaded RPC.
 func _probe(mg) -> void:
 	match Globals.MinigameIdentifier.keys()[Globals.current_minigame_identifier]:
 		"ManufactureGun":

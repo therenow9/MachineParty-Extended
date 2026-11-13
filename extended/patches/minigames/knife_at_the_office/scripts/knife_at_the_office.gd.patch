@@ -68,7 +68,7 @@ diff --git a/minigames/knife_at_the_office/scripts/knife_at_the_office.gd b/mini
 +
  func _process(delta: float) -> void :
  
-+	# A mixed room runs only the game's lines below (D120).
++	# A mixed room runs only the game's lines below.
 +	if NetworkManager.mp8_room_extended():
 +		_mp8_follow_idle_tile_views()
 +
@@ -84,7 +84,7 @@ diff --git a/minigames/knife_at_the_office/scripts/knife_at_the_office.gd b/mini
  	guaranteed_search_result = searchable_base - random_removal
  
 +	# Caps the rolled target at what the office can reach (_mp8v_clamp_target). A mixed room keeps the roll,
-+	# and indexes the spawns as the game does (D120).
++	# and indexes the spawns as the game does.
 +	var mp8_ext: bool = NetworkManager.mp8_room_extended()
 +	if mp8_ext:
 +		_mp8v_setup_search()
@@ -118,7 +118,7 @@ diff --git a/minigames/knife_at_the_office/scripts/knife_at_the_office.gd b/mini
  
  		players[player_presence.network_id] = player_character
  		active_players[player_presence.network_id] = player_character
-@@ -145,15 +214,171 @@ func spawn_players():
+@@ -145,15 +214,176 @@ func spawn_players():
  
  	if GameManager.local_game:
  		local_handler.set_players(players.values())
@@ -146,11 +146,16 @@ diff --git a/minigames/knife_at_the_office/scripts/knife_at_the_office.gd b/mini
 +		projector.light_cull_mask &= 15
 +		projector.shadow_caster_mask &= 15
 +	# Every split-screen tile redraws each omni light's shadow every frame; dual paraboloid is 2 passes to
-+	# the cube's 6 (D90). Each player's fog-of-war light keeps the cube: its shadow is that player's line of sight.
++	# the cube's 6. Each player's fog-of-war light keeps the cube: its shadow is that player's line of sight.
 +	var fog_lights: Array = players.values().map(func(p): return p.fog_of_war.fog_of_war_light)
 +	for light in find_children("*", "OmniLight3D", true, false):
 +		if not fog_lights.has(light):
 +			(light as OmniLight3D).omni_shadow_mode = OmniLight3D.SHADOW_DUAL_PARABOLOID
++	# A lit flashlight's 3.2 m hand glow casts its shadow into every tile; bunched at 8 that is 3.4 ms, for
++	# about 140 changed pixels a tile, picked from renders. The beam keeps its shadow: walls block it.
++	for p in players.values():
++		for glow in p.flashlight.find_children("*", "OmniLight3D", true, false):
++			(glow as OmniLight3D).shadow_enabled = false
 +
 +
 +# [MP8] Fills vanilla's declared-but-never-filled `searchables` with the scene's real containers,
@@ -159,7 +164,7 @@ diff --git a/minigames/knife_at_the_office/scripts/knife_at_the_office.gd b/mini
 +
 +	if mp8_searchables_collected:
 +		return
-+	# A mixed room leaves the game's searchables unfilled and every container on (D120).
++	# A mixed room leaves the game's searchables unfilled and every container on.
 +	if not NetworkManager.mp8_room_extended():
 +		print("[MP8] Inside Job: a mixed room, every container left on")
 +		return
@@ -291,7 +296,7 @@ diff --git a/minigames/knife_at_the_office/scripts/knife_at_the_office.gd b/mini
  func all_players_loaded():
  	super.all_players_loaded()
  
-@@ -189,10 +414,16 @@ func end_game():
+@@ -189,10 +419,16 @@ func end_game():
  
  	await get_tree().create_timer(1.0).timeout
  
@@ -308,7 +313,7 @@ diff --git a/minigames/knife_at_the_office/scripts/knife_at_the_office.gd b/mini
  	player_scores_finalized.emit(player_scores)
  
  	await get_tree().create_timer(1.0).timeout
-@@ -206,12 +437,25 @@ func start_2nd_phase_music():
+@@ -206,12 +442,25 @@ func start_2nd_phase_music():
  	MusicManager.play_kato_2nd_phase_music()
  	speaker_syringe_found.play()
  
@@ -329,12 +334,12 @@ diff --git a/minigames/knife_at_the_office/scripts/knife_at_the_office.gd b/mini
  
  func player_disconnected(_network_id: int):
 +	# [MP8] The room is read before the await, which can outlast this minigame's latch. A mixed room
-+	# keeps the game's own end check (D116).
++	# keeps the game's own end check.
 +	var mp8_ext: bool = NetworkManager.mp8_room_extended()
  	super.player_disconnected(_network_id)
  
  	if not multiplayer.is_server():
-@@ -220,6 +464,13 @@ func player_disconnected(_network_id: int):
+@@ -220,6 +469,13 @@ func player_disconnected(_network_id: int):
  	remove_player_rpc.rpc(_network_id)
  	await get_tree().create_timer(1.0).timeout
  
@@ -348,27 +353,27 @@ diff --git a/minigames/knife_at_the_office/scripts/knife_at_the_office.gd b/mini
  	check_game_end()
  
  
-@@ -230,7 +481,11 @@ func remove_player_rpc(_network_id: int):
+@@ -230,7 +486,11 @@ func remove_player_rpc(_network_id: int):
  	var player_instance = players.get(_network_id, null)
  	if player_instance:
  
 -		player_instance.cleanup_rpc.rpc()
 +		# [MP8] Only the server sends cleanup_rpc: remove_player_rpc runs on every peer, and a send
 +		# from each would hit an already-freed node. Each peer frees its own copy just below.
-+		# A mixed room sends from every peer, as the game does (D116).
++		# A mixed room sends from every peer, as the game does.
 +		if NetworkManager.mp8_sends_broadcast(multiplayer.is_server()):
 +			player_instance.cleanup_rpc.rpc()
  		player_instance.queue_free()
  
  		player_scores.erase(_network_id)
-@@ -241,7 +496,13 @@ func remove_player_rpc(_network_id: int):
+@@ -241,7 +501,13 @@ func remove_player_rpc(_network_id: int):
  @rpc("any_peer", "call_local", "reliable")
  func start_projector_hide_hunt_loop_rpc():
  	for player: KnifeAtTheOfficePlayer in player_spawn_node.get_children():
 -		if player.is_infected:
 +		# [MP8] Online an infected name moves to layer 20, which only infected cameras draw. Locally it
 +		# stays on the shared layer (set_infected_name_label returns early), so the hunt hides it too.
-+		# A mixed room runs the game's check (D120).
++		# A mixed room runs the game's check.
 +		if not NetworkManager.mp8_room_extended():
 +			if player.is_infected:
 +				continue
@@ -376,13 +381,13 @@ diff --git a/minigames/knife_at_the_office/scripts/knife_at_the_office.gd b/mini
  			continue
  		player.player_name_label.animation_player.play("hide name")
  	anim_projector_hide_hunt.play("loop")
-@@ -265,25 +526,70 @@ func request_item_find_rpc(_network_id: int):
+@@ -265,25 +531,70 @@ func request_item_find_rpc(_network_id: int):
  
  	containers_searched += 1
  
 -	if GameManager.local_game:
 -
-+	# A mixed room runs the game's broadcast (D120).
++	# A mixed room runs the game's broadcast.
 +	if not NetworkManager.mp8_room_extended():
  		if containers_searched == guaranteed_search_result:
 -			players[_network_id].search_result_rpc(true)
@@ -416,7 +421,7 @@ diff --git a/minigames/knife_at_the_office/scripts/knife_at_the_office.gd b/mini
  @rpc("any_peer", "call_local", "reliable")
  func _on_item_found(_network_id):
  
-+	# A mixed room runs the game's (D120).
++	# A mixed room runs the game's.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_on_item_found(_network_id)
 +		return
@@ -449,13 +454,13 @@ diff --git a/minigames/knife_at_the_office/scripts/knife_at_the_office.gd b/mini
 +		)
 +		enable_player_fow_rpc.rpc()
 +
-+# The game's _on_item_found, for a mixed room (D120).
++# The game's _on_item_found, for a mixed room.
 +func _mp8_game_on_item_found(_network_id):
 +
  	if not infected_players.has(_network_id):
  		infected_players.append(_network_id)
  
-@@ -342,3 +648,58 @@ func _on_countdown_expired():
+@@ -342,3 +653,58 @@ func _on_countdown_expired():
  		player.set_active_rpc.rpc(true)
  
  	state_machine.transition_to_rpc.rpc(&"Play")
@@ -484,7 +489,7 @@ diff --git a/minigames/knife_at_the_office/scripts/knife_at_the_office.gd b/mini
 +
 +func _mp8v_add_spawns() -> void :
 +
-+	# The room is latched before this scene's add_child (game.gd). A mixed room keeps the game's 4 (D116).
++	# The room is latched before this scene's add_child (game.gd). A mixed room keeps the game's 4.
 +	if not NetworkManager.mp8_room_extended():
 +		print("[MP8] Inside Job: a mixed room, the game's spawns unchanged")
 +		return

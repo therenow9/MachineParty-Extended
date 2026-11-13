@@ -124,7 +124,7 @@ diff --git a/minigames/intermission_new/components/intermission_score_screen.gd 
 +	_mp8_layouts = {false: vanilla, true: _mp8_snapshot()}
 +
 +
-+# [MP8] Mixed rooms (D116): the game's 4-row board, chosen at each show by setup(). The host's pace
++# [MP8] Mixed rooms: the game's 4-row board, chosen at each show by setup(). The host's pace
 +# depends on it too (lerp_duration_score). Arrays are replaced, never changed in place, since a show or
 +# hide coroutine iterates the old one.
 +var mp8_extended_layout: bool = true
@@ -255,7 +255,7 @@ diff --git a/minigames/intermission_new/components/intermission_score_screen.gd 
  	_game_score_by_network_id: Dictionary
  ):
  
-+	# [MP8] The game's 4-row show places its rows as the game does (D120).
++	# [MP8] The game's 4-row show places its rows as the game does.
 +	if not mp8_extended_layout:
 +		_mp8_game_reset_user_containers(_total_score_by_network_id, _game_score_by_network_id)
 +		return
@@ -297,7 +297,7 @@ diff --git a/minigames/intermission_new/components/intermission_score_screen.gd 
 +	for i in user_container_array.size():
 +		score_container_nodes.append(user_container_array[i])
 +
-+# The game's reset_user_containers, for the game's layout (D120).
++# The game's reset_user_containers, for the game's layout.
 +func _mp8_game_reset_user_containers(
 +	_total_score_by_network_id: Dictionary, 
 +	_game_score_by_network_id: Dictionary

@@ -13,12 +13,12 @@
 #   --overtime=mp8   park it and run 8 Player Support ($MP_MP8_BUILD, a extended/dist/<build>/mp8_support folder)
 #                  It is installed under its own folder's name (a bundle's is machine_party_extended), and every
 #                  installed folder whose mod.json id is mp8_support is parked in every run: it never mounts beside Overtime.
-#                  So is an installed mods/local_glasses: Better Couch Lobby replaces it (D79), and both would add a glasses row.
+#                  So is an installed mods/local_glasses: Better Couch Lobby replaces it, and both would add a glasses row.
 #   --without=<id> leave our mods/<id> out (refuses if the owner has it installed)
 #   --mods-from=<dir>  a release zip extracted as-is (make_release.ps1 -Extract): each of our mods in <dir> is
 #                  installed from there, the others from mods/ (--without=<id> leaves one out); refuses a <dir> with
-#                  none of them. A bundle is one folder of id mp8_support with our mods inside, which its main.gd starts
-#                  (D157): it needs --overtime=mp8 and no MP_MP8_BUILD, and the owner's own copies of the mods it
+#                  none of them. A bundle is one folder of id mp8_support with our mods inside, which its main.gd starts:
+#                  it needs --overtime=mp8 and no MP_MP8_BUILD, and the owner's own copies of the mods it
 #                  holds are parked for the run, since the bundle's stand down beside them.
 #                  A mod the owner had stays installed as the zip's copy, with its README.txt and licence
 #   --windowed     launch with a window (renders); opens on the owner's screen, ask first
@@ -55,7 +55,7 @@ LOGS="${MP_LOG_DIR:-${TEMP:-/tmp}/machine-party-tests}"
 # Next to mods/ on the same drive, so parking is a rename; the loader reads only mods/.
 PARK="$GAME/mods_parked_by_selftest"
 NAME='^[A-Za-z0-9_]+$'
-# Extended's folder is found by its id: a build's is mp8_support, a bundle's machine_party_extended (D157).
+# Extended's folder is found by its id: a build's is mp8_support, a bundle's machine_party_extended.
 EXT_ID='"id": *"mp8_support"'
 ext_folders() { local f; for f in "$1"/*/mod.json; do [ -f "$f" ] && grep -q "$EXT_ID" "$f" && basename "$(dirname "$f")"; done; }
 
@@ -220,7 +220,7 @@ done
 # Offline Bots writes its config whenever bots are seated; a killed run's copies are put back here.
 [ -e "$CONFIG_PENDING" ] && echo "a killed run kept copies of the configs:" && restore_config
 # Overtime and 8 Player Support replace the same game scripts; a run parks whichever the lane doesn't want.
-# Local Glasses, folded into Better Couch Lobby (D79), is parked in every run, and a bundle run parks
+# Local Glasses, folded into Better Couch Lobby, is parked in every run, and a bundle run parks
 # the owner's copies of the mods it holds.
 for d in "$PARK"/*/; do
   ot="$(basename "$d")"
@@ -352,7 +352,7 @@ limit=(timeout 180)
 launched=1
 read -r -a game_args <<< "${MP_GAME_ARGS:-}"
 [ ${#game_args[@]} -gt 0 ] && echo "game args: ${game_args[*]}"
-# A shipped Extended build reads none of its dev switches (D116), so a render on one silently shows the defaults.
+# A shipped Extended build reads none of its dev switches, so a render on one silently shows the defaults.
 if [ "$mp8" = 1 ] && [[ " ${game_args[*]} " =~ \ (mp8[a-z]|-debug-tools|-trailer) ]] \
   && ! grep -q '"test_build": *true' "$MP8/BUILDINFO.json" 2>/dev/null; then
   echo "WARNING: $MP8 is not a test build: it ignores the dev switches in MP_GAME_ARGS (build_mpml_mod.ps1 -TestBuild)"

@@ -19,12 +19,20 @@ const GCS_ID := "gamecube_support"
 const COSMETICS_ID := "more_cosmetics"
 # A leftover Local Glasses install would add a second glasses row to every panel.
 const RETIRED_ID := "local_glasses"
+const NAMES_PATH := "user://couch_lobby.json"
+# The saved names' page sits under the main menu's Options, the only settings menu a mod can reach.
+const MAIN_MENU_PATH := "res://scenes/main_menu/scripts/main_menu.gd"
+const OPTIONS_NAME := "CouchLobbySavedNames"
 
 var _loader
 var _close_ups_script: GDScript
 var _buttons_script: GDScript
 var _picker_script: GDScript
 var _layer_sync_script: GDScript
+var _name_panel_script: GDScript
+var _options_script: GDScript
+var _names
+var _pencil: Texture2D
 var _icon_path: String
 var _glasses_by_device: Dictionary
 var _extra_noted := false
@@ -48,6 +56,7 @@ func _mod_init(loader) -> void:
 	_buttons_script = loader.compile(dir.path_join("lobby_buttons.gd"))
 	if _buttons_script == null:
 		loader.note("couch_lobby: lobby_buttons.gd failed to load; the lobby's buttons take any pad's A")
+	_load_names(dir, reg)
 	var mods_dir := dir.get_base_dir().get_base_dir() if hosted else dir.get_base_dir()
 	var retired := installed_folder(mods_dir, RETIRED_ID)
 	if not retired.is_empty():
@@ -62,10 +71,32 @@ func _mod_init(loader) -> void:
 			_layer_sync_script = null
 
 	loader.on_scene_script(CONTROLS_PATH, _on_controls)
+	if _options_script:
+		loader.on_scene_script(MAIN_MENU_PATH, _attach_options)
 	if _picker_script:
 		loader.on_scene_script(LOCAL_GAME_PATH, _apply_to_presences)
 		loader.on_scene_script(ASSIGNER_PATH, _attach_layer_sync)
-	loader.note("couch_lobby: close-ups %s, glasses row %s, lobby buttons %s" % ["on" if _close_ups_script else "off", "on" if _picker_script else "off", "host only" if _buttons_script else "off"])
+	loader.note("couch_lobby: close-ups %s, glasses row %s, lobby buttons %s, saved names %s" % ["on" if _close_ups_script else "off", "on" if _picker_script else "off", "host only" if _buttons_script else "off", "on" if _name_panel_script else "off"])
+
+# The saved names are shared by every seat: registry(MOD_ID)["names"] holds the store.
+func _load_names(dir: String, reg: Dictionary) -> void:
+	var tags: GDScript = _loader.compile(dir.path_join("name_tags.gd"))
+	_name_panel_script = _loader.compile(dir.path_join("name_panel.gd"))
+	if tags == null or _name_panel_script == null:
+		_loader.note("couch_lobby: the name scripts failed to load; saved names, 7-letter names and back to LEAVE in an empty lobby off")
+		_name_panel_script = null
+		return
+	_names = tags.new()
+	_options_script = _loader.compile(dir.path_join("names_options.gd"))
+	if _options_script == null:
+		_loader.note("couch_lobby: names_options.gd failed to load; no Saved names page in Options")
+	var image := Image.load_from_file(dir.path_join("name_new.png"))
+	_pencil = ImageTexture.create_from_image(image) if image else null
+	if _pencil == null:
+		_loader.note("couch_lobby: name_new.png failed to load; the saved names' pencil row shows no icon")
+	if not _names.load_from(NAMES_PATH):
+		_loader.note("couch_lobby: %s could not be read, or has repeats, entries that are not 1-%d letters A-Z, or more than %d; those are ignored, and the file is kept as %s.bad when the list next changes" % [NAMES_PATH, tags.MAX_LETTERS, tags.CAP, NAMES_PATH.get_file()])
+	reg["names"] = _names
 
 func _on_controls(controls: Node) -> void:
 	# Runs while the scene is entering the tree; wait until it has finished.
@@ -75,6 +106,8 @@ func _on_controls(controls: Node) -> void:
 		_attach_buttons.call_deferred(controls)
 	if _picker_script:
 		_attach_picker(controls)
+	if _name_panel_script:
+		_attach_name_panel(controls)
 	_attach_seat_order.call_deferred(controls)
 
 # The lobby's own script may be another mod's subclass, so the panels are the
@@ -102,6 +135,8 @@ func _attach_buttons(controls: Node) -> void:
 	buttons.name = BUTTONS_NAME
 	buttons.lobby = lobby
 	buttons.menu_pad = func(): return int(_loader.registry(GCS_ID).get("menu_pad", -1))
+	buttons.names_script = _name_panel_script
+	buttons.registry = _loader.registry
 	lobby.add_child(buttons)
 
 # The game builds its players from player_data in insertion order (update_player_manager,
@@ -142,6 +177,23 @@ func _attach_picker(controls: Node) -> void:
 		_extra_noted = true
 		_loader.note("couch_lobby: ignored malformed entries in %s's glasses lists" % COSMETICS_ID)
 	controls.add_child.call_deferred(picker)
+
+func _attach_name_panel(controls: Node) -> void:
+	var panel: Node = _name_panel_script.new()
+	panel.name = "CouchLobbyNamePanel"
+	panel.store = _names
+	panel.pencil = _pencil
+	panel.note = _loader.note
+	panel.registry = _loader.registry
+	controls.add_child.call_deferred(panel)
+
+func _attach_options(menu: Node) -> void:
+	if menu.get_node_or_null(OPTIONS_NAME) != null:
+		return
+	var page: Node = _options_script.new()
+	page.name = OPTIONS_NAME
+	page.store = _names
+	menu.add_child.call_deferred(page)
 
 # The lobby has already built the presences by the time the local game scene
 # enters the tree; minigames read them later.

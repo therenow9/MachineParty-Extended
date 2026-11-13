@@ -74,7 +74,7 @@ diff --git a/minigames/forklift_certified/scripts/crate_manager.gd b/minigames/f
 +		if counter >= MP8_HARD_CEILING:     # [MP8] vanilla hard-codes 10 here
 +			return
 +
-+# [MP8] The game's spawn_crates, verbatim, for a mixed room (D120).
++# [MP8] The game's spawn_crates, verbatim, for a mixed room.
 +func _mp8_game_spawn_crates(amount: int):
 +
  	var size: float = 6.0

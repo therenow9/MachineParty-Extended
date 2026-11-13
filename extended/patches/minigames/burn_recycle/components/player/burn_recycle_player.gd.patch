@@ -16,7 +16,7 @@ diff --git a/minigames/burn_recycle/components/player/burn_recycle_player.gd b/m
  
  func setup_clientside_visuals(_seat_counter: int):
 +
-+	# [MP8] A mixed room runs the game's setup_clientside_visuals (D120).
++	# [MP8] A mixed room runs the game's setup_clientside_visuals.
 +	if not NetworkManager.mp8_room_extended():
 +		await _mp8_game_setup_clientside_visuals(_seat_counter)
 +		return
@@ -38,7 +38,7 @@ diff --git a/minigames/burn_recycle/components/player/burn_recycle_player.gd b/m
 +				if _indicator.indicator_id == index_to_enable_indicator_on:
 +					_indicator.get_child(0).visible = true
 +
-+# The game's setup_clientside_visuals, for a mixed room (D120).
++# The game's setup_clientside_visuals, for a mixed room.
 +func _mp8_game_setup_clientside_visuals(_seat_counter: int):
  	await get_tree().create_timer(1, false).timeout
  	game_instance.clientside_visuals_parent.rotation_degrees = Vector3(
@@ -48,7 +48,7 @@ diff --git a/minigames/burn_recycle/components/player/burn_recycle_player.gd b/m
  
  func set_active_belt(_seat_counter: int):
 +
-+	# [MP8] A mixed room runs the game's set_active_belt (D120).
++	# [MP8] A mixed room runs the game's set_active_belt.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_set_active_belt(_seat_counter)
 +		return
@@ -62,7 +62,7 @@ diff --git a/minigames/burn_recycle/components/player/burn_recycle_player.gd b/m
 +		printerr("[MP8] The Filter: seat %d has no belt (only %d in the array); its conveyor will not move" % [
 +			_seat_counter, game_instance.belts.size()])
 +
-+# The game's set_active_belt, for a mixed room (D120).
++# The game's set_active_belt, for a mixed room.
 +func _mp8_game_set_active_belt(_seat_counter: int):
  	active_seat_index = _seat_counter
  	debug.text = "seat: " + str(_seat_counter)
@@ -70,7 +70,7 @@ diff --git a/minigames/burn_recycle/components/player/burn_recycle_player.gd b/m
  
  func set_active_press(_seat_counter: int):
 +
-+	# [MP8] A mixed room runs the game's set_active_press (D120).
++	# [MP8] A mixed room runs the game's set_active_press.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_set_active_press(_seat_counter)
 +		return
@@ -84,7 +84,7 @@ diff --git a/minigames/burn_recycle/components/player/burn_recycle_player.gd b/m
 +		printerr("[MP8] The Filter: seat %d has no matching press (%d in total); elimination will misbehave" % [
 +			_seat_counter, game_instance.presses.size()])
 +
-+# The game's set_active_press, for a mixed room (D120).
++# The game's set_active_press, for a mixed room.
 +func _mp8_game_set_active_press(_seat_counter: int):
  	for i in game_instance.presses:
  		if i.press_id == _seat_counter:
@@ -94,7 +94,7 @@ diff --git a/minigames/burn_recycle/components/player/burn_recycle_player.gd b/m
  
  func look_at_seat(_seat_index: int):
 +
-+	# [MP8] A mixed room runs the game's look_at_seat (D120).
++	# [MP8] A mixed room runs the game's look_at_seat.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_look_at_seat(_seat_index)
 +		return
@@ -118,7 +118,7 @@ diff --git a/minigames/burn_recycle/components/player/burn_recycle_player.gd b/m
 +
 +	anim_camera_movement.play("look " + direction)
 +
-+# The game's look_at_seat, for a mixed room (D120).
++# The game's look_at_seat, for a mixed room.
 +func _mp8_game_look_at_seat(_seat_index: int):
  	var direction: String = "center"
  
@@ -127,7 +127,7 @@ diff --git a/minigames/burn_recycle/components/player/burn_recycle_player.gd b/m
  
  func move_items_visual():
  
-+	# [MP8] A mixed room runs the game's move_items_visual (D120).
++	# [MP8] A mixed room runs the game's move_items_visual.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_move_items_visual()
 +		return
@@ -161,7 +161,7 @@ diff --git a/minigames/burn_recycle/components/player/burn_recycle_player.gd b/m
 +		# or it scrolls slower than the items move.
 +		t2.tween_property(mat, "uv1_offset", Vector3(prev_uv - _mp8_uv_step(), mat.uv1_offset.y, mat.uv1_offset.z), conveyor_move_time / 1.5)
 +
-+# The game's move_items_visual, for a mixed room (D120).
++# The game's move_items_visual, for a mixed room.
 +func _mp8_game_move_items_visual():
 +
  	for i in items.keys().size() - 1:
@@ -171,7 +171,7 @@ diff --git a/minigames/burn_recycle/components/player/burn_recycle_player.gd b/m
  @rpc("any_peer", "call_local", "reliable")
  func set_eliminated_rpc():
  
-+	# [MP8] A mixed room runs the game's set_eliminated_rpc (D120).
++	# [MP8] A mixed room runs the game's set_eliminated_rpc.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_set_eliminated_rpc()
 +		return
@@ -197,7 +197,7 @@ diff --git a/minigames/burn_recycle/components/player/burn_recycle_player.gd b/m
 +	active = false
 +	is_dead = true
 +
-+# The game's set_eliminated_rpc, for a mixed room (D120).
++# The game's set_eliminated_rpc, for a mixed room.
 +func _mp8_game_set_eliminated_rpc():
 +
  	play_death_sound()
@@ -209,7 +209,7 @@ diff --git a/minigames/burn_recycle/components/player/burn_recycle_player.gd b/m
  
 +
 +# [MP8] Extended's setup, sent by the relay in an Extended room (burn_recycle.gd's spawn_players) with the
-+# slot count and the seat's push; a mixed room sends the game's setup_rpc above (D120).
++# slot count and the seat's push; a mixed room sends the game's setup_rpc above.
 +func mp8_setup_rpc(_rotation_degrees: Vector3, _random_types_byte_array: PackedByteArray, _slots: int = 0, _push: float = 0.0):
 +
 +	rotation_degrees = _rotation_degrees

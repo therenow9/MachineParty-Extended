@@ -1,4 +1,4 @@
-# Checks every NetworkManager.mp8_text(en, zhs, zht) call in patch\ (D173): three string literals (or a
+# Checks every NetworkManager.mp8_text(en, zhs, zht) call in patch\: three string literals (or a
 # String const of the same file), none empty, Chinese in the ZHS and ZHT slots and none in the EN slot, and
 # the same % specifiers in the same order and the same number of \n in all three. A triple that differs
 # formats to an error and an empty label with nothing in the log. Exits 1 on any failure.

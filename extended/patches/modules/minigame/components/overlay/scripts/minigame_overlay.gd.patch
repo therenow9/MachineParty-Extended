@@ -27,7 +27,7 @@ diff --git a/modules/minigame/components/overlay/scripts/minigame_overlay.gd b/m
 +
  func set_countdown(text: String, _with_fade: bool = true, _fade_time: float = 0.5):
 +
-+	# [MP8] A mixed room shows the game's countdown, whatever a minigame filled in (D120).
++	# [MP8] A mixed room shows the game's countdown, whatever a minigame filled in.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_set_countdown(text, _with_fade, _fade_time)
 +		return
@@ -66,7 +66,7 @@ diff --git a/modules/minigame/components/overlay/scripts/minigame_overlay.gd b/m
 +	if mp8_token == "GO!" and mp8_shake_on_go:
 +		_mp8_shake_countdown()
 +
-+# The game's set_countdown, for a mixed room (D120).
++# The game's set_countdown, for a mixed room.
 +func _mp8_game_set_countdown(text: String, _with_fade: bool = true, _fade_time: float = 0.5):
  	var is_valid_string = false
  	match text:

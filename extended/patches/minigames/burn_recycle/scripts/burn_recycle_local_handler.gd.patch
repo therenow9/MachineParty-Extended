@@ -1,20 +1,21 @@
 diff --git a/minigames/burn_recycle/scripts/burn_recycle_local_handler.gd b/minigames/burn_recycle/scripts/burn_recycle_local_handler.gd
 --- a/minigames/burn_recycle/scripts/burn_recycle_local_handler.gd
 +++ b/minigames/burn_recycle/scripts/burn_recycle_local_handler.gd
-@@ -38,6 +38,12 @@ const Layouts: Dictionary = {
+@@ -38,6 +38,13 @@ const Layouts: Dictionary = {
  var keyboard_rect: TextureRect
  var texture_rects: Array[TextureRect]
  var overlay_templates: Dictionary[BurnRecyclePlayer, LocalOverlayTemplate]
 +var _mp8_players: Array[BurnRecyclePlayer] = []
 +
-+# [MP8] The 4x2 tiles at 7-8 players are 240x270 of the game's 960x540, and the camera keeps its vertical fov, so
-+# they lose the sides and the counter sits at the right edge. A lens shift slides each view this far without
-+# turning it (D132). The tile cameras copy only transform and fov from the player's camera, so it stays.
++# [MP8] Above four players a tile is narrower than 16:9, so with the vertical fov kept it loses the sides; h_offset
++# moves each tile's eye this far sideways without turning it, bringing the counter in from the edge. At 5-6 the
++# 3x2 tiles show a pushed-out seat's neighbour beside its console, so there the fov is kept horizontal instead.
++# The tile cameras copy only transform and fov from the player's camera, so both settings stay.
 +const MP8_NARROW_TILE_SHIFT: float = 1.2
  
  func _process(_delta: float) -> void :
  	pass
-@@ -53,36 +59,96 @@ func show_all_tags():
+@@ -53,36 +60,98 @@ func show_all_tags():
  		o.fade_in_name_label(1.0)
  
  func set_players(players: Array[BurnRecyclePlayer]):
@@ -35,7 +36,9 @@ diff --git a/minigames/burn_recycle/scripts/burn_recycle_local_handler.gd b/mini
 +		overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
 +		local_after_post_processing_root.add_child(overlay)
 +		overlay_templates[player] = overlay
-+		player.local_camera.h_offset = MP8_NARROW_TILE_SHIFT if _mp8_players.size() >= 7 else 0.0
++		var n: int = _mp8_players.size()
++		player.local_camera.h_offset = MP8_NARROW_TILE_SHIFT if n >= 5 else 0.0
++		player.local_camera.keep_aspect = Camera3D.KEEP_WIDTH if n == 5 or n == 6 else Camera3D.KEEP_HEIGHT
 +	_mp8_relayout()
 +
 +
@@ -68,7 +71,7 @@ diff --git a/minigames/burn_recycle/scripts/burn_recycle_local_handler.gd b/mini
 +	return player.player_presence.network_name
 +
 +func _ready() -> void:
-+	# [MP8] The handler is in the scene online too; the game's has no _ready, so a mixed room connects nothing (D120).
++	# [MP8] The handler is in the scene online too; the game's has no _ready, so a mixed room connects nothing.
 +	if not NetworkManager.mp8_room_extended():
 +		return
 +	get_viewport().size_changed.connect(_mp8_relayout)

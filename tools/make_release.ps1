@@ -2,7 +2,7 @@
 .SYNOPSIS
   Builds the release zips into dist/: our three mods on their own, and Machine Party: Extended's two bundles,
   each one machine_party_extended/ folder (Extended's build, id mp8_support) with our mods in subfolders, which
-  Extended's main.gd starts (D157).
+  Extended's main.gd starts.
 .EXAMPLE
   pwsh ./tools/make_release.ps1                       # Extended from the newest extended/dist/mp8-b<N>
   pwsh ./tools/make_release.ps1 -Mp8Build extended/dist/mp8-b95/mp8_support
@@ -51,14 +51,14 @@ $Mp8Build = Resolve-Arg $Mp8Build
 $found = @(Get-ChildItem -LiteralPath $Mp8Build -Force | ForEach-Object { if ($_.PSIsContainer) { $_.Name + '/' } else { $_.Name } } | Sort-Object)
 if (Compare-Object $found $buildNames) { throw "$Mp8Build is not one build's output: it holds $($found -join ', ')" }
 $info = Read-Json (Join-Path $Mp8Build 'BUILDINFO.json')
-if ($info.test_build -or (Split-Path -Leaf (Split-Path -Parent $Mp8Build)) -like '*-test*') { throw "$Mp8Build is a test build; a test build is never released (D119)" }
+if ($info.test_build -or (Split-Path -Leaf (Split-Path -Parent $Mp8Build)) -like '*-test*') { throw "$Mp8Build is a test build; a test build is never released" }
 $mp8Mod = Read-Json (Join-Path $Mp8Build 'mod.json')
 $manifest = Read-Json (Join-Path $Mp8Build 'vanilla_md5.json')
 if ($mp8Mod.id -ne 'mp8_support') { throw "$Mp8Build\mod.json is '$($mp8Mod.id)', not mp8_support" }
 # An older wrapper starts nothing in its subfolders, so a bundle built on it would ship mods that never run, and
 # one without the two-folder check would mount twice beside a build's mods/mp8_support.
 foreach ($needed in @('mpml_dir', 'INSTALLED_TWICE')) {
-    if (-not (Select-String -LiteralPath (Join-Path $Mp8Build 'main.gd') -SimpleMatch $needed -Quiet)) { throw "$Mp8Build's main.gd lacks $needed (built before D157)" }
+    if (-not (Select-String -LiteralPath (Join-Path $Mp8Build 'main.gd') -SimpleMatch $needed -Quiet)) { throw "$Mp8Build's main.gd lacks $needed (an older build, without the bundle checks)" }
 }
 if ($manifest.overlay_sha256 -ne (Get-FileHash -LiteralPath (Join-Path $Mp8Build 'mp8_support_overlay.zip') -Algorithm SHA256).Hash.ToLower()) { throw "$Mp8Build's overlay does not match its vanilla_md5.json" }
 $mp8Version = [string]$mp8Mod.version
@@ -84,14 +84,7 @@ function Get-Section([string[]]$Lines, [string]$Heading) {
     if ($start -lt 0) { throw "README has no '$Heading' section" }
     $end = $start + 1
     while ($end -lt $Lines.Count -and $Lines[$end] -notmatch '^(## |---$)') { $end++ }
-    $body = $Lines[$start..($end - 1)]
-    # "How it works" is for developers; a player's README.txt leaves that subsection out.
-    $kept = @(); $skip = $false
-    foreach ($l in $body) {
-        if ($l -match '^### ') { $skip = $l -eq '### How it works' }
-        if (-not $skip) { $kept += $l }
-    }
-    , $kept
+    , @($Lines[$start..($end - 1)])
 }
 # A relative link resolves from its README's folder ('' for the root's, 'mods' for the mods'), as GitHub resolves it.
 function Resolve-Link([string]$Url, [string]$Folder) {
@@ -146,15 +139,31 @@ function ModReadme([string]$Id, [switch]$Hosted) {
     $m = $mods[$Id]
     $setup = if ($Hosted) { @("Part of Machine Party: Extended's bundle, installed and removed with it: see ../README.txt.") }
              else { $rootCommon.Requirements + '' + $rootCommon.Install }
+    $section = Get-Section $rootReadme "## $($m.Name)"
+    # Inside the bundle, the section's "Not needed if Machine Party: Extended is installed" sentence says the opposite of
+    # $setup, so it goes and the rest of its line (the Nexus link) stays. A reworded line throws rather than slip through.
+    if ($Hosted) {
+        $notNeeded = '^Not needed if \[Machine Party: Extended\]\([^)]*\) is installed: [^.]*\.\s*'
+        $hits = @($section | Where-Object { $_ -match '^Not needed if' })
+        if ($hits.Count -gt 0) {
+            if ($hits.Count -ne 1 -or $hits[0] -notmatch $notNeeded) { throw "$($m.Name)'s README section has a 'Not needed if' line make_release.ps1 can't cut: $($hits -join ' | ')" }
+            $section = @($section | ForEach-Object { if ($_ -match '^Not needed if') { $_ -replace $notNeeded, '' } else { $_ } })
+        }
+    }
     $lines = @("# $($m.Name) $($m.Version)", '', (Get-ModUrl $m.Name), '') + $setup + '' +
-        (Get-Section $rootReadme "## $($m.Name)") + '' + $rootCommon.Credits + '' + $rootCommon.License
+        $section + '' + $rootCommon.Credits + '' + $rootCommon.License
     Join-Text (ConvertTo-Text $lines 'mods')
 }
 function BundleReadme([string[]]$Ids) {
     $firstHeading = 1
     while ($firstHeading -lt $extReadme.Count -and $extReadme[$firstHeading] -notmatch '^## ') { $firstHeading++ }
     if ($firstHeading -ge $extReadme.Count) { throw "Extended's README has no '## ' section" }
-    $intro = @($extReadme[1..($firstHeading - 1)])
+    # The README's download buttons and "All downloads" link point at the release this zip came from. Exactly those
+    # three lines go; any other line with a download arrow or "releases/download" means the wording moved.
+    $all = @($extReadme[1..($firstHeading - 1)])
+    $intro = @($all | Where-Object { $_ -notmatch '^### \[⬇ Download|^\[All downloads\]' })
+    $left = @($intro | Where-Object { $_ -match '⬇|releases/download' })
+    if ($all.Count - $intro.Count -ne 3 -or $left) { throw "Extended's README intro: expected 2 download buttons and the 'All downloads' line, cut $($all.Count - $intro.Count)$(if ($left) { "; left: $($left -join ' | ')" })" }
     $included = @('## What this zip holds', '', "One folder, $bundleFolder, holding:", '', "- Machine Party: Extended $mp8Version")
     foreach ($id in $Ids) { $included += "- $($mods[$id].Name) $($mods[$id].Version) ($bundleFolder/$id): $(Get-Blurb $mods[$id].Name)" }
     $included += @('', "Each of the other mods is described on $repoUrl/tree/main/mods.")

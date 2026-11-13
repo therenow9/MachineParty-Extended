@@ -81,7 +81,7 @@ const TARGETS := {
 
 
 # peer 0 sends to every Extended peer, as rpc() does. Remote sends go first, then the local call, as in
-# Godot's rpcp; a local call here keeps the current sender: 0 outside an RPC, the RPC's sender inside one (PD19).
+# Godot's rpcp; a local call here keeps the current sender: 0 outside an RPC, the RPC's sender inside one.
 func send(peer: int, node: Node, method: StringName, args: Array) -> void:
 	var mode := mode_of(node, method)
 	if mode < 0:

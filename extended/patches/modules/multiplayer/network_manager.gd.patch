@@ -14,7 +14,7 @@ diff --git a/modules/multiplayer/network_manager.gd b/modules/multiplayer/networ
 +# Globals.game_version, which stays vanilla's so vanilla players can join. Keep it short: the main menu
 +# corner shows mp8_full_version(), and the refusal texts cut a version past 18 characters.
 +const MP8_VERSION_TAG: String = "mp-extended-1.1"
-+# [MP8] build_mpml_mod.ps1 -TestBuild compiles this line as true (D119); the shipped build reads no dev switch.
++# [MP8] build_mpml_mod.ps1 -TestBuild compiles this line as true; the shipped build reads no dev switch.
 +const MP8_TEST_BUILD: bool = false
 +
 +
@@ -23,7 +23,7 @@ diff --git a/modules/multiplayer/network_manager.gd b/modules/multiplayer/networ
 +
 +
 +# [MP8] Every switch of ours is read from this list, never from OS.get_cmdline_args(): the command line
-+# in a test build or the editor, empty otherwise, so a shipped build takes each switch's default (D116).
++# in a test build or the editor, empty otherwise, so a shipped build takes each switch's default.
 +func mp8_dev_args() -> PackedStringArray:
 +	return OS.get_cmdline_args() if mp8_development_tools_allowed() else PackedStringArray()
 +
@@ -52,7 +52,7 @@ diff --git a/modules/multiplayer/network_manager.gd b/modules/multiplayer/networ
  }
  
 +# [MP8] MP8RoomFull is ours, at the end: a vanilla joiner's lobby_scene.gd matches only 0-3 and shows
-+# "Something went wrong." for it (D117).
++# "Something went wrong." for it.
  enum RefuseReason{
 -	None, VersionMismatch, SessionEnded, HostLeft
 +	None, VersionMismatch, SessionEnded, HostLeft, MP8RoomFull
@@ -110,7 +110,7 @@ diff --git a/modules/multiplayer/network_manager.gd b/modules/multiplayer/networ
  
  signal backend_ready()
  signal on_server_created()
-@@ -43,13 +126,610 @@ signal player_removed_from_join_queue(network_id)
+@@ -43,13 +126,618 @@ signal player_removed_from_join_queue(network_id)
  func _ready() -> void :
  
  	var args = Array(OS.get_cmdline_args())
@@ -358,6 +358,8 @@ diff --git a/modules/multiplayer/network_manager.gd b/modules/multiplayer/networ
 +		dup.name = "MP8Slot%d" % (n + j)
 +		parent.add_child(dup)
 +		dup.position = src_slot.position + MP8_ROW2_OFFSET
++		if j % n == 1:
++			dup.position += MP8_ROW2_SEAT6_NUDGE
 +		dup.visible = false
 +
 +		h.players.append(dup)
@@ -365,7 +367,7 @@ diff --git a/modules/multiplayer/network_manager.gd b/modules/multiplayer/networ
 +		h.nametags.append(dup.get_node(rel_t))
 +
 +	# The chairs are copied with the same shift, so the second row sits as the first does.
-+	_mp8_clone_chairs(parent, MP8_ROW2_OFFSET)
++	_mp8_clone_chairs(parent, MP8_ROW2_OFFSET, {"chair_001": MP8_ROW2_SEAT6_NUDGE})
 +
 +	# The second row is nearer the camera; pull it back a little.
 +	if cam:
@@ -390,9 +392,15 @@ diff --git a/modules/multiplayer/network_manager.gd b/modules/multiplayer/networ
 +# larger x further right.
 +const MP8_ROW2_OFFSET := Vector3(0.6, 0.0, 5.2)
 +
++# Seat 6 copies seat 2, and seat 2's chair (chair_001), shifted, stands where seat 3's crossed legs
++# reach: seat 6 and its chair sit this much further toward the camera, where seat 3's leg bones
++# clear the chair by 0.27 m.
++const MP8_ROW2_SEAT6_NUDGE := Vector3(0.0, 0.0, 1.2)
++
 +
 +# Copies the scene's visible decorative chairs, shifted by offset, so each second-row seat has its chair.
-+func _mp8_clone_chairs(parent, offset: Vector3) -> void :
++# nudge: a chair's name to a further shift for its copy alone.
++func _mp8_clone_chairs(parent, offset: Vector3, nudge: Dictionary = {}) -> void :
 +
 +	var env = parent.get_parent().get_node_or_null("lobby environment1")
 +	if env == null:
@@ -418,15 +426,15 @@ diff --git a/modules/multiplayer/network_manager.gd b/modules/multiplayer/networ
 +		d.name = "MP8" + String(c.name)
 +		holder.add_child(d)
 +		d.transform = c.transform
-+		d.position = c.position + offset
++		d.position = c.position + offset + nudge.get(String(c.name), Vector3.ZERO)
 +		d.visible = true
 +		cloned += 1
 +
 +	print("[MP8] copied %d chairs, offset %s" % [cloned, str(offset)])
 +
 +
-+# D121: the seat map a lobby's host sends. An Extended room has 8 seats; a mixed room the game's 4, anyone
-+# seated at 5-8 moved to a free seat of 1-4 in seat order (a mixed room holds 4 at most, D117). Run before the
++# The seat map a lobby's host sends. An Extended room has 8 seats; a mixed room the game's 4, anyone
++# seated at 5-8 moved to a free seat of 1-4 in seat order (a mixed room holds 4 at most). Run before the
 +# game's seat loop, which takes the first free seat. Static, for mp8_selftest.
 +static func mp8_fit_seats(seats: Dictionary, extended: bool) -> Dictionary[int, int]:
 +	var out: Dictionary[int, int] = {}
@@ -445,7 +453,7 @@ diff --git a/modules/multiplayer/network_manager.gd b/modules/multiplayer/networ
 +	return out
 +
 +
-+# D121: a lobby shows the game's 4 slots while its seat map has the game's 4 seats (a mixed room), and the
++# A lobby shows the game's 4 slots while its seat map has the game's 4 seats (a mixed room), and the
 +# second row otherwise. Every peer follows the map the host sent, so all agree. The handler gets the game's
 +# arrays back, since its update_player_list() indexes them by seat.
 +func mp8_lobby_layout(h, extended: bool) -> void:
@@ -586,7 +594,7 @@ diff --git a/modules/multiplayer/network_manager.gd b/modules/multiplayer/networ
 +	# Minigames that place their own spawns set mp8_owns_spawns; Object.get() returns null when absent.
 +	if mg.get("mp8_owns_spawns") == true:
 +		return
-+	# Deferred from add_child, so inside the minigame's latch. A mixed room keeps the game's markers (D116).
++	# Deferred from add_child, so inside the minigame's latch. A mixed room keeps the game's markers.
 +	if not mp8_room_extended():
 +		return
 +
@@ -723,7 +731,7 @@ diff --git a/modules/multiplayer/network_manager.gd b/modules/multiplayer/networ
  func is_active() -> bool:
  
  	if not multiplayer:
-@@ -81,6 +761,14 @@ func set_game_scene(_game_scene: PackedScene):
+@@ -81,6 +769,14 @@ func set_game_scene(_game_scene: PackedScene):
  
  func create_backend():
  
@@ -738,7 +746,7 @@ diff --git a/modules/multiplayer/network_manager.gd b/modules/multiplayer/networ
  	if active_backend:
  
  		active_backend.free()
-@@ -269,3 +957,360 @@ func remove_player_rpc(_network_id: int):
+@@ -269,3 +965,360 @@ func remove_player_rpc(_network_id: int):
  		var player_info = active_backend.connected_players[_network_id]
  		active_backend.disconnected_players[_network_id] = player_info
  		active_backend.connected_players.erase(_network_id)
@@ -815,7 +823,7 @@ diff --git a/modules/multiplayer/network_manager.gd b/modules/multiplayer/networ
 +# True on the couch, and online while every player among the connected peers runs this Extended.
 +# Peers, since Offline Bots adds its bots to connected_players online without our key; and only peers
 +# with a player entry, since a peer mid-handshake or being refused has none yet.
-+# Held from each minigame's load to its clear (game.gd, D118): a mid-match joiner gets its entry at once
++# Held from each minigame's load to its clear (game.gd): a mid-match joiner gets its entry at once
 +# and waits in the join queue, and the minigame was set up for the room at its load.
 +func mp8_room_extended() -> bool:
 +	if GameManager.local_game or active_backend == null:
@@ -826,7 +834,7 @@ diff --git a/modules/multiplayer/network_manager.gd b/modules/multiplayer/networ
 +
 +
 +# Whether this peer sends a broadcast that Extended sends from the server only (a sound, a cleanup): in a
-+# mixed room every peer sends it, as the game does (D116). is_server is an argument for mp8_selftest.
++# mixed room every peer sends it, as the game does. is_server is an argument for mp8_selftest.
 +func mp8_sends_broadcast(is_server: bool) -> bool:
 +	return is_server or not mp8_room_extended()
 +

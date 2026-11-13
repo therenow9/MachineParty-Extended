@@ -106,7 +106,7 @@ diff --git a/minigames/spine_breaker/components/player/scripts/spine_breaker_pla
  
  func _process(_delta: float) -> void :
  
-+	# [MP8] A mixed room runs the game's _process (D120).
++	# [MP8] A mixed room runs the game's _process.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_process(_delta)
 +		return
@@ -145,7 +145,7 @@ diff --git a/minigames/spine_breaker/components/player/scripts/spine_breaker_pla
 +
 +		movement_input = Vector3.ZERO
 +
-+# The game's _process, for a mixed room (D120).
++# The game's _process, for a mixed room.
 +func _mp8_game_process(_delta: float) -> void :
 +
  	if spine_breaker_device:
@@ -155,7 +155,7 @@ diff --git a/minigames/spine_breaker/components/player/scripts/spine_breaker_pla
  
  func update_throwing(_delta: float):
  
-+	# [MP8] A mixed room runs the game's update_throwing (D120).
++	# [MP8] A mixed room runs the game's update_throwing.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_update_throwing(_delta)
 +		return
@@ -188,7 +188,7 @@ diff --git a/minigames/spine_breaker/components/player/scripts/spine_breaker_pla
 +		throw_spine_breaker_rpc.rpc()
 +		kick_timeout = 0.2
 +
-+# The game's update_throwing, for a mixed room (D120).
++# The game's update_throwing, for a mixed room.
 +func _mp8_game_update_throwing(_delta: float):
 +
  	if kicking:
@@ -204,7 +204,7 @@ diff --git a/minigames/spine_breaker/components/player/scripts/spine_breaker_pla
  @rpc("any_peer", "call_local", "reliable")
  func set_spine_breaker_rpc(_has_spine_breaker: bool, _thrown: bool = false, _from_direction: int = 0):
  
-+	# [MP8] A mixed room runs the game's set_spine_breaker_rpc (D120).
++	# [MP8] A mixed room runs the game's set_spine_breaker_rpc.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_set_spine_breaker_rpc(_has_spine_breaker, _thrown, _from_direction)
 +		return
@@ -282,7 +282,7 @@ diff --git a/minigames/spine_breaker/components/player/scripts/spine_breaker_pla
 +
 +	set_spinebreaker_visuals()
 +
-+# The game's set_spine_breaker_rpc, for a mixed room (D120).
++# The game's set_spine_breaker_rpc, for a mixed room.
 +func _mp8_game_set_spine_breaker_rpc(_has_spine_breaker: bool, _thrown: bool = false, _from_direction: int = 0):
 +
  	spine_breaker_visual.visible = _has_spine_breaker
@@ -292,7 +292,7 @@ diff --git a/minigames/spine_breaker/components/player/scripts/spine_breaker_pla
  @rpc("any_peer", "call_local", "reliable")
  func break_spine_rpc():
  
-+	# [MP8] A mixed room runs the game's break_spine_rpc (D120).
++	# [MP8] A mixed room runs the game's break_spine_rpc.
 +	if not NetworkManager.mp8_room_extended():
 +		await _mp8_game_break_spine_rpc()
 +		return
@@ -358,7 +358,7 @@ diff --git a/minigames/spine_breaker/components/player/scripts/spine_breaker_pla
 +		elif dev != null:
 +			print("[MP8] Spine Breaker: device %d is retired, skipping the reset at the corpse" % dev.mp8_index)
 +
-+# The game's break_spine_rpc, for a mixed room (D120).
++# The game's break_spine_rpc, for a mixed room.
 +func _mp8_game_break_spine_rpc():
 +
  	active = false
@@ -368,7 +368,7 @@ diff --git a/minigames/spine_breaker/components/player/scripts/spine_breaker_pla
  @rpc("any_peer", "call_local", "reliable")
  func throw_spine_breaker_rpc():
  
-+	# [MP8] A mixed room runs the game's throw_spine_breaker_rpc (D120).
++	# [MP8] A mixed room runs the game's throw_spine_breaker_rpc.
 +	if not NetworkManager.mp8_room_extended():
 +		_mp8_game_throw_spine_breaker_rpc()
 +		return
@@ -402,7 +402,7 @@ diff --git a/minigames/spine_breaker/components/player/scripts/spine_breaker_pla
 +			get_path()
 +		)
 +
-+# The game's throw_spine_breaker_rpc, for a mixed room (D120).
++# The game's throw_spine_breaker_rpc, for a mixed room.
 +func _mp8_game_throw_spine_breaker_rpc():
 +
  	if not active:
