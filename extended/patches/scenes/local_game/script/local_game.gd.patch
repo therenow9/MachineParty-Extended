@@ -32,10 +32,11 @@ diff --git a/scenes/local_game/script/local_game.gd b/scenes/local_game/script/l
  
  	PauseMenu.show_quit_to_menu = true
  	PauseMenu.set_can_activate(true)
-@@ -92,16 +109,38 @@ func _ready() -> void :
+@@ -92,16 +109,39 @@ func _ready() -> void :
  
  func _exit_tree() -> void :
  
++	NetworkManager.mp8_unlatch_room()  # [MP8]
 +	RenderingServer.frame_pre_draw.disconnect(_mp8_skip_covered_3d)
 +	get_viewport().disable_3d = false
 +
@@ -71,7 +72,7 @@ diff --git a/scenes/local_game/script/local_game.gd b/scenes/local_game/script/l
  
  func generate_session_playlist():
  
-@@ -176,6 +215,8 @@ func show_score():
+@@ -176,6 +216,8 @@ func show_score():
  	intermission_manager.screen_score.check_to_show_score()
  
  func load_minigame(minigame_identifier: Globals.MinigameIdentifier, _is_round: bool, _total_rounds: int = -1, ):
@@ -80,7 +81,7 @@ diff --git a/scenes/local_game/script/local_game.gd b/scenes/local_game/script/l
  
  	Globals.current_minigame_identifier = minigame_identifier
  
-@@ -192,11 +233,17 @@ func load_minigame(minigame_identifier: Globals.MinigameIdentifier, _is_round: b
+@@ -192,11 +234,17 @@ func load_minigame(minigame_identifier: Globals.MinigameIdentifier, _is_round: b
  
  		minigame.minigame_loaded.disconnect(_on_minigame_loaded)
  		minigame.minigame_ready.disconnect(_on_minigame_ready)
@@ -98,7 +99,11 @@ diff --git a/scenes/local_game/script/local_game.gd b/scenes/local_game/script/l
  	var minigame_instance = minigame_scene.instantiate()
  	minigame = minigame_instance
  
-@@ -209,9 +256,12 @@ func load_minigame(minigame_identifier: Globals.MinigameIdentifier, _is_round: b
+@@ -206,12 +254,16 @@ func load_minigame(minigame_identifier: Globals.MinigameIdentifier, _is_round: b
+ 	minigame.player_scores_finalized.connect(_on_minigame_player_score_finalized)
+ 
+ 	GameManager.current_minigame_identifier = minigame_identifier
++	NetworkManager.mp8_latch_room()  # [MP8] the rules for this minigame, as game.gd does online
  	minigame_parent.add_child(minigame_instance, true)
  
  func update_scores(more_rounds: bool):
@@ -112,7 +117,15 @@ diff --git a/scenes/local_game/script/local_game.gd b/scenes/local_game/script/l
  
  	if not more_rounds:
  		for k in game_score_by_network_id.keys():
-@@ -299,8 +349,12 @@ func _on_minigame_loaded(_network_id: int):
+@@ -223,6 +275,7 @@ func update_scores(more_rounds: bool):
+ 
+ @rpc("authority", "call_local", "reliable")
+ func clear_minigame_rpc(was_cutscene_minigame: bool):
++	NetworkManager.mp8_unlatch_room()  # [MP8]
+ 
+ 	MusicManager.filter_controller.begin_shift(MusicManager.filter_controller.effect_low_pass.cutoff_hz, 300, 0)
+ 
+@@ -299,8 +352,12 @@ func _on_minigame_loaded(_network_id: int):
  	capture_input = false
  
  func _on_minigame_ready(_network_id: int):
@@ -127,7 +140,7 @@ diff --git a/scenes/local_game/script/local_game.gd b/scenes/local_game/script/l
  	state_machine.transition_to_rpc(&"MinigameStart")
  	minigame.initialize(
  		session_current_minigame_round, 
-@@ -308,14 +362,34 @@ func _on_minigame_ready(_network_id: int):
+@@ -308,14 +365,44 @@ func _on_minigame_ready(_network_id: int):
  		total_score_by_network_id
  	)
  
@@ -145,13 +158,24 @@ diff --git a/scenes/local_game/script/local_game.gd b/scenes/local_game/script/l
 -	round_score_by_network_id[_network_id] += (_score * score_multiplier)
 +	if _mp8_round_committed or not round_score_by_network_id.has(_network_id):
 +		return
++	# [MP8] 1-4 players add the game's own score, unscaled.
++	if not NetworkManager.mp8_room_extended():
++		round_score_by_network_id[_network_id] += (_score * score_multiplier)
++		return
 +	round_score_by_network_id[_network_id] += int(_score * score_multiplier * _mp8_score_scale())
  
  func _on_minigame_player_score_finalized(player_scores):
+-
 +	if _mp8_round_committed or _mp8_final_scores_received:
 +		return
 +	_mp8_final_scores_received = true
- 
++
++	# [MP8] 1-4 players add the game's own scores, unscaled.
++	if not NetworkManager.mp8_room_extended():
++		for network_id in player_scores.keys():
++			if round_score_by_network_id.has(network_id):
++				round_score_by_network_id[network_id] += player_scores[network_id] * score_multiplier
++		return
  	for network_id in player_scores.keys():
  		if round_score_by_network_id.has(network_id):
 -			round_score_by_network_id[network_id] += player_scores[network_id] * score_multiplier

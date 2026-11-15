@@ -707,7 +707,7 @@ diff --git a/minigames/exploding_collar_race/scripts/exploding_collar_race.gd b/
 +		# [MP8] Before the round starts (a player still loading) active_players is empty, and check_game_end()
 +		# would score the round. Guarded here, not in player_disconnected: this RPC is the only path to
 +		# check_game_end(), from disconnects and from finishes/deaths, and deaths cannot happen before the start.
-+		if NetworkManager.mp8_room_extended() and not is_all_player_loaded:
++		if NetworkManager.mp8_room_all_extended() and not is_all_player_loaded:
 +			print("[MP8] Minefield: %d left before the round started, skipping the end check" % _network_id)
 +			return
 +

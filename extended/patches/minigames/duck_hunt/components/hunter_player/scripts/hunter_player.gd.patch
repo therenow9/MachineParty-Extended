@@ -539,7 +539,7 @@ diff --git a/minigames/duck_hunt/components/hunter_player/scripts/hunter_player.
  
  func _on_input_device_changed(input_device: GameManager.InputDevice):
  
-@@ -637,9 +1108,32 @@ func _on_input_device_changed(input_device: GameManager.InputDevice):
+@@ -637,6 +1108,26 @@ func _on_input_device_changed(input_device: GameManager.InputDevice):
  
  
  
@@ -566,9 +566,3 @@ diff --git a/minigames/duck_hunt/components/hunter_player/scripts/hunter_player.
  func reveal_role():
  
  	role_label.text = tr("LOC_CONTROL_HUNTER_NAME") % player_presence.network_name
-+	if GameManager.local_game:
-+		var fallback: int = maxi(0, PlayerManager.player_presences.keys().find(player_presence.network_id))
-+		role_label.text = "P%d · %s" % [int(player_presence.get_meta("mp8_local_seat", fallback)) + 1, role_label.text]
- 
- 	role_overlay.modulate.a = 1.0
- 	role_overlay.visible = true

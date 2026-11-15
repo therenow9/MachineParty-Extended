@@ -82,8 +82,15 @@ func _tags(label: String, handler_path: String, player_path: String) -> void:
 	await frames(3)
 	var typed := Array([], TYPE_OBJECT, StringName(players[0].get_class()), players[0].get_script())
 	typed.assign(players)
+	# No minigame latches the rules here and PlayerManager holds no seats, so Extended would read 1-4 and
+	# hand 8 pads to the game's 4-tile handlers. 8 seats play Extended's rules.
+	var nm: Node = get_node_or_null("/root/NetworkManager")
+	if mp8:
+		nm.set("_mp8_rules_latch", 1)
 	handler.set_players(typed)
 	await frames(3)
+	if mp8:
+		nm.call("mp8_unlatch_room")
 
 	for i in 8:
 		var tile: Rect2 = handler.texture_rects[i].get_global_rect()

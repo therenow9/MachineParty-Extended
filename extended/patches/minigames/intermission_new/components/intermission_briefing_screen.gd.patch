@@ -413,7 +413,27 @@ diff --git a/minigames/intermission_new/components/intermission_briefing_screen.
  	if not Globals.settings.get("original_finished", false) && not GameManager.pagination_highlight_shown:
  		if GameManager.local_game:
  			return
-@@ -697,6 +1074,8 @@ func synchronize_scores_rpc(_active_total_score_by_network_id: Dictionary[int, i
+@@ -535,6 +912,10 @@ func show_score_nodes():
+ 
+ 	var counter_speaker = 0
+ 	for node in score_container_nodes:
++		# [MP8] 8 rows take 0.84 s to appear, and the hide can start 0.4 s after everyone is ready, passing
++		# rows not shown yet; one shown after it stays up into the next minigame picker. A closing briefing shows no more.
++		if user_container_array.size() > 4 and not active:
++			return
+ 		node.show_container()
+ 		speakers_show_player_card[counter_speaker].play()
+ 		counter_speaker += 1
+@@ -670,6 +1051,8 @@ func update_players():
+ 		reset_player_positions()
+ 		sort_user_containers_by_score()
+ 		for i in user_container_array.size():
++			if user_container_array.size() > 4 and not active:  # [MP8] as in show_score_nodes()
++				return
+ 			var user_container = user_container_array[i]
+ 			user_container.show_container()
+ 			speakers_show_player_card[i].play()
+@@ -697,6 +1080,8 @@ func synchronize_scores_rpc(_active_total_score_by_network_id: Dictionary[int, i
  
  @rpc("any_peer", "call_local", "reliable")
  func update_player_data_rpc(player_scores: Dictionary):
@@ -422,7 +442,7 @@ diff --git a/minigames/intermission_new/components/intermission_briefing_screen.
  	var player_presences = PlayerManager.player_presences.values()
  
  	active_total_score_by_network_id = player_scores
-@@ -872,6 +1251,88 @@ func _on_unpaused():
+@@ -872,6 +1257,88 @@ func _on_unpaused():
  		CursorManager.set_mouse_mode(Input.MouseMode.MOUSE_MODE_VISIBLE)
  		CursorManager.set_cursor(true, true)
  

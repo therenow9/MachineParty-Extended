@@ -1,7 +1,7 @@
 diff --git a/minigames/junk_platform/scripts/junk_platform.gd b/minigames/junk_platform/scripts/junk_platform.gd
 --- a/minigames/junk_platform/scripts/junk_platform.gd
 +++ b/minigames/junk_platform/scripts/junk_platform.gd
-@@ -30,9 +30,98 @@ var finished: bool = false
+@@ -30,9 +30,102 @@ var finished: bool = false
  
  var player_count: int = 0
  
@@ -20,6 +20,10 @@ diff --git a/minigames/junk_platform/scripts/junk_platform.gd b/minigames/junk_p
 +# the copies shows on P5-P8, and an off-by-one index hits P8 first.
 +
 +var _mp8_expanded: bool = false
++
++# Read by network_manager with Object.get(); true keeps its generic fill to 8 off our spawn container. At six
++# decks its two extra markers would sit where no deck stands, and a shuffled seat would start over the pit.
++var mp8_owns_spawns: bool = true
 +
 +
 +# [MP8] Debug aids: the local player's id top right (8 windows look alike) and number keys for the
@@ -100,7 +104,7 @@ diff --git a/minigames/junk_platform/scripts/junk_platform.gd b/minigames/junk_p
  	camera.current = true
  
  	if multiplayer.is_server():
-@@ -45,6 +134,212 @@ func _ready() -> void :
+@@ -45,6 +138,214 @@ func _ready() -> void :
  		await get_tree().create_timer(1.0).timeout
  		minigame_ready.emit(1)
  
@@ -119,9 +123,11 @@ diff --git a/minigames/junk_platform/scripts/junk_platform.gd b/minigames/junk_p
 +	#   b = 4 facings (0/90/180/270), same layout
 +	#   c = 8 facings (every 45), all platforms on one regular octagon
 +	var vm: String = _mp8_arg("mp8junkview=").to_lower()
-+	_mp8_view_mode = vm if MP8_VIEW_STEPS.has(vm) else MP8_VIEW_DEFAULT
++	# Read before `_mp8_expand_platforms()`, while `platforms` still holds the stock 4.
++	var default_view: String = MP8_VIEW_SIX if _mp8_deck_target() == MP8_SIX_DECKS else MP8_VIEW_DEFAULT
++	_mp8_view_mode = vm if MP8_VIEW_STEPS.has(vm) else default_view
 +	if vm != "" and not MP8_VIEW_STEPS.has(vm):
-+		push_warning("[MP8] Debris Platforms: mp8junkview=%s not recognised, using the default C (a, b or c only)" % vm)
++		push_warning("[MP8] Debris Platforms: mp8junkview=%s not recognised, using the default %s (a, b, c or d)" % [vm, default_view.to_upper()])
 +	print("[MP8] Debris Platforms: view mode = %s (%d facings, step %.0f°)" % [
 +		("stock" if _mp8_view_mode == MP8_VIEW_VANILLA else _mp8_view_mode.to_upper()),
 +		int(round(360.0 / _mp8_facing_step())), _mp8_facing_step()
@@ -313,16 +319,21 @@ diff --git a/minigames/junk_platform/scripts/junk_platform.gd b/minigames/junk_p
  func fade_in_ambience():
  	for speaker_controller in ambience_speaker_controllers:
  		speaker_controller.speaker.volume_linear = 0
-@@ -71,8 +366,979 @@ func initialize(_round_number: int, _total_rounds: int, _scores: Dictionary = {}
+@@ -71,8 +372,1028 @@ func initialize(_round_number: int, _total_rounds: int, _scores: Dictionary = {}
  
  	state_machine.transition_to_rpc.rpc(&"Round", {"round": _round_number, "total": _total_rounds})
  
-+# [MP8] Expands the 4 stock platforms to `NetworkManager.MAX_PLAYERS`.
++# [MP8] Decks for this room: 6 at 5-6 players, 8 at 7-8 (1-4 never get here: they run the game's code).
++func _mp8_deck_target() -> int:
++	return MP8_SIX_DECKS if PlayerManager.player_presences.size() <= MP8_SIX_DECKS else NetworkManager.MAX_PLAYERS
++
++
++# [MP8] Expands the 4 stock platforms to `_mp8_deck_target()`.
 +func _mp8_expand_platforms() -> void :
 +
 +	if _mp8_expanded:
 +		return
-+	var target: int = NetworkManager.MAX_PLAYERS
++	var target: int = _mp8_deck_target()
 +	var n: int = platforms.size()
 +	if n == 0 or n >= target:
 +		return
@@ -392,6 +403,10 @@ diff --git a/minigames/junk_platform/scripts/junk_platform.gd b/minigames/junk_p
 +
 +		# Only the new 4 turn 45 degrees; the stock 4 keep their bearing (mode c changes only their radius).
 +		var yaw: float = deg_to_rad(MP8_NEW_YAW_DEGREES) if i >= n else 0.0
++		# Six decks: every deck turns by its change of bearing, so each faces the centre alike and a 60-degree
++		# turned view maps the ring onto itself.
++		if target == MP8_SIX_DECKS:
++			yaw = atan2(slots[i].x, slots[i].z) - atan2(g["pos"].x, g["pos"].z)
 +		_mp8_move_group(g, slots[i], yaw)
 +
 +	# [MP8] Final positions, for `_mp8_rebind_for_facing`; `g["pos"]` is the position before the move.
@@ -460,8 +475,10 @@ diff --git a/minigames/junk_platform/scripts/junk_platform.gd b/minigames/junk_p
 +	# 7. A name label above each platform.
 +	_mp8_build_platform_labels()
 +
-+	print("[MP8] Debris Platforms: %d -> %d platforms (new 4 at 0/90/180/270°, radius %.1f)" % [
-+		n, platforms.size(), _mp8_radius()
++	print("[MP8] Debris Platforms: %d -> %d platforms (%s)" % [
++		n, platforms.size(),
++		"couch oval" if _mp8_couch != Vector3.ZERO
++		else "radius %.1f" % (MP8_SIX_RADIUS if target == MP8_SIX_DECKS and _mp8_arg("mp8junkr=") == "" else _mp8_radius())
 +	])
 +
 +
@@ -574,6 +591,9 @@ diff --git a/minigames/junk_platform/scripts/junk_platform.gd b/minigames/junk_p
 +# 0/90/180/270 degrees.
 +func _mp8_slot_positions(original_positions: Array) -> Array[Vector3]:
 +
++	if _mp8_deck_target() == MP8_SIX_DECKS:
++		return _mp8_six_slots(original_positions)
++
 +	var out: Array[Vector3] = []
 +
 +	for p in original_positions:
@@ -598,6 +618,36 @@ diff --git a/minigames/junk_platform/scripts/junk_platform.gd b/minigames/junk_p
 +	for k in 4:
 +		var angle: float = deg_to_rad(90.0 * float(k))
 +		out.append(Vector3(sin(angle) * r, 0.0, cos(angle) * r))
++	return out
++
++
++# [MP8] Six decks at 5-6 players: a regular hexagon (bearings 30, 90, ... 330), the stock 4 moved to the nearest
++# of 30/150/210/330 and the 2 copies on the sides (90, 270). On the couch the hexagon sits on the couch oval; a
++# test build's `mp8junk6=sides` keeps the stock 4 where they are instead, for the renders.
++const MP8_SIX_DECKS: int = 6
++# Online ring, the owner's pick from in-game renders: closest deck edges 10 apart.
++const MP8_SIX_RADIUS: float = 20.0
++const MP8_SIX_STOCK_BEARINGS: Array[float] = [30.0, 150.0, 210.0, 330.0]
++const MP8_SIX_NEW_BEARINGS: Array[float] = [90.0, 270.0]
++
++func _mp8_six_slots(original_positions: Array) -> Array[Vector3]:
++	var sides: bool = _mp8_arg("mp8junk6=") == "sides"
++	var bearings: Array[float] = []
++	for p in original_positions:
++		var b: float = fposmod(rad_to_deg(atan2(p.x, p.z)), 360.0)
++		if not sides:
++			var best: float = MP8_SIX_STOCK_BEARINGS[0]
++			for c in MP8_SIX_STOCK_BEARINGS:
++				if absf(angle_difference(deg_to_rad(c), deg_to_rad(b))) < absf(angle_difference(deg_to_rad(best), deg_to_rad(b))):
++					best = c
++			b = best
++		bearings.append(b)
++	bearings.append_array(MP8_SIX_NEW_BEARINGS)
++	var out: Array[Vector3] = []
++	var r: float = _mp8_radius() if _mp8_arg("mp8junkr=") != "" else MP8_SIX_RADIUS
++	for b in bearings:
++		var a: float = deg_to_rad(b)
++		out.append(_mp8_couch_slot(a) if _mp8_couch != Vector3.ZERO else Vector3(sin(a) * r, 0.0, cos(a) * r))
 +	return out
 +
 +
@@ -626,6 +676,9 @@ diff --git a/minigames/junk_platform/scripts/junk_platform.gd b/minigames/junk_p
 +# The owner's pick from in-game renders: wider and shallower, all decks at one height.
 +# `mp8junkcouch=<rx>,<rz>,<tilt>` overrides it, and `mp8junkcouch=0,0,0` turns it off.
 +const MP8_COUCH_LAYOUT: Vector3 = Vector3(34.0, 18.0, 0.0)
++# The six decks' oval at 5-6 seats, the owner's pick from in-game renders: tighter than the eight's, so
++# the decks draw larger, closest edges about 9 apart.
++const MP8_COUCH_LAYOUT_SIX: Vector3 = Vector3(28.0, 15.0, 0.0)
 +
 +# World units kept clear beyond each deck's radius when the couch camera is fitted.
 +const MP8_COUCH_FRAME_MARGIN: float = 2.0
@@ -639,7 +692,7 @@ diff --git a/minigames/junk_platform/scripts/junk_platform.gd b/minigames/junk_p
 +		return
 +	var seats: int = PlayerManager.player_presences.size()
 +	if seats > 4:
-+		_mp8_couch = MP8_COUCH_LAYOUT
++		_mp8_couch = MP8_COUCH_LAYOUT_SIX if seats <= MP8_SIX_DECKS else MP8_COUCH_LAYOUT
 +	var v: String = _mp8_arg("mp8junkcouch=")
 +	var parts: PackedStringArray = v.split(",")
 +	if seats > 4 and parts.size() == 3 \
@@ -910,8 +963,10 @@ diff --git a/minigames/junk_platform/scripts/junk_platform.gd b/minigames/junk_p
 +# and `visuals_base` while the colliders stay put, so each platform is re-pointed at the visuals above
 +# it; stock has only two states (`platform_visuals` / `_flipped`). The step must map the ring onto
 +# itself: b keeps the mixed rings (90), c puts all 8 on one octagon (45).
-+const MP8_VIEW_STEPS: Dictionary = {"a": 180.0, "b": 90.0, "c": 45.0}
++const MP8_VIEW_STEPS: Dictionary = {"a": 180.0, "b": 90.0, "c": 45.0, "d": 60.0}
 +const MP8_VIEW_DEFAULT: String = "c"
++# Six decks on one regular hexagon: 6 facings.
++const MP8_VIEW_SIX: String = "d"
 +# The mode on the stock two-state switch; the others re-point by geometry in `_mp8_apply_view()`.
 +const MP8_VIEW_VANILLA: String = "a"
 +
@@ -1293,7 +1348,7 @@ diff --git a/minigames/junk_platform/scripts/junk_platform.gd b/minigames/junk_p
  	player_count = PlayerManager.player_presences.size()
  	var spawn_positions: Array[Transform3D]
  	for p in player_spawn_position_node.get_children():
-@@ -127,12 +1393,106 @@ func spawn_players():
+@@ -127,12 +1448,106 @@ func spawn_players():
  		player_scores[network_id] = 0
  
  
@@ -1396,11 +1451,11 @@ diff --git a/minigames/junk_platform/scripts/junk_platform.gd b/minigames/junk_p
  func player_disconnected(_network_id: int):
 +	# [MP8] The room is read before the await, which can outlast this minigame's latch. A mixed room
 +	# keeps the game's own end check.
-+	var mp8_ext: bool = NetworkManager.mp8_room_extended()
++	var mp8_ext: bool = NetworkManager.mp8_room_all_extended()
  	super.player_disconnected(_network_id)
  
  	if not multiplayer.is_server():
-@@ -141,11 +1501,49 @@ func player_disconnected(_network_id: int):
+@@ -141,11 +1556,49 @@ func player_disconnected(_network_id: int):
  	remove_player_rpc.rpc(_network_id)
  	await get_tree().create_timer(1.0).timeout
  
@@ -1450,7 +1505,7 @@ diff --git a/minigames/junk_platform/scripts/junk_platform.gd b/minigames/junk_p
  	if finished:
  		return
  
-@@ -172,9 +1570,57 @@ func check_game_end():
+@@ -172,9 +1625,57 @@ func check_game_end():
  	set_effects_visibility_rpc.rpc(false)
  
  
@@ -1508,7 +1563,7 @@ diff --git a/minigames/junk_platform/scripts/junk_platform.gd b/minigames/junk_p
  	camera_base.rotation_degrees.y = _rotation
  	visuals_base.rotation_degrees.y = _rotation
  	for i in platforms:
-@@ -204,6 +1650,25 @@ func remove_player_rpc(_network_id: int):
+@@ -204,6 +1705,11 @@ func remove_player_rpc(_network_id: int):
  func _on_countdown_expired():
  	super._on_countdown_expired()
  
@@ -1517,13 +1572,13 @@ diff --git a/minigames/junk_platform/scripts/junk_platform.gd b/minigames/junk_p
 +		_mp8_game_on_countdown_expired_tail()
 +		return
 +
-+	for player in players.values():
-+		player.set_active_rpc.rpc(true)
-+
-+	junk_handler.set_active(true)
-+
-+	state_machine.transition_to_rpc.rpc(&"Play")
-+
+ 	for player in players.values():
+ 		player.set_active_rpc.rpc(true)
+ 
+@@ -211,6 +1717,47 @@ func _on_countdown_expired():
+ 
+ 	state_machine.transition_to_rpc.rpc(&"Play")
+ 
 +	# [MP8] `mp8shot` screenshots at 3, 12 and 25 s. Broadcast: `expired` is connected only on the server,
 +	# and each player's camera can only be checked on their own machine.
 +	NetworkManager.mp8_rpc(self, &"mp8_shot_rpc")
@@ -1531,13 +1586,13 @@ diff --git a/minigames/junk_platform/scripts/junk_platform.gd b/minigames/junk_p
 +# The game's _on_countdown_expired after its super call, for a mixed room.
 +func _mp8_game_on_countdown_expired_tail():
 +
- 	for player in players.values():
- 		player.set_active_rpc.rpc(true)
- 
-@@ -211,6 +1676,33 @@ func _on_countdown_expired():
- 
- 	state_machine.transition_to_rpc.rpc(&"Play")
- 
++	for player in players.values():
++		player.set_active_rpc.rpc(true)
++
++	junk_handler.set_active(true)
++
++	state_machine.transition_to_rpc.rpc(&"Play")
++
 +
 +func mp8_shot_rpc() -> void :
 +	_mp8_shot(3.0)
@@ -1568,7 +1623,7 @@ diff --git a/minigames/junk_platform/scripts/junk_platform.gd b/minigames/junk_p
  func _on_player_died(_network_id: int):
  
  	if active_players.has(_network_id):
-@@ -235,3 +1727,168 @@ func _on_player_fallen(last_hit_by_network_id: int):
+@@ -235,3 +1782,168 @@ func _on_player_fallen(last_hit_by_network_id: int):
  			players[last_hit_by_network_id].trigger_achievement_rpc.rpc()
  
  	pass

@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.1.1 (2026-11-15)
+
+Extended 1.1.1 changes only Extended: Better Couch Lobby, More Cosmetics and GameCube Controller Support stay 1.1.0, in the bundles and on their own.
+
+- **With 1 to 4 players, Extended plays the game as it is,** on the couch and online, from the intro to the closing cutscene: the game's decks, spawns, cameras, scoring, split screen and score screens. Only the lobby's 8 seats differ. Until now a game of 2 to 4 played some of the 5-to-8 rules: Debris Platforms' eight decks, the 8-row name and score screens, Spine Breaker's spider spawns and more. Kept at every count: Chisel Gauntlet's pad steps, Duck Hunt's smaller look-speed prompt in split screen, and the fixes for the game's own bugs.
+- **Debris Platforms at 5 or 6 players has six decks,** on the couch and online. 7 and 8 keep the eight.
+- **Inside Job at 5 to 8 players:** players 5 to 8 no longer start inside another player, or a chair. Their four start spots now stand 2.5 m from the game's own, away from the table.
+- **Duck Hunt on the couch:** a duck's name over its head is just the name, never cut short (a seat number before it cut the last letter of a 7-letter name). At 5 to 8 the split-screen tags name the players without seat numbers ("Ducks · ANYA / KELBBE", "ANYA · Hunter"), and so does the two-hunter reveal.
+- **The minigame picker no longer shows a leftover player list.** At 5 to 8, a quick ready on the briefing could leave one or more of its player rows over the next picker's grid.
+- **The version is `mp-extended-1.1.1`.** Players on 1.1.0 and 1.1.1 can't join each other; players without Extended still can, at 4 or fewer.
+
 ## 1.1.0 (2026-11-13)
 
 Extended 1.1.0 comes with Better Couch Lobby 1.1.0, More Cosmetics 1.1.0 and (in the `-with-GameCube` zip) GameCube Controller Support 1.1.0.

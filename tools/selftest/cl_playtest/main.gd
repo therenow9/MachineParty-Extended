@@ -296,7 +296,7 @@ func _wanted(names: PackedStringArray) -> Array:
 static func parse_launch(text: String) -> Dictionary:
 	if text.strip_edges().is_empty():
 		return {}
-	var out := {"ok": true, "error": "", "minigame": "", "mode": "split", "bots": MAX_BOTS, "headless_join": -1, "auto": 0, "drop": 0, "stall": AUTO_STALL_SEC, "grace": AUTO_GRACE_SEC, "catches": false, "throwtest": false, "look": "native", "difficulty": -1, "tmstage": "", "tmcam": ""}
+	var out := {"ok": true, "error": "", "minigame": "", "mode": "split", "bots": MAX_BOTS, "headless_join": -1, "auto": 0, "drop": 0, "stall": AUTO_STALL_SEC, "grace": AUTO_GRACE_SEC, "catches": false, "throwtest": false, "fp": false, "look": "native", "difficulty": -1, "tmstage": "", "tmcam": ""}
 	for part in text.split(";", false):
 		var kv: PackedStringArray = part.split("=", true, 1)
 		var key: String = kv[0].strip_edges()
@@ -325,6 +325,8 @@ static func parse_launch(text: String) -> Dictionary:
 			out["tmcam"] = val
 		elif key == "throwtest" and val == "1":
 			out["throwtest"] = true
+		elif key == "fp" and val == "1":
+			out["fp"] = true
 		elif key == "look" and val == "hi":
 			out["look"] = val
 		elif key == "difficulty" and BOT_LEVELS.has(val):
@@ -789,6 +791,8 @@ func _drive_auto(delta: float) -> void:
 	if is_instance_valid(mg) and mg is Node:
 		_drive_fake_seat(mg, delta)
 		_walk_to_house(mg, now)
+	if _normal_session and im != null:
+		_watch_intermission(im)
 	if _auto_done_usec > 0 and now - _auto_done_usec >= int(_launch["grace"]) * 1000000:
 		ok("auto: %d loads of %s, then %d s of play" % [_auto_loads, _launch["minigame"], _launch["grace"]], true)
 		_finish_launch()
@@ -811,6 +815,49 @@ func _drive_fake_seat(mg: Node, delta: float) -> void:
 			brain._ensure_bot_node_driven(node)
 			brain._kill_bot_cameras(node)
 			ai.drive(mg, mg_class, node, _launch["headless_join"], _auto_bot_state, brain.difficulty, delta)
+
+# A normal session: each change in what the intermission shows, with the drawn-frame count (the movie frame), and
+# an OVERLAP line for any frame where a score row and the minigame selector's UI are visible together.
+var _ovl_state := ""
+var _ovl_count := 0
+var _ovl_dump_frame := -1
+var _ovl_picks := 0
+func _watch_intermission(im) -> void:
+	var picker = im.get("picker")
+	var score = im.get("screen_score")
+	var pick_ui: bool = picker != null and (picker.ui_picker_parent.is_visible_in_tree() or picker.ui_viewfinder_parent.is_visible_in_tree())
+	var rows := 0
+	var arr = score.get("user_container_array") if score != null else null
+	if arr is Array and arr.size() > 0 and is_instance_valid(arr[0]) and arr[0].get_parent() != null:
+		for c in arr[0].get_parent().get_children():
+			if c is Node3D and c.is_visible_in_tree() and (arr.has(c) or String(c.name).begins_with("MP8UserInfo")):
+				rows += 1
+	var vp = im.get("_mp8_screen_viewport")
+	var upd: String = str(vp.render_target_update_mode) if vp != null else "-"
+	var main_vis: bool = im.intermission_main_parent.is_visible_in_tree()
+	var st := "main=%s visual=%s score_rows=%d picker_ui=%s screen_vp=%s" % [main_vis, im.visual_parent.visible, rows, pick_ui, upd]
+	if st != _ovl_state:
+		_ovl_state = st
+		_log_line("intermission: frame %d %s" % [Engine.get_frames_drawn(), st])
+		_ovl_dump_frame = Engine.get_frames_drawn() + 45 if main_vis and pick_ui else -1
+	if _ovl_dump_frame > 0 and Engine.get_frames_drawn() >= _ovl_dump_frame:
+		_ovl_dump_frame = -1
+		# The briefing's rows are siblings of its script node, so the whole intermission is searched.
+		var sb: Node = im
+		var shown: Array = []
+		if sb != null:
+			for c in sb.find_children("*", "CanvasItem", true, false):
+				var nm := String(c.name).to_lower()
+				if c.is_visible_in_tree() and (nm.contains("container") or nm.contains("invite") or nm.contains("mp8") or nm.contains("user info")):
+					shown.append("%s%s" % [sb.get_path_to(c), "" if c.get("state") == null else " state=%s" % str(c.get("state"))])
+		_log_line("intermission: on the selector, briefing nodes shown: %s" % str(shown))
+		var rows_up: Array = shown.filter(func(t): return t.contains("player data container") or t.contains("MP8UserContainer"))
+		ok("the minigame picker shows no briefing player row (picker %d)" % _ovl_picks, rows_up.is_empty(), rows_up)
+		_ovl_picks += 1
+	if pick_ui and rows > 0:
+		_ovl_count += 1
+		if _ovl_count <= 5 or _ovl_count % 60 == 0:
+			_log_line("OVERLAP: frame %d, %d score rows visible with the selector (%d frames so far)" % [Engine.get_frames_drawn(), rows, _ovl_count])
 
 # Offline Bots' AI doesn't play the wheat field, whose ending starts when someone reaches the house.
 func _walk_to_house(mg: Node, now: int) -> void:
@@ -1131,6 +1178,8 @@ func _check_launch() -> void:
 	# The briefing waits for every seat's ready; Offline Bots readies the bots, the owner presses for the human.
 	var briefing = game.intermission_manager.screen_briefing if game != null and game.get("intermission_manager") != null else null
 	ok("the briefing opens", await _wait(func(): return briefing != null and briefing.active and briefing.ready_button_press_allowed, 60.0))
+	if briefing != null and _launch.get("fp", false):
+		_fp_briefing(briefing)
 	if briefing != null:
 		briefing.set_ready_rpc(_launch["headless_join"], true)
 	ok("%s loads" % _launch["minigame"], await _wait(func(): return _scene_is(LOCAL_GAME) and game.get("minigame") != null and Globals.current_minigame_identifier == _launch_id, 120.0),
@@ -1150,10 +1199,13 @@ func _check_launch() -> void:
 	ok("no glasses under a blocking hat", outfits.all(func(o): return o[1] == "none" or not _pools["no_glasses_hats"].has(o[0])), outfits)
 	ok("every presence wears its roll, Better Couch Lobby's hook included", presences.all(func(p): return _rolled.get(p.device_id) == p.customization), _rolled)
 	var mg_name := minigame_name(_launch_id, Globals.MinigameIdentifier)
+	if _launch.get("fp", false):
+		await _fingerprint(game.get("minigame"), mg_name, presences.size())
+		_fp_score_screen(game)
 	if LAYOUT_MINIGAMES.has(mg_name):
 		await _check_layout(game.get("minigame"), mg_name, presences.size())
 	if mg_name == "ChiselGauntlet":
-		_check_dead_lobby(game.get("minigame"))
+		_check_dead_lobby(game.get("minigame"), presences.size())
 	if mg_name in ["ChiselGauntlet", "KnifeAtTheOffice"]:
 		await _check_omni_shadows(game.get("minigame"), mg_name, presences.size())
 	if mg_name == "JunkPlatform" and _launch.get("throwtest", false):
@@ -1180,10 +1232,11 @@ func _check_launch() -> void:
 		say("NOTE no seat status here (Overtime's mp8_local_status_text is the fork's): the pad-log status checks skipped")
 	if _launch_id == Globals.MinigameIdentifier.DuckHunt:
 		await _check_hunter_views(game.get("minigame"))
+		_check_duck_names(game.get("minigame"))
 	if _launch_id in [Globals.MinigameIdentifier.BurnRecycle, Globals.MinigameIdentifier.KnifeAtTheOffice]:
 		await _check_tile_views(game.get("minigame"))
 	if _launch_id == Globals.MinigameIdentifier.KnifeAtTheOffice:
-		await _check_hunt_names(game.get("minigame"))
+		await _check_hunt_names(game.get("minigame"), presences.size())
 	await get_tree().create_timer(2.5).timeout
 	var path: String = _frame_log.path if _frame_log != null else ""
 	var lines: Array = Array(FileAccess.get_file_as_string(path).split("\n", false)) if not path.is_empty() else []
@@ -1195,12 +1248,16 @@ func _check_launch() -> void:
 	if int(_launch["auto"]) == 0:
 		get_tree().change_scene_to_file(MAIN_MENU)
 
-# 8 Player Support 0.8.0: a local game never shows Chisel Gauntlet's dead lobby, so its camera never draws.
-func _check_dead_lobby(mg) -> void:
+# 8 Player Support 0.8.0: a local game of 5-8 never shows Chisel Gauntlet's dead lobby, so its camera never draws.
+# 1-4 players keep the game's (it draws).
+func _check_dead_lobby(mg, n: int) -> void:
 	if not is_instance_valid(mg) or not mg.has_method("mp8_show_dead_lobby"):
 		say("NOTE ChiselGauntlet: no mp8_show_dead_lobby in this build; the dead lobby check skipped")
 		return
 	var mode: int = mg.dead_camera.get_viewport().render_target_update_mode
+	if n <= 4:
+		ok("Chisel Gauntlet at %d: the dead lobby's camera draws, as the game's" % n, mode != SubViewport.UPDATE_DISABLED, mode)
+		return
 	ok("Chisel Gauntlet: the dead lobby's camera does not draw in a local game", mode == SubViewport.UPDATE_DISABLED, mode)
 
 # 8 Player Support 0.9.0: in a local game Chisel's and Knife's omni lights draw dual-paraboloid shadows,
@@ -1215,6 +1272,19 @@ func _check_omni_shadows(mg, mg_name: String, n: int) -> void:
 	if mg_name == "KnifeAtTheOffice":
 		fog = mg.players.values().map(func(p): return p.fog_of_war.fog_of_war_light)
 	var lights: Array = mg.find_children("*", "OmniLight3D", true, false)
+	# 1-4 players keep the game's lights: every omni light cube, every hand glow shadowed.
+	if n <= 4:
+		var changed: Array = lights.filter(func(l): return l.omni_shadow_mode != OmniLight3D.SHADOW_CUBE)
+		ok("%s at %d: every omni light keeps the game's cube shadow" % [mg_name, n], lights.size() > 0 and changed.is_empty(),
+			changed.map(func(l): return "%s mode %d" % [mg.get_path_to(l), l.omni_shadow_mode]))
+		if mg_name == "KnifeAtTheOffice":
+			var glows: Array = []
+			for p in mg.players.values():
+				glows.append_array(p.flashlight.find_children("*", "OmniLight3D", true, false))
+			var dark: Array = glows.filter(func(l): return not l.shadow_enabled)
+			ok("KnifeAtTheOffice at %d: every flashlight hand glow keeps its shadow, as the game's" % n, glows.size() == n and dark.is_empty(),
+				dark.map(func(l): return mg.get_path_to(l)))
+		return
 	var wrong: Array = lights.filter(func(l): return l.omni_shadow_mode != (OmniLight3D.SHADOW_CUBE if fog.has(l) else OmniLight3D.SHADOW_DUAL_PARABOLOID))
 	ok("%s: %d omni lights dual paraboloid in a local game, %d fog-of-war lights cube" % [mg_name, lights.size() - fog.size(), fog.size()],
 		lights.size() > fog.size() and fog.size() == (n if mg_name == "KnifeAtTheOffice" else 0) and wrong.is_empty(),
@@ -1234,7 +1304,7 @@ func _check_omni_shadows(mg, mg_name: String, n: int) -> void:
 # 8 Player Support 0.9.0: a local hunt hides every name over a head, the syringe holder's too. Calls the hunt's
 # start directly with the first player marked infected, so it runs after the tile checks: the music, the projector
 # loop and the uninfected cameras' 3 s zoom start with it.
-func _check_hunt_names(mg) -> void:
+func _check_hunt_names(mg, n: int) -> void:
 	if _loader.has_mod("overtime") or not _loader.has_mod("mp8_support") or not is_instance_valid(mg):
 		say("NOTE KnifeAtTheOffice: not 8 Player Support; the hunt names check skipped")
 		return
@@ -1246,6 +1316,11 @@ func _check_hunt_names(mg) -> void:
 	await get_tree().process_frame
 	holder.is_infected = was
 	var shown: Array = players.filter(func(p): return p.player_name_label.animation_player.assigned_animation != "hide name")
+	# 1-4 players keep the game's hunt: it skips the infected player's name (the game moves it to their layer).
+	if n <= 4:
+		ok("Inside Job at %d: the hunt hides every name but the infected one's, as the game's" % n,
+			shown == [holder], shown.map(func(p): return p.player_presence.network_name))
+		return
 	ok("Inside Job: the hunt hides all %d names over heads in a local game, the infected one's too" % players.size(),
 		shown.is_empty(), shown.map(func(p): return p.player_presence.network_name))
 	# The hand glows again once the hunt has started: nothing in the hunt turns a hand glow's shadow back on.
@@ -1280,17 +1355,22 @@ func _check_debris_couch(mg, n: int) -> void:
 		return
 	if n <= 4:
 		ok("Debris Platforms: at %d seats the couch layout is off" % n, mg._mp8_couch == Vector3.ZERO, mg._mp8_couch)
+		ok("Debris Platforms: at %d seats the game's 4 decks" % n, mg.platforms.size() == 4, mg.platforms.size())
 		return
+	# 5-6 seats get six decks on their own oval, 7-8 the eight on 34 x 18.
+	var consts: Dictionary = mg.get_script().get_script_constant_map()
+	var decks: int = 6 if n <= 6 and consts.has("MP8_SIX_DECKS") else 8
+	var oval: Vector3 = consts.get("MP8_COUCH_LAYOUT_SIX", Vector3(34.0, 18.0, 0.0)) if decks == 6 else Vector3(34.0, 18.0, 0.0)
 	var off_oval: Array = []
 	for p in mg.platforms:
 		var g: Vector3 = p.global_position
-		if absf(pow(g.x / 34.0, 2.0) + pow(g.z / 18.0, 2.0) - 1.0) > 0.01 or absf(g.y) > 0.01:
+		if absf(pow(g.x / oval.x, 2.0) + pow(g.z / oval.y, 2.0) - 1.0) > 0.01 or absf(g.y) > 0.01:
 			off_oval.append(g)
 	var lifts: int = mg.get_node("junk platform compactors").get_children().filter(func(c): return String(c.name).begins_with("MP8CompactorLift")).size()
 	var stock_floor = mg.get_node_or_null("junk platform base collider blockout3/StaticBody3D/CollisionShape3D")
-	ok("Debris Platforms: at %d seats the 8 decks on the 34 x 18 couch oval at one height, 8 compactors on lifts, the stock floor off" % n,
-		mg._mp8_couch == Vector3(34.0, 18.0, 0.0) and mg.platforms.size() == 8 and off_oval.is_empty() and lifts == 8 and stock_floor != null and stock_floor.disabled,
-		[mg._mp8_couch, off_oval, lifts, stock_floor.disabled if stock_floor != null else "no floor shape"])
+	ok("Debris Platforms: at %d seats the %d decks on the %.0f x %.0f couch oval at one height, %d compactors on lifts, the stock floor off" % [n, decks, oval.x, oval.y, decks],
+		mg._mp8_couch == oval and mg.platforms.size() == decks and off_oval.is_empty() and lifts == decks and stock_floor != null and stock_floor.disabled,
+		[mg._mp8_couch, mg.platforms.size(), off_oval, lifts, stock_floor.disabled if stock_floor != null else "no floor shape"])
 
 # Debris Platforms' throw, measured: throw_rpc's impulse (update_interaction's 20 degrees up) at throw_power and
 # four multiples. Fired from SKY above the arena, where nothing is in its way (scenery and players stop throws at
@@ -1516,11 +1596,20 @@ func _check_layout(mg, mg_name: String, n: int) -> void:
 			var added: int = mg.player_spawn_position_node.get_children().filter(func(m): return String(m.name).ends_with("_MP8V")).size()
 			ok("Debris Platforms: the players are spawned", await _wait(func(): return mg.players.size() == n, 60.0), mg.players.size())
 			var decks := {}
+			var off_deck: Array = []
 			for p in mg.players.values():
 				var k: int = mg._mp8_nearest_platform(p.global_position)
 				decks[k] = int(decks.get(k, 0)) + 1
-			ok("Debris Platforms: Overtime's 8 platforms, one player on each", mg.platforms.size() == 8 and added == 0 and decks.size() == n and decks.values().max() == 1,
-				[mg.platforms.size(), added, decks])
+				var d: Vector3 = p.global_position - mg.platforms[k].global_position
+				if Vector2(d.x, d.z).length() > 3.0:
+					off_deck.append([String(p.name), p.global_position])
+			# 5-6 seats get six decks (1.1.1 on), 7-8 eight; one spawn marker per deck.
+			var six: bool = mg.get_script().get_script_constant_map().has("MP8_SIX_DECKS")
+			var want: int = 6 if n <= 6 and six else 8
+			var markers: int = mg.player_spawn_position_node.get_child_count()
+			ok("Debris Platforms: %d decks and %d spawn markers at %d seats, every player starting over its own deck" % [want, want, n],
+				mg.platforms.size() == want and markers == want and added == 0 and decks.size() == n and decks.values().max() == 1 and off_deck.is_empty(),
+				[mg.platforms.size(), markers, added, decks, off_deck])
 			if on_mp8:
 				_check_debris_couch(mg, n)
 				await _check_debris_aim(mg, n)
@@ -1581,6 +1670,7 @@ func _check_layout(mg, mg_name: String, n: int) -> void:
 				ok("Inside Job 8p rules: the search target stops 2 short of the reachable count, and never below 1",
 					mg._mp8v_clamp_target(46, 34) == 32 and mg._mp8v_clamp_target(20, 34) == 20 and mg._mp8v_clamp_target(5, 2) == 1)
 				ok("Inside Job 8p: 8 markers (4 added)", spawns.get_child_count() == 8 and added == 4, [spawns.get_child_count(), added])
+				await _check_inside_job_spawns(mg, spawns)
 				ok("Inside Job 8p: the find comes at most 2 before the last reachable container",
 					mg.guaranteed_search_result >= 1 and mg.guaranteed_search_result <= mg.searchables.size() - 2, [mg.guaranteed_search_result, mg.searchables.size()])
 			else:
@@ -1938,14 +2028,28 @@ func _table_can_press(p) -> bool:
 	return is_instance_valid(p) and p.active and not p.is_dead and not p.is_finished and not p.is_currently_eating and not p.is_player_being_executed
 
 # Up to k more shot players within `seconds`, as [network id, ms] in the order they fell.
+# At 1-4 the game's own death handler runs and _mp8_dead_order stays empty, so deaths are read from
+# each player's is_dead, in the frame they flip.
 func _table_deaths(mg, k: int, seconds: float) -> Array:
+	var ext: bool = NetworkManager.mp8_room_extended()
 	var start: int = mg._mp8_dead_order.size()
+	var was_dead := {}
+	for nid in mg.player_characters:
+		var p = mg.player_characters[nid]
+		was_dead[nid] = not is_instance_valid(p) or p.is_dead
 	var out: Array = []
 	var end := Time.get_ticks_msec() + int(seconds * 1000.0)
 	while out.size() < k and Time.get_ticks_msec() < end:
 		await get_tree().process_frame
-		while mg._mp8_dead_order.size() > start + out.size():
-			out.append([mg._mp8_dead_order[start + out.size()], Time.get_ticks_msec()])
+		if ext:
+			while mg._mp8_dead_order.size() > start + out.size():
+				out.append([mg._mp8_dead_order[start + out.size()], Time.get_ticks_msec()])
+			continue
+		for nid in mg.player_characters:
+			var p = mg.player_characters[nid]
+			if not was_dead.get(nid, true) and is_instance_valid(p) and p.is_dead:
+				was_dead[nid] = true
+				out.append([nid, Time.get_ticks_msec()])
 	return out
 
 # How close a bang's barrel line passes to the head of a borrowed seat's player. The game's own aims at the
@@ -2271,7 +2375,9 @@ func _check_filter_no_neighbour(mg, n: int) -> void:
 	var lens: Array = mg.players.values().map(func(p): return [snappedf(p.local_camera.h_offset, 0.01), p.local_camera.keep_aspect])
 	ok("The Filter at %d: in play, every tile still shifted 1.2 with its horizontal fov" % n,
 		lens.all(func(l): return is_equal_approx(l[0], 1.2) and l[1] == Camera3D.KEEP_WIDTH), lens)
-	var tile: Vector2 = BurnRecycleLocalHandler.mp8_layout(n)[0].size * Vector2(960.0, 540.0)
+	# Called on the script, not the class name, so this file still compiles on the game alone (no mp8_layout there).
+	var handler_script: Script = mg.local_handler.get_script()
+	var tile: Vector2 = handler_script.call("mp8_layout", n)[0].size * Vector2(960.0, 540.0)
 	var by_seat: Dictionary = {}
 	for p in mg.players.values():
 		by_seat[p.active_seat_index] = p
@@ -2436,7 +2542,8 @@ const HUNTER_SAMPLE_SEC := 8.0
 func _check_hunter_views(mg) -> void:
 	var hunters := func() -> Array:
 		var list = mg.get("hunter_players") if is_instance_valid(mg) else null
-		if not (list is Array) and is_instance_valid(mg) and mg.get("hunter_player") != null:
+		# Extended at 1-4 plays the game's one hunter, leaving its own `hunter_players` empty.
+		if (not (list is Array) or list.is_empty()) and is_instance_valid(mg) and mg.get("hunter_player") != null:
 			list = [mg.hunter_player]
 		return (list if list is Array else []).filter(func(h): return is_instance_valid(h))
 	ok("Duck Hunt's hunters go active", await _wait(func(): return not hunters.call().is_empty() and hunters.call().all(func(h): return h.active), 60.0))
@@ -2537,3 +2644,167 @@ func _wait(cond: Callable, seconds: float) -> bool:
 		await get_tree().process_frame
 	return true
 
+# "1-4 is the game" fingerprint (fp=1): what a minigame is made of once its players stand, and the briefing's and
+# score board's rows, printed as FP lines. tools/fp_diff.py compares a run on Extended with one on the game alone
+# at the same seat count. Names are replaced by <name> (the bots' names are rolled per run), and positions that
+# depend on the spawn shuffle are sets.
+func _fp(key: String, value) -> void:
+	say("FP %s %s" % [key, JSON.stringify(value)])
+
+func _fp_v(v: Vector3) -> Array:
+	return [snappedf(v.x, 0.1), snappedf(v.y, 0.1), snappedf(v.z, 0.1)]
+
+func _fp_v2(v: Vector2) -> Array:
+	return [snappedf(v.x, 1.0), snappedf(v.y, 1.0)]
+
+func _fp_names(text: String) -> String:
+	for p in PlayerManager.player_presences.values():
+		if not str(p.network_name).is_empty():
+			text = text.replace(str(p.network_name), "<name>")
+	return text
+
+func _fp_sorted(a: Array) -> Array:
+	var out := a.map(func(x): return JSON.stringify(x))
+	out.sort()
+	return out
+
+func _fp_characters(mg) -> Array:
+	return mg.find_children("*", "", true, false).filter(func(c): return c is Node3D and "player_presence" in c and c.player_presence != null)
+
+func _fingerprint(mg, mg_name: String, n: int) -> void:
+	if not is_instance_valid(mg):
+		_fp("missing", mg_name)
+		return
+	await _wait(func(): return is_instance_valid(mg) and _fp_characters(mg).size() >= n, 60.0)
+	await get_tree().create_timer(1.5).timeout
+	if not is_instance_valid(mg):
+		return
+	var all: Array = mg.find_children("*", "", true, false)
+	var chars: Array = _fp_characters(mg)
+	_fp("minigame", {"name": mg_name, "seats": n, "characters": chars.size()})
+	_fp("character_spots", _fp_sorted(chars.map(func(c): return _fp_v(c.global_position) + [snappedf(c.global_rotation_degrees.y, 1.0)])))
+	var mp8 := {}
+	for c in all:
+		if String(c.name).to_lower().begins_with("mp8"):
+			var key: String = String(c.name).rstrip("0123456789_")
+			mp8[key] = int(mp8.get(key, 0)) + 1
+	_fp("mp8_nodes", mp8)
+	var counts := {}
+	for prop in ["platforms", "workstations", "player_spawn_positions", "spawn_positions"]:
+		var v = mg.get(prop)
+		if v is Array or v is Dictionary:
+			counts[prop] = v.size()
+	var markers := {}
+	for c in all:
+		if c is Node3D and String(c.name).to_lower().contains("spawn") and c.get_child_count() > 0:
+			var spots: Array = c.get_children().filter(func(k): return k is Node3D and not ("player_presence" in k))
+			if not spots.is_empty():
+				counts[String(mg.get_path_to(c))] = spots.size()
+				markers[String(mg.get_path_to(c))] = _fp_sorted(spots.map(func(k): return _fp_v(k.global_position)))
+	_fp("counts", counts)
+	_fp("markers", markers)
+	var lights := {}
+	for c in all:
+		if c is Light3D:
+			var key: String = "%s shadow=%s" % [c.get_class(), c.shadow_enabled]
+			if c is OmniLight3D:
+				key += " mode=%d" % c.omni_shadow_mode
+			lights[key] = int(lights.get(key, 0)) + 1
+	_fp("lights", lights)
+	var cam: Camera3D = mg.get_viewport().get_camera_3d()
+	if cam != null:
+		_fp("main_camera", {"at": _fp_v(cam.global_position), "turn": _fp_v(cam.global_rotation_degrees), "fov": snappedf(cam.fov, 0.1), "mask": cam.cull_mask})
+	var views: Array = []
+	for c in all:
+		if c is SubViewport:
+			var vc: Camera3D = c.get_camera_3d()
+			views.append({"size": [c.size.x, c.size.y], "update": c.render_target_update_mode,
+				"fov": snappedf(vc.fov, 0.1) if vc != null else -1.0, "mask": vc.cull_mask if vc != null else -1,
+				"h_offset": snappedf(vc.h_offset, 0.01) if vc != null else 0.0, "keep": vc.keep_aspect if vc != null else -1})
+	_fp("subviewports", _fp_sorted(views))
+	var tiles: Array = all.filter(func(c): return c is TextureRect and c.is_visible_in_tree() and c.texture is ViewportTexture)
+	_fp("tiles", _fp_sorted(tiles.map(func(t): return [_fp_v2(t.global_position), _fp_v2(t.size)])))
+	var labels: Array = []
+	for c in chars:
+		var l = c.get("player_name_label")
+		if l is Label3D:
+			labels.append(_fp_names(l.text))
+	_fp("name_labels", _fp_sorted(labels))
+	var texts: Array = all.filter(func(c): return (c is Label or c is RichTextLabel) and c.is_visible_in_tree() and not str(c.text).is_empty())
+	_fp("screen_texts", _fp_sorted(texts.map(func(c): return _fp_names(str(c.text)))))
+
+func _fp_briefing(briefing) -> void:
+	var rows: Array = briefing.get("user_container_array")
+	if rows == null:
+		return
+	var shown: Array = rows.filter(func(r): return is_instance_valid(r) and r.is_visible_in_tree())
+	_fp("briefing", {"rows": rows.size(), "shown": shown.size(),
+		"spots": shown.map(func(r): return [_fp_v2(r.global_position), _fp_v2(r.size), [snappedf(r.scale.x, 0.01), snappedf(r.scale.y, 0.01)]])})
+
+# The score board fills its rows when it shows, after the round; waited for without holding up the checks.
+func _fp_score_screen(game) -> void:
+	var screen = game.intermission_manager.screen_score if game.get("intermission_manager") != null else null
+	if screen == null:
+		return
+	var rows: Array = screen.get("user_container_array")
+	var filled := func(): return rows.any(func(r): return is_instance_valid(r) and r.get("container_active") == true)
+	if not await _wait(filled, 240.0):
+		_fp("score_board", "not shown")
+		return
+	await get_tree().create_timer(1.0).timeout
+	var active: Array = rows.filter(func(r): return is_instance_valid(r) and r.get("container_active") == true)
+	_fp("score_board", {"rows": rows.size(), "filled": active.size(),
+		"spots": active.map(func(r): return [_fp_v(r.global_position), [snappedf(r.scale.x, 0.01), snappedf(r.scale.y, 0.01)]]),
+		"names": _fp_sorted(active.map(func(r): return _fp_names(str(r.label_name.text))))})
+
+# A body is a 0.7 capsule, 5 tall: the 8 markers stand 2.4 m or more apart, and one fits on each without
+# touching the furniture. The players on them are left out of the query. It can't tell a spot outside the
+# walls: the room's one floor collider runs past them, and the ceiling has none.
+func _check_inside_job_spawns(mg, spawns: Node) -> void:
+	var pts: Array = spawns.get_children().map(func(m): return m.global_position)
+	var near := INF
+	for i in pts.size():
+		for j in range(i + 1, pts.size()):
+			near = minf(near, Vector2(pts[i].x - pts[j].x, pts[i].z - pts[j].z).length())
+	ok("Inside Job 8p: no two of the 8 markers nearer than 2.4 m", near >= 2.4, snappedf(near, 0.01))
+	var cap := CapsuleShape3D.new()
+	cap.radius = 0.7
+	cap.height = 5.0
+	var q := PhysicsShapeQueryParameters3D.new()
+	q.shape = cap
+	q.collide_with_areas = false
+	q.exclude = mg.players.values().map(func(p): return p.get_rid())
+	var space: PhysicsDirectSpaceState3D = mg.get_viewport().world_3d.direct_space_state
+	var blocked := []
+	for p in pts:
+		q.transform = Transform3D(Basis.IDENTITY, p + Vector3(0.0, 2.6, 0.0))
+		if not space.intersect_shape(q, 1).is_empty():
+			blocked.append(p)
+	ok("Inside Job 8p: a body fits on every marker, clear of the furniture", blocked.is_empty(), blocked)
+
+# Over a duck's head only its name, at every count: the game's marker cuts a name label at 11 characters, so
+# any prefix costs a long name its end.
+func _check_duck_names(mg) -> void:
+	if not is_instance_valid(mg):
+		return
+	var wrong: Array = []
+	for d in mg.duck_players.values():
+		if is_instance_valid(d) and d.player_name_label.text != d.player_presence.network_name:
+			wrong.append([d.player_presence.network_name, d.player_name_label.text])
+	ok("Duck Hunt: every duck's label is its name alone", not mg.duck_players.is_empty() and wrong.is_empty(), wrong)
+	# Split-screen tile labels (5-8 only) and the hunters' reveal carry names, never a seat number.
+	var seat_tag := RegEx.create_from_string("(^|\\s)P\\d+\\b")
+	var texts: Array = []
+	var lh = mg.get("local_handler")
+	if lh != null and lh.get("_mp8_labels") is Array:
+		for l in lh._mp8_labels:
+			if is_instance_valid(l):
+				texts.append(l.text)
+	for h in mg.hunter_players:
+		if is_instance_valid(h) and h.role_label.text != "":
+			texts.append(h.role_label.text)
+	var tagged: Array = texts.filter(func(t): return seat_tag.search(t) != null)
+	ok("Duck Hunt: no tile label or reveal carries a seat number", tagged.is_empty(), texts)
+	if lh != null and lh.get("_mp8_labels") is Array and not lh._mp8_labels.is_empty():
+		var missing: Array = mg.duck_players.values().filter(func(d): return is_instance_valid(d) and not lh._mp8_labels[0].text.contains(d.player_presence.network_name)).map(func(d): return d.player_presence.network_name)
+		ok("Duck Hunt: the ducks' tile names every duck", missing.is_empty(), [lh._mp8_labels[0].text, missing])

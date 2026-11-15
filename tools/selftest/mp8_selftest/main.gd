@@ -6,7 +6,7 @@ extends Node
 # steps; with Overtime
 # installed too, that mp8_support refused and Overtime runs as itself.
 
-const TAG := "mp-extended-1.1"
+const TAG := "mp-extended-1.1.1"
 const HUNTER := "res://minigames/duck_hunt/components/hunter_player/hunter_player.tscn"
 const INTERMISSION := "res://minigames/intermission_new/intermission_new.tscn"
 const WHEAT_FIELD := "res://minigames/cutscene_test/cutscene_test.tscn"
@@ -327,7 +327,7 @@ func _relay(nm: Node) -> void:
 			count += 1
 			ok("relay target %s.%s exists" % [path.get_file(), method], names.has(method))
 			ok("relay target %s.%s is no @rpc" % [path.get_file(), method], not (rpcs.has(method) or rpcs.has(StringName(method))))
-	ok("relay lists 34 targets", count == 34, count)
+	ok("relay lists 35 targets", count == 35, count)
 	var duck_rpcs: Dictionary = (load("res://minigames/duck_hunt/scripts/duck_hunt.gd") as GDScript).get_rpc_config()
 	ok("the @rpc lookup sees a game RPC", duck_rpcs.has("set_ducks_ambient_light_rpc") or duck_rpcs.has(&"set_ducks_ambient_light_rpc"), duck_rpcs.keys())
 	var probe := Node.new()
@@ -367,9 +367,14 @@ func _relay(nm: Node) -> void:
 	ok("another Extended version is not this one", not nm.mp8_peers_extended([7, 9]))
 	active.connected_players[9] = {"mp8": 22}
 	ok("a key that is no String is not Extended", not nm.mp8_peer_extended(9))
-	ok("online with no peers, this room is Extended: a bot's and a non-peer's entries are not counted", nm.mp8_room_extended(), multiplayer.get_peers())
+	ok("online with no peers, everyone runs Extended: a bot's and a non-peer's entries are not counted", nm.mp8_room_all_extended(), multiplayer.get_peers())
 	GameManager.local_game = true
-	ok("the couch is always Extended", nm.mp8_room_extended())
+	ok("the couch always runs Extended", nm.mp8_room_all_extended())
+	# Extended's rules only above 4 players, every player on Extended, couch or online.
+	for n in range(0, 9):
+		ok("rules: %d players, all Extended -> %s" % [n, "Extended's" if n > 4 else "the game's"], nm.mp8_rules_for(true, n) == (n > 4))
+	ok("rules: 8 players in a mixed room are the game's", not nm.mp8_rules_for(false, 8))
+	ok("rules: the couch with no players (the menu) is the game's", not nm.mp8_room_extended(), PlayerManager.player_presences.size())
 	active.connected_players.clear()
 	active.connected_players.merge(players)
 	GameManager.local_game = was_local
@@ -426,14 +431,31 @@ func _join_rules(nm: Node) -> void:
 
 	active.connected_players.clear()
 	nm.set("_mp8_room_latch", 0)
-	ok("latch: a minigame latched mixed stays mixed while the live room reads Extended", not nm.mp8_room_extended())
+	ok("latch: a minigame latched mixed stays mixed while the live room reads Extended", not nm.mp8_room_all_extended())
 	nm.call("mp8_unlatch_room")
-	ok("latch: unlatched, the live room again", nm.mp8_room_extended())
+	ok("latch: unlatched, the live room again", nm.mp8_room_all_extended())
+	nm.set("_mp8_rules_latch", 1)
+	ok("latch: a minigame latched on Extended's rules keeps them whatever the count", nm.mp8_room_extended())
+	nm.call("mp8_unlatch_room")
+	ok("latch: unlatched, the rules follow the live count again", nm.mp8_room_extended() == nm.mp8_rules_for(true, PlayerManager.player_presences.size()))
 	nm.call("mp8_latch_room")
 	ok("latch: latching stores the live room", nm.get("_mp8_room_latch") == 1, nm.get("_mp8_room_latch"))
+	ok("latch: latching stores the live rules", nm.get("_mp8_rules_latch") == (1 if nm.mp8_rules_for(true, PlayerManager.player_presences.size()) else 0), nm.get("_mp8_rules_latch"))
+	nm.call("mp8_unlatch_room")
+	nm.set("_mp8_rules_from_host", 1)
+	nm.call("mp8_latch_room")
+	ok("latch: the host latches its own count, not a value sent to clients", nm.get("_mp8_rules_latch") == (1 if nm.mp8_rules_for(true, PlayerManager.player_presences.size()) else 0), nm.get("_mp8_rules_latch"))
+	ok("latch: the host's value is used once", nm.get("_mp8_rules_from_host") == -1, nm.get("_mp8_rules_from_host"))
+	nm.call("mp8_room_rules_rpc", true)
+	ok("latch: a client keeps the host's rules for its next load", nm.get("_mp8_rules_from_host") == 1)
+	ok("latch: a client at 4 takes the host's Extended rules", nm.mp8_latched_rules_for(true, 4, 1, true))
+	ok("latch: a client at 6 takes the host's game rules", not nm.mp8_latched_rules_for(true, 6, 0, true))
+	ok("latch: a client with no value from the host counts for itself", nm.mp8_latched_rules_for(true, 6, -1, true) and not nm.mp8_latched_rules_for(true, 4, -1, true))
+	ok("latch: the host and the couch count for themselves", not nm.mp8_latched_rules_for(true, 4, 1, false) and nm.mp8_latched_rules_for(true, 6, 0, false))
+	nm.set("_mp8_rules_from_host", -1)
 	nm.set("_mp8_room_latch", 0)
 	GameManager.local_game = true
-	ok("latch: the couch is always Extended", nm.mp8_room_extended())
+	ok("latch: the couch always runs Extended", nm.mp8_room_all_extended())
 	GameManager.local_game = false
 	nm.call("mp8_unlatch_room")
 
@@ -472,9 +494,10 @@ func _fill_room(active, n: int) -> void:
 
 # The audit's "Every minigame" rows: each gate's Extended path and the game's own, in a room held by the
 # latch, as a minigame sees it. With no real peers only the latch can make a room mixed.
-func _stage(nm: Node, extended: bool) -> void:
+func _stage(nm: Node, extended: bool, rules = null) -> void:
 	GameManager.local_game = false
 	nm.set("_mp8_room_latch", 1 if extended else 0)
+	nm.set("_mp8_rules_latch", 1 if (extended if rules == null else rules) else 0)
 
 func _shared_rows(nm: Node) -> void:
 	say("step: the shared rows' gates")
@@ -1524,9 +1547,9 @@ func _guard_script(name: String, stub_rpcs: bool = true) -> GDScript:
 	return _runtime_script("guard stand-in %s%s" % [name, "" if stub_rpcs else " (its RPCs kept)"], src)
 
 # Every handler, all at once: the 9 with a 1 s await share one wait.
-func _guard_pass(nm: Node, scripts: Dictionary, extended_at_call: bool, extended_after: bool, loaded: bool, id_known: bool) -> Dictionary:
+func _guard_pass(nm: Node, scripts: Dictionary, extended_at_call: bool, extended_after: bool, loaded: bool, id_known: bool, rules_at_call = null) -> Dictionary:
 	var nodes := {}
-	_stage(nm, extended_at_call)
+	_stage(nm, extended_at_call, rules_at_call)
 	for name in scripts:
 		var n: Node = scripts[name].new()
 		add_child(n)
@@ -1561,10 +1584,13 @@ func _preload_guards(nm: Node) -> void:
 	var ext := await _guard_pass(nm, scripts, true, false, false, true)
 	var mixed := await _guard_pass(nm, scripts, false, false, false, true)
 	var loaded := await _guard_pass(nm, scripts, true, true, true, true)
+	# Every player on Extended at 1-4 plays the game's rules, and keeps the fix.
+	var small := await _guard_pass(nm, scripts, true, true, false, true, false)
 	for name in scripts:
 		ok("guard %s: Extended skips the end check before loading, though the room turns mixed mid-wait" % name, ext[name] == 0, ext[name])
 		ok("guard %s: a mixed room runs the game's end check" % name, mixed[name] == 1, mixed[name])
 		ok("guard %s: after loading, the end check runs (the stand-in is reached)" % name, loaded[name] == 1, loaded[name])
+		ok("guard %s: every player on Extended at 1-4 still skips the end check before loading" % name, small[name] == 0, small[name])
 	if scripts.has("manufacture_gun"):
 		var one := {"manufacture_gun": scripts["manufacture_gun"]}
 		var gone_ext := await _guard_pass(nm, one, true, true, true, false)

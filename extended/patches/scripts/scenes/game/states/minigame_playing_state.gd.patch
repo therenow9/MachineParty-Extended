@@ -14,7 +14,7 @@ diff --git a/scripts/scenes/game/states/minigame_playing_state.gd b/scripts/scen
  
  	if multiplayer.is_server():
 -		owner.minigame.minigame_finished.connect(_on_minigame_finished)
-+		_mp8_claim = NetworkManager.mp8_room_extended()
++		_mp8_claim = NetworkManager.mp8_room_all_extended()
 +		if not _mp8_claim:
 +			owner.minigame.minigame_finished.connect(_on_minigame_finished)
 +			return

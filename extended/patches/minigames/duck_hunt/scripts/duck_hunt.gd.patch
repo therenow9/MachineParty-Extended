@@ -164,7 +164,7 @@ diff --git a/minigames/duck_hunt/scripts/duck_hunt.gd b/minigames/duck_hunt/scri
  			duck_player_positions.append(duck_player.global_position)
  
  	if duck_player_positions.is_empty():
-@@ -132,6 +265,16 @@ func process_local(_delta: float):
+@@ -132,6 +265,17 @@ func process_local(_delta: float):
  		_delta * 64.0
  	)
  
@@ -172,8 +172,9 @@ diff --git a/minigames/duck_hunt/scripts/duck_hunt.gd b/minigames/duck_hunt/scri
 +# _process. Offline Bots switches a bot's _process off, so without this a bot hunter's tile stays at the world origin.
 +# It also scopes a bot by zoom_fov_index alone (update_zoom's overlay would reach the host's screen online),
 +# so the tile takes its zoom from that index.
++# At 1-4 the game's path sets its one hunter_player and leaves hunter_players empty.
 +func _mp8_follow_idle_hunter_views() -> void:
-+	for hunter in hunter_players:
++	for hunter in (hunter_players if not hunter_players.is_empty() else [hunter_player]):
 +		if is_instance_valid(hunter) and not hunter.is_processing():
 +			hunter.local_camera.global_transform = hunter.camera.global_transform
 +			hunter.local_camera.fov = hunter.zoom_fovs[clampi(int(hunter.zoom_fov_index), 0, hunter.zoom_fovs.size() - 1)]
@@ -181,7 +182,7 @@ diff --git a/minigames/duck_hunt/scripts/duck_hunt.gd b/minigames/duck_hunt/scri
  func process_online(_delta: float):
  
  	if GameManager.local_game:
-@@ -202,6 +345,153 @@ func all_players_loaded():
+@@ -202,6 +346,151 @@ func all_players_loaded():
  
  func spawn_players():
  
@@ -272,8 +273,6 @@ diff --git a/minigames/duck_hunt/scripts/duck_hunt.gd b/minigames/duck_hunt/scri
 +
 +		if GameManager.local_game:
 +			local_duck_players[player_presence.network_id] = player_character
-+			player_character.player_name_label.text = "P%d · %s" % [
-+				_mp8_local_seat(player_presence) + 1, player_presence.network_name]
 +
 +		counter += 1
 +
@@ -335,7 +334,7 @@ diff --git a/minigames/duck_hunt/scripts/duck_hunt.gd b/minigames/duck_hunt/scri
  	await get_tree().create_timer(1, false).timeout
  
  	players_acknowledged.clear()
-@@ -292,6 +582,38 @@ func spawn_players():
+@@ -292,6 +581,39 @@ func spawn_players():
  
  	local_handler.setup(local_multiplayer_camera_viewport, hunter_player.local_viewport)
  
@@ -348,18 +347,19 @@ diff --git a/minigames/duck_hunt/scripts/duck_hunt.gd b/minigames/duck_hunt/scri
 +	for camera in local_multiplayer_camera_parent.find_children("*", "Camera3D", true, false):
 +		_mp8_configure_duck_camera(camera)
 +	var labels := PackedStringArray()
-+	var duck_seats := PackedStringArray()
-+	for id in local_duck_players.keys():
-+		duck_seats.append("P%d" % (_mp8_local_seat(PlayerManager.player_presences[id]) + 1))
-+	labels.append(NetworkManager.mp8_text("Ducks · ", "鸭群 · ", "鴨群 · ") + " / ".join(duck_seats))
++	var duck_ids: Array = local_duck_players.keys()
++	duck_ids.sort_custom(func(a, b): return _mp8_local_seat(PlayerManager.player_presences[a]) < _mp8_local_seat(PlayerManager.player_presences[b]))
++	var duck_names := PackedStringArray()
++	for id in duck_ids:
++		duck_names.append(PlayerManager.player_presences[id].network_name)
++	labels.append(NetworkManager.mp8_text("Ducks · ", "鸭群 · ", "鴨群 · ") + " / ".join(duck_names))
 +	var ordered: Array = hunter_players.duplicate()
 +	ordered.sort_custom(func(a, b): return _mp8_local_seat(a.player_presence) < _mp8_local_seat(b.player_presence))
 +	for i in ordered.size():
 +		var hunter = ordered[i]
 +		hunter.mp8_setup_local_view(i)
 +		views.append(hunter.local_viewport)
-+		labels.append("P%d · %s · %s" % [_mp8_local_seat(hunter.player_presence) + 1,
-+			hunter.player_presence.network_name, NetworkManager.mp8_text("Hunter", "猎人", "獵人")])
++		labels.append("%s · %s" % [hunter.player_presence.network_name, NetworkManager.mp8_text("Hunter", "猎人", "獵人")])
 +	local_handler.setup(local_multiplayer_camera_viewport, views, labels, ui_role_label.get_theme_font("font"))
 +
 +func _mp8_configure_duck_camera(camera: Camera3D) -> void:
@@ -566,7 +566,7 @@ diff --git a/minigames/duck_hunt/scripts/duck_hunt.gd b/minigames/duck_hunt/scri
  func player_disconnected(_network_id: int):
 +	# [MP8] The room is read before the await, which can outlast this minigame's latch. A mixed room
 +	# keeps the game's own end check.
-+	var mp8_ext: bool = NetworkManager.mp8_room_extended()
++	var mp8_ext: bool = NetworkManager.mp8_room_all_extended()
  	super.player_disconnected(_network_id)
  
  	if not multiplayer.is_server():

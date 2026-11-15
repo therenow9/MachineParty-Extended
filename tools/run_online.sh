@@ -6,7 +6,7 @@
 # playlist takes longer than a tool call allows, so run it in the background.
 #
 #   tools/run_online.sh <roles> [--minigames=A,B|all] [--cap=S] [--limit=S] [--spoof=<tag>] [--last=joined|spectator|refused:<Reason>]
-#                       [--cast] [--window=<i> [--record=ddagrab:<file.mkv>|movie:<dir>/frame.png]]
+#                       [--cast] [--window=<i> [--record=ddagrab:<file.mkv>|movie:<dir>/frame.png|movie:<file.avi>]]
 #
 #   <roles>      the peers, host first, comma-separated: ext (Machine Party: Extended, $MP_MP8_BUILD, plus the
 #                driver) or van (the driver alone: the game's own scripts and wire). E.g. ext,van or van,van,van
@@ -25,7 +25,11 @@
 #                with the music bus muted; the rest stay headless
 #   --record     the windowed peer's take, never overwriting one: ddagrab (real time, ffmpeg's Desktop
 #                Duplication of the window into Ut Video, the game's sound recorded by the peer beside it as
-#                <file>.wav) or movie (Movie Maker's PNGs and WAV at a fixed 60 fps; pack with tools/trailer_pack.sh)
+#                <file>.wav) or movie (Movie Maker's PNGs and WAV at a fixed 60 fps; pack with tools/trailer_pack.sh).
+#                movie:<file.avi> is Movie Maker's MJPEG at 30 fps: lossy, but it keeps up with the other peers where
+#                PNGs at 60 slow the windowed peer until the room stalls (a still to look at, never a trailer take)
+#   MP_GAME_ARGS extra arguments for every peer's game, space-separated (Extended's dev switches, which only
+#                a -test build reads), as in run_selftest.sh
 #
 # Pass: every expected join happened; no peer logged a multiplayer error outside the known vanilla ones
 # (KNOWN below); every joined peer saw the same minigames load and the same scores at each briefing, and
@@ -83,8 +87,8 @@ for a in "$@"; do
     --last=joined|--last=spectator|--last=refused:*) last="${a#--last=}" ;;
     --cast) cast=1 ;;
     --window=*) window="${a#--window=}"; [[ "$window" =~ ^[0-7]$ ]] || die "--window: a peer index 0-7, not '$window'" ;;
-    --record=ddagrab:*.mkv|--record=movie:*/frame.png) take="${a#--record=}" ;;
-    --record=*) die "--record: ddagrab:<file.mkv> or movie:<dir>/frame.png, not '${a#--record=}'" ;;
+    --record=ddagrab:*.mkv|--record=movie:*/frame.png|--record=movie:*.avi) take="${a#--record=}" ;;
+    --record=*) die "--record: ddagrab:<file.mkv>, movie:<dir>/frame.png or movie:<file.avi>, not '${a#--record=}'" ;;
     *) die "unknown option: $a" ;;
   esac
 done
@@ -97,7 +101,7 @@ if [ -n "$take" ]; then
   # Absolute: the peer runs from its own folder, which the cleanup deletes.
   rec_file="$(cygpath -am "$rec_file")"
   [ ! -e "$rec_file" ] && [ ! -e "${rec_file%.mkv}.wav" ] || die "$rec_file (or its WAV) exists; a take is never overwritten"
-  [ "$rec_kind" = movie ] && [ -n "$(ls "$(dirname "$rec_file")" 2>/dev/null)" ] && die "$(dirname "$rec_file") is not empty; Movie Maker writes frame00000000.png onward into it"
+  [ "$rec_kind" = movie ] && [ "${rec_file%.avi}" = "$rec_file" ] && [ -n "$(ls "$(dirname "$rec_file")" 2>/dev/null)" ] && die "$(dirname "$rec_file") is not empty; Movie Maker writes frame00000000.png onward into it"
   mkdir -p "$(dirname "$rec_file")" || die "could not make $(dirname "$rec_file")"
 fi
 # Physical pixels on the window's screen, the same for the window and ddagrab's crop.
@@ -214,6 +218,8 @@ hold=0
 # A last joiner meant to be refused or seated as a spectator isn't waited for, but the lobby stays open
 # long enough for it to try.
 [ "$last" = joined ] || { seats=$((seats - 1)); hold=8; }
+read -r -a game_args <<< "${MP_GAME_ARGS:-}"
+[ ${#game_args[@]} -gt 0 ] && echo "game args: ${game_args[*]}"
 pids=()
 for i in "${!roles[@]}"; do
   name="P$((i + 1))"
@@ -233,8 +239,9 @@ for i in "${!roles[@]}"; do
     net="$net;window=$WIN_X,$WIN_Y;mute_music"
     [ "$rec_kind" = ddagrab ] && net="$net;audio_rec=$(cygpath -m "${rec_file%.mkv}.wav")"
     [ "$rec_kind" = movie ] && args=(--write-movie "$(cygpath -m "$rec_file")" --fixed-fps 60)
+    [ "$rec_kind" = movie ] && [ "${rec_file%.avi}" != "$rec_file" ] && args=(--write-movie "$(cygpath -m "$rec_file")" --fixed-fps 30)
   fi
-  (cd "$PEERS/p$i" && MP_NET="$net" timeout $((limit + 60)) "./Machine Party.exe" "${args[@]}" > "$out/p${i}_stdout.txt" 2>&1) &
+  (cd "$PEERS/p$i" && MP_NET="$net" timeout $((limit + 60)) "./Machine Party.exe" "${args[@]}" "${game_args[@]}" > "$out/p${i}_stdout.txt" 2>&1) &
   pids+=($!)
 done
 if [ "$rec_kind" = ddagrab ]; then
@@ -276,6 +283,8 @@ fi
 if [ "$rec_kind" = ddagrab ]; then
   [ -s "$rec_file" ] && echo "PASS recorded $rec_file (ffmpeg's log: $out/ffmpeg.txt)" || { fail "ddagrab wrote no take; $out/ffmpeg.txt:"; cat "$out/ffmpeg.txt"; }
   [ -s "${rec_file%.mkv}.wav" ] && echo "PASS the peer's sound in ${rec_file%.mkv}.wav" || fail "no ${rec_file%.mkv}.wav from the peer"
+elif [ "$rec_kind" = movie ] && [ "${rec_file%.avi}" != "$rec_file" ]; then
+  [ -s "$rec_file" ] && echo "PASS Movie Maker's take in $rec_file" || fail "Movie Maker wrote no $rec_file"
 elif [ "$rec_kind" = movie ]; then
   [ -s "$(dirname "$rec_file")/frame00000000.png" ] && echo "PASS Movie Maker's take in $(dirname "$rec_file") (pack it with tools/trailer_pack.sh)" || fail "Movie Maker wrote no frames in $(dirname "$rec_file")"
 fi

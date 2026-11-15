@@ -800,7 +800,7 @@ diff --git a/minigames/smoke_break/scripts/smoke_break.gd b/minigames/smoke_brea
  
  func player_disconnected(_network_id: int):
 +	# [MP8] A mixed room keeps the game's own handler, its raw read included.
-+	var mp8_ext: bool = NetworkManager.mp8_room_extended()
++	var mp8_ext: bool = NetworkManager.mp8_room_all_extended()
  	super.player_disconnected(_network_id)
  
 +	if not mp8_ext:

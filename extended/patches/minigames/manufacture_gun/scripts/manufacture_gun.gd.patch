@@ -486,7 +486,7 @@ diff --git a/minigames/manufacture_gun/scripts/manufacture_gun.gd b/minigames/ma
  
  func player_disconnected(_network_id: int):
 +	# [MP8] A mixed room keeps the game's own handler.
-+	var mp8_ext: bool = NetworkManager.mp8_room_extended()
++	var mp8_ext: bool = NetworkManager.mp8_room_all_extended()
  	super.player_disconnected(_network_id)
  
 +	if not mp8_ext:

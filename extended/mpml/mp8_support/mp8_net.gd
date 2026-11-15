@@ -11,6 +11,9 @@ enum Mode { AUTHORITY_LOCAL, AUTHORITY_REMOTE, ANY_PEER_LOCAL }
 # A call naming a method missing here is dropped with an error on the sender. mp8_selftest checks the
 # other way: every name here exists in its script, since a stale one would fail on every receiver.
 const TARGETS := {
+	"res://modules/multiplayer/network_manager.gd": {
+		"mp8_room_rules_rpc": Mode.AUTHORITY_REMOTE,
+	},
 	"res://minigames/burn_recycle/scripts/burn_recycle.gd": {
 		"_mp8_layout_rpc": Mode.AUTHORITY_LOCAL,
 		"_mp8_pause_rpc": Mode.AUTHORITY_LOCAL,

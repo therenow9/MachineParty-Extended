@@ -68,8 +68,8 @@ diff --git a/minigames/knife_at_the_office/scripts/knife_at_the_office.gd b/mini
 +
  func _process(delta: float) -> void :
  
-+	# A mixed room runs only the game's lines below.
-+	if NetworkManager.mp8_room_extended():
++	# A mixed room runs only the game's lines below. Bot tiles follow at 1-4 too (Offline Bots).
++	if NetworkManager.mp8_room_all_extended():
 +		_mp8_follow_idle_tile_views()
 +
 +		# Ahead of the local_game return below, so the mp8knifemark labels refresh online too.
@@ -118,22 +118,33 @@ diff --git a/minigames/knife_at_the_office/scripts/knife_at_the_office.gd b/mini
  
  		players[player_presence.network_id] = player_character
  		active_players[player_presence.network_id] = player_character
-@@ -145,15 +214,176 @@ func spawn_players():
+@@ -143,7 +212,8 @@ func spawn_players():
  
- 	if GameManager.local_game:
+ 		counter += 1
+ 
+-	if GameManager.local_game:
++	# [MP8] 1-4 players keep the game's tiles, fog layers (11 up) and lights.
++	if GameManager.local_game and not mp8_ext:
  		local_handler.set_players(players.values())
-+		_mp8_prepare_local_world()
  
  		for i in players.size():
- 			var network_id = players.keys()[i]
- 			var player = players[network_id]
--			var starting_layer = 11 + (i * 2)
-+			# Preserve world layers 1..4; each seat owns one of eight FoW pairs.
-+			var starting_layer = 5 + (i * 2)
- 			player.set_local_values(starting_layer)
+@@ -154,6 +224,178 @@ func spawn_players():
  			for mesh in fow_meshes:
  				mesh.set_layer_mask_value(starting_layer, true)
  
++	elif GameManager.local_game:
++		local_handler.set_players(players.values())
++		_mp8_prepare_local_world()
++
++		for i in players.size():
++			var network_id = players.keys()[i]
++			var player = players[network_id]
++			# Preserve world layers 1..4; each seat owns one of eight FoW pairs.
++			var starting_layer = 5 + (i * 2)
++			player.set_local_values(starting_layer)
++			for mesh in fow_meshes:
++				mesh.set_layer_mask_value(starting_layer, true)
++
 +func _mp8_prepare_local_world() -> void:
 +	# The retail projector beam uses layer 10, which here is P3's private fog output.
 +	# Move only this shared visual, and keep projector illumination/shadows
@@ -296,7 +307,7 @@ diff --git a/minigames/knife_at_the_office/scripts/knife_at_the_office.gd b/mini
  func all_players_loaded():
  	super.all_players_loaded()
  
-@@ -189,10 +419,16 @@ func end_game():
+@@ -189,10 +431,16 @@ func end_game():
  
  	await get_tree().create_timer(1.0).timeout
  
@@ -313,7 +324,7 @@ diff --git a/minigames/knife_at_the_office/scripts/knife_at_the_office.gd b/mini
  	player_scores_finalized.emit(player_scores)
  
  	await get_tree().create_timer(1.0).timeout
-@@ -206,12 +442,25 @@ func start_2nd_phase_music():
+@@ -206,12 +454,25 @@ func start_2nd_phase_music():
  	MusicManager.play_kato_2nd_phase_music()
  	speaker_syringe_found.play()
  
@@ -335,11 +346,11 @@ diff --git a/minigames/knife_at_the_office/scripts/knife_at_the_office.gd b/mini
  func player_disconnected(_network_id: int):
 +	# [MP8] The room is read before the await, which can outlast this minigame's latch. A mixed room
 +	# keeps the game's own end check.
-+	var mp8_ext: bool = NetworkManager.mp8_room_extended()
++	var mp8_ext: bool = NetworkManager.mp8_room_all_extended()
  	super.player_disconnected(_network_id)
  
  	if not multiplayer.is_server():
-@@ -220,6 +469,13 @@ func player_disconnected(_network_id: int):
+@@ -220,6 +481,13 @@ func player_disconnected(_network_id: int):
  	remove_player_rpc.rpc(_network_id)
  	await get_tree().create_timer(1.0).timeout
  
@@ -353,7 +364,7 @@ diff --git a/minigames/knife_at_the_office/scripts/knife_at_the_office.gd b/mini
  	check_game_end()
  
  
-@@ -230,7 +486,11 @@ func remove_player_rpc(_network_id: int):
+@@ -230,7 +498,11 @@ func remove_player_rpc(_network_id: int):
  	var player_instance = players.get(_network_id, null)
  	if player_instance:
  
@@ -366,7 +377,7 @@ diff --git a/minigames/knife_at_the_office/scripts/knife_at_the_office.gd b/mini
  		player_instance.queue_free()
  
  		player_scores.erase(_network_id)
-@@ -241,7 +501,13 @@ func remove_player_rpc(_network_id: int):
+@@ -241,7 +513,13 @@ func remove_player_rpc(_network_id: int):
  @rpc("any_peer", "call_local", "reliable")
  func start_projector_hide_hunt_loop_rpc():
  	for player: KnifeAtTheOfficePlayer in player_spawn_node.get_children():
@@ -381,7 +392,7 @@ diff --git a/minigames/knife_at_the_office/scripts/knife_at_the_office.gd b/mini
  			continue
  		player.player_name_label.animation_player.play("hide name")
  	anim_projector_hide_hunt.play("loop")
-@@ -265,25 +531,70 @@ func request_item_find_rpc(_network_id: int):
+@@ -265,25 +543,70 @@ func request_item_find_rpc(_network_id: int):
  
  	containers_searched += 1
  
@@ -460,7 +471,7 @@ diff --git a/minigames/knife_at_the_office/scripts/knife_at_the_office.gd b/mini
  	if not infected_players.has(_network_id):
  		infected_players.append(_network_id)
  
-@@ -342,3 +653,58 @@ func _on_countdown_expired():
+@@ -342,3 +665,58 @@ func _on_countdown_expired():
  		player.set_active_rpc.rpc(true)
  
  	state_machine.transition_to_rpc.rpc(&"Play")
@@ -471,13 +482,13 @@ diff --git a/minigames/knife_at_the_office/scripts/knife_at_the_office.gd b/mini
 +# the Nth search overall, N clamped to what the office can reach; eight spawn markers; vanilla scoring.
 +# A container is searched once, so N above the searchable count never comes and the hunt never starts.
 +const MP8V_SEARCH_MARGIN: int = 2
-+# 8p's knife_at_the_office.tscn adds four markers to PlayerSpawnPositions, each 1.2 along x from a
-+# shipped one, unrotated as the shipped ones are; [shipped marker index, position under PlayerSpawnPositions].
++# Four more markers under PlayerSpawnPositions, each 2.5 along x from a shipped one on the side away from the
++# table: a body is 1.4 wide. Unrotated as the shipped ones are; [shipped marker index, position under PlayerSpawnPositions].
 +const MP8V_ADDED_MARKERS: Array = [
-+	[0, Vector3(-3.82012, 0.0, -6.68596)],
-+	[1, Vector3(6.2386, 0.0, -7.46958)],
-+	[2, Vector3(-3.77804, 0.0, -2.71269)],
-+	[3, Vector3(6.14438, 0.0, -2.16074)],
++	[0, Vector3(-7.52012, 0.0, -6.68596)],
++	[1, Vector3(7.5386, 0.0, -7.46958)],
++	[2, Vector3(-7.47804, 0.0, -2.71269)],
++	[3, Vector3(7.44438, 0.0, -2.16074)],
 +]
 +
 +

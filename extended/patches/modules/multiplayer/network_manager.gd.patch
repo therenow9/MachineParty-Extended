@@ -13,7 +13,7 @@ diff --git a/modules/multiplayer/network_manager.gd b/modules/multiplayer/networ
 +# [MP8] The mod's tag. It travels as "mp8" in each player's join data (multiplayer_backend.gd), never in
 +# Globals.game_version, which stays vanilla's so vanilla players can join. Keep it short: the main menu
 +# corner shows mp8_full_version(), and the refusal texts cut a version past 18 characters.
-+const MP8_VERSION_TAG: String = "mp-extended-1.1"
++const MP8_VERSION_TAG: String = "mp-extended-1.1.1"
 +# [MP8] build_mpml_mod.ps1 -TestBuild compiles this line as true; the shipped build reads no dev switch.
 +const MP8_TEST_BUILD: bool = false
 +
@@ -731,7 +731,7 @@ diff --git a/modules/multiplayer/network_manager.gd b/modules/multiplayer/networ
  func is_active() -> bool:
  
  	if not multiplayer:
-@@ -81,6 +769,14 @@ func set_game_scene(_game_scene: PackedScene):
+@@ -81,6 +769,16 @@ func set_game_scene(_game_scene: PackedScene):
  
  func create_backend():
  
@@ -741,12 +741,14 @@ diff --git a/modules/multiplayer/network_manager.gd b/modules/multiplayer/networ
 +	_mp8_refused.clear()
 +	_mp8_host_version = ""
 +	_mp8_room_latch = -1
++	_mp8_rules_latch = -1
++	_mp8_rules_from_host = -1
 +	_mp8_lobby_set = -1
 +
  	if active_backend:
  
  		active_backend.free()
-@@ -269,3 +965,360 @@ func remove_player_rpc(_network_id: int):
+@@ -269,3 +967,410 @@ func remove_player_rpc(_network_id: int):
  		var player_info = active_backend.connected_players[_network_id]
  		active_backend.disconnected_players[_network_id] = player_info
  		active_backend.connected_players.erase(_network_id)
@@ -820,12 +822,21 @@ diff --git a/modules/multiplayer/network_manager.gd b/modules/multiplayer/networ
 +	return tag is String and tag == MP8_VERSION_TAG
 +
 +
-+# True on the couch, and online while every player among the connected peers runs this Extended.
-+# Peers, since Offline Bots adds its bots to connected_players online without our key; and only peers
-+# with a player entry, since a peer mid-handshake or being refused has none yet.
-+# Held from each minigame's load to its clear (game.gd): a mid-match joiner gets its entry at once
-+# and waits in the join queue, and the minigame was set up for the room at its load.
++# Whether this game plays Extended's rules: more than 4 players, all on this Extended, couch or online.
++# With 1-4 players every gameplay site runs the game's own code, so 1-4 plays as the game does.
++# Held from each minigame's load to its clear (game.gd, local_game.gd): a mid-match joiner gets its entry at
++# once and waits in the join queue, and the minigame was set up for the room at its load.
 +func mp8_room_extended() -> bool:
++	if _mp8_rules_latch >= 0:
++		return _mp8_rules_latch == 1
++	return _mp8_rules_live()
++
++
++# True on the couch, and online while every player among the connected peers runs this Extended, at any
++# count: the game-bug fixes, the lobby's seats and the input erase. Peers, since Offline Bots adds its bots to
++# connected_players online without our key; and only peers with a player entry, since a peer mid-handshake or
++# being refused has none yet. Latched with the rules.
++func mp8_room_all_extended() -> bool:
 +	if GameManager.local_game or active_backend == null:
 +		return true
 +	if _mp8_room_latch >= 0:
@@ -836,20 +847,61 @@ diff --git a/modules/multiplayer/network_manager.gd b/modules/multiplayer/networ
 +# Whether this peer sends a broadcast that Extended sends from the server only (a sound, a cleanup): in a
 +# mixed room every peer sends it, as the game does. is_server is an argument for mp8_selftest.
 +func mp8_sends_broadcast(is_server: bool) -> bool:
-+	return is_server or not mp8_room_extended()
++	return is_server or not mp8_room_all_extended()
 +
 +
 +var _mp8_room_latch: int = -1   # -1 live, 0 mixed, 1 Extended
++var _mp8_rules_latch: int = -1  # -1 live, 0 the game's rules, 1 Extended's
++var _mp8_rules_from_host: int = -1  # a client's copy of the host's rules for the next load, -1 none
 +
++# A client counting players for itself could disagree with the host when someone leaves during the load,
++# so the host sends its rules before its load call (game.gd) and each client latches the host's.
 +func mp8_latch_room() -> void:
 +	var extended: bool = _mp8_room_live()
 +	_mp8_room_latch = 1 if extended else 0
-+	if not GameManager.local_game:
-+		print("[MP8] room latched for this minigame: extended=%s" % extended)
++	var rules: bool = mp8_latched_rules_for(extended, _mp8_player_count(), _mp8_rules_from_host,
++		not GameManager.local_game and not multiplayer.is_server())
++	_mp8_rules_from_host = -1
++	_mp8_rules_latch = 1 if rules else 0
++	print("[MP8] room latched for this minigame: extended=%s rules=%s players=%d" % [
++		extended, "extended" if rules else "game", _mp8_player_count()])
 +
 +
 +func mp8_unlatch_room() -> void:
 +	_mp8_room_latch = -1
++	_mp8_rules_latch = -1
++
++
++# Host side, just before the game's load call reaches the clients.
++func mp8_send_room_rules() -> void:
++	if GameManager.local_game or active_backend == null or not multiplayer.is_server():
++		return
++	mp8_rpc(self, &"mp8_room_rules_rpc", [_mp8_rules_latch == 1])
++
++
++func mp8_room_rules_rpc(extended: bool) -> void:
++	_mp8_rules_from_host = 1 if extended else 0
++
++
++func _mp8_player_count() -> int:
++	return PlayerManager.player_presences.size()
++
++
++func _mp8_rules_live() -> bool:
++	return mp8_rules_for(_mp8_room_live(), _mp8_player_count())
++
++
++# The rule itself, an argument each so mp8_selftest can check it without players.
++static func mp8_rules_for(all_extended: bool, players: int) -> bool:
++	return all_extended and players > MP8_MIXED_CAP
++
++
++# The rules a peer latches: an online client takes the host's (from_host 1 or 0) when it arrived, and counts
++# for itself otherwise (-1). Static, so the headless self-test, always a server, can check a client's choice.
++static func mp8_latched_rules_for(all_extended: bool, players: int, from_host: int, is_client: bool) -> bool:
++	if is_client and from_host >= 0:
++		return from_host == 1
++	return mp8_rules_for(all_extended, players)
 +
 +
 +# Who is in the room now, whatever the latch holds: the join rules and the Steam member limit.

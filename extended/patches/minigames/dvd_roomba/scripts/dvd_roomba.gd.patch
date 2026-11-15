@@ -196,7 +196,7 @@ diff --git a/minigames/dvd_roomba/scripts/dvd_roomba.gd b/minigames/dvd_roomba/s
  func player_disconnected(_network_id: int):
 +	# [MP8] The room is read before the await, which can outlast this minigame's latch. A mixed room
 +	# keeps the game's own end check.
-+	var mp8_ext: bool = NetworkManager.mp8_room_extended()
++	var mp8_ext: bool = NetworkManager.mp8_room_all_extended()
  	super.player_disconnected(_network_id)
  
  	if not multiplayer.is_server():

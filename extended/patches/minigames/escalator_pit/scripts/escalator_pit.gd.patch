@@ -160,7 +160,7 @@ diff --git a/minigames/escalator_pit/scripts/escalator_pit.gd b/minigames/escala
 +		# check_game_end() returns early only while `active_players.size() > 1`, and before the start
 +		# the array is empty, so it would score and finish the round.
 +		# This handler has no await, so it reaches here in the same frame as the disconnect.
-+		if NetworkManager.mp8_room_extended() and not is_all_player_loaded:
++		if NetworkManager.mp8_room_all_extended() and not is_all_player_loaded:
 +			print("[MP8] Wrong Way: %d disconnected before the round started; skipping the end check" % _network_id)
 +			return
 +

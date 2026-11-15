@@ -10,11 +10,15 @@ diff --git a/minigames/chisel_gauntlet_multiplayer/components/player/scripts/chi
  
  	if not alive:
  
-@@ -106,27 +108,37 @@ func _on_solution_submitted(solution: Array[int]):
+@@ -106,6 +108,42 @@ func _on_solution_submitted(solution: Array[int]):
  
  func setup_local_visuals(player_index: int):
  
--	var starting_layer = 10 + (player_index * 2)
++	# [MP8] 1-4 players keep the game's layers (11-18); 8 seats would run past layer 20.
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_setup_local_visuals(player_index)
++		return
++
 +	# Retail wall blood decals target layer 10. Keep it out of every player
 +	# pair; shared scene layers 1/2 and the wall mask retain their meaning.
 +	player_index = clampi(player_index, 0, 7)
@@ -23,41 +27,44 @@ diff --git a/minigames/chisel_gauntlet_multiplayer/components/player/scripts/chi
 +	for layer in range(3, 20):
 +		if layer != 10:
 +			local_camera.set_cull_mask_value(layer, false)
- 
- 	visuals_third_person.visible = true
- 	visuals_first_person.visible = true
- 
- 	for mesh in local_first_person_meshes:
--		mesh.layers = 1 << starting_layer
++
++	visuals_third_person.visible = true
++	visuals_first_person.visible = true
++
++	for mesh in local_first_person_meshes:
 +		mesh.layers = 1 << (hand_layer - 1)
- 
--	local_camera.set_cull_mask_value(starting_layer + 1, true)
--	local_camera.set_cull_mask_value(starting_layer + 1 + 1, false)
++
 +	local_camera.set_cull_mask_value(hand_layer, true)
 +	local_camera.set_cull_mask_value(body_layer, false)
- 
--	for i in 4:
++
 +	for i in 8:
- 		if i == player_index:
- 			continue
--		var other_player_layer = 10 + (i * 2)
--		local_camera.set_cull_mask_value(other_player_layer + 1 + 1, true)
++		if i == player_index:
++			continue
 +		local_camera.set_cull_mask_value(_mp8_local_layer(i, true), true)
- 
--	customization_assigner.set_visibility_layer(1 << (starting_layer + 1))
++
 +	customization_assigner.set_visibility_layer(1 << (body_layer - 1))
- 
- 	for mesh in local_third_person_meshes:
--		mesh.layers = 1 << (starting_layer + 1)
++
++	for mesh in local_third_person_meshes:
 +		mesh.layers = 1 << (body_layer - 1)
 +
++# The game's setup_local_visuals, for 1-4 players.
++func _mp8_game_setup_local_visuals(player_index: int):
++
+ 	var starting_layer = 10 + (player_index * 2)
+ 
+ 	visuals_third_person.visible = true
+@@ -128,6 +166,10 @@ func setup_local_visuals(player_index: int):
+ 	for mesh in local_third_person_meshes:
+ 		mesh.layers = 1 << (starting_layer + 1)
+ 
 +func _mp8_local_layer(seat: int, third_person: bool) -> int:
 +	var layer := 3 + clampi(seat, 0, 7) * 2 + int(third_person)
 +	return layer + int(layer >= 10)
++
  
  
- 
-@@ -189,6 +201,30 @@ func eliminate_rpc():
+ @rpc("any_peer", "call_local", "reliable")
+@@ -189,6 +231,30 @@ func eliminate_rpc():
  
  @rpc("any_peer", "call_local", "reliable")
  func set_spectator_rpc():
@@ -88,7 +95,7 @@ diff --git a/minigames/chisel_gauntlet_multiplayer/components/player/scripts/chi
  	spectating = true
  
  	if GameManager.local_game:
-@@ -288,6 +324,43 @@ func set_timer_label_text_rpc(text: String):
+@@ -288,6 +354,43 @@ func set_timer_label_text_rpc(text: String):
  
  @rpc("any_peer", "call_local", "reliable")
  func look_at_rpc(target: ChiselGauntletPlayer.LookAtTarget):
@@ -132,7 +139,7 @@ diff --git a/minigames/chisel_gauntlet_multiplayer/components/player/scripts/chi
  	if !alive: return
  	match target:
  
-@@ -381,6 +454,22 @@ func set_player_presence(network_id: int):
+@@ -381,6 +484,22 @@ func set_player_presence(network_id: int):
  
  @rpc("any_peer", "call_local", "reliable")
  func teleport_rpc(
@@ -155,7 +162,7 @@ diff --git a/minigames/chisel_gauntlet_multiplayer/components/player/scripts/chi
  	_position: Vector3, 
  	_rotation: Vector3, 
  ):
-@@ -400,3 +489,149 @@ func trigger_achievement_rpc():
+@@ -400,3 +519,149 @@ func trigger_achievement_rpc():
  		if ach_active:
  			AchievementManager.set_achievement("ACH_05")
  			ach_active = false

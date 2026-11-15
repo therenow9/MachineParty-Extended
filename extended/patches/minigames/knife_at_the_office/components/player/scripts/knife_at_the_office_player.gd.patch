@@ -30,23 +30,35 @@ diff --git a/minigames/knife_at_the_office/components/player/scripts/knife_at_th
  func set_infected_name_label():
  
 +	# Retail split screen does not reveal infected ally names. Layer 20 is
-+	# available for P8's fog output locally, so no name mesh may use it here.
-+	if GameManager.local_game:
++	# available for P8's fog output locally, so no name mesh may use it here. 1-4 players keep the game's.
++	if GameManager.local_game and NetworkManager.mp8_room_extended():
 +		return
  	if infected_label_visible:
  		return
  
-@@ -570,7 +584,13 @@ func set_local_values(starting_layer: int):
+@@ -568,6 +582,25 @@ func kill_rpc(_by_player: int):
  
- 	local_visual_layer_from = starting_layer
+ func set_local_values(starting_layer: int):
  
++	# [MP8] 1-4 players keep the game's cull mask.
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_set_local_values(starting_layer)
++		return
++
++	local_visual_layer_from = starting_layer
++
 +	# World geometry, characters and the ambient light occupy layers 1..4.
 +	for layer in range(1, 5):
 +		local_camera.set_cull_mask_value(layer, true)
 +	for layer in range(5, 21):
 +		local_camera.set_cull_mask_value(layer, false)
- 	local_camera.set_cull_mask_value(starting_layer + 1, true)
++	local_camera.set_cull_mask_value(starting_layer + 1, true)
 +	fog_of_war.overhead_camera.cull_mask = 0
- 	fog_of_war.set_local_values(starting_layer)
++	fog_of_war.set_local_values(starting_layer)
++
++# The game's set_local_values, for 1-4 players.
++func _mp8_game_set_local_values(starting_layer: int):
++
+ 	local_visual_layer_from = starting_layer
  
- @rpc("any_peer", "call_local", "reliable")
+ 	local_camera.set_cull_mask_value(starting_layer + 1, true)

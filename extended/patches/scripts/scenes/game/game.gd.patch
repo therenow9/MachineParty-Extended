@@ -42,7 +42,7 @@ diff --git a/scripts/scenes/game/game.gd b/scripts/scenes/game/game.gd
  
 +	_mp8_load_serial += 1
 +	var load_serial: int = _mp8_load_serial
-+	var mp8_ext: bool = NetworkManager.mp8_room_extended()  # [MP8] before the cleanup's await
++	var mp8_ext: bool = NetworkManager.mp8_room_all_extended()  # [MP8] before the cleanup's await
 +	_mp8_round_close("load")
  	Globals.current_minigame_identifier = minigame_identifier
  
@@ -199,7 +199,7 @@ diff --git a/scripts/scenes/game/game.gd b/scripts/scenes/game/game.gd
 +	_mp8_round_close("scores")
 +	print("[MP8-HANDOFF] scores round=%d more=%s" % [session_current_minigame_round, more_rounds])
 +	# [MP8] A mixed room runs the game's own, its raw read of a missing round entry included.
-+	if not NetworkManager.mp8_room_extended():
++	if not NetworkManager.mp8_room_all_extended():
 +		_mp8_game_update_scores(more_rounds)
 +		return
 +
@@ -265,7 +265,7 @@ diff --git a/scripts/scenes/game/game.gd b/scripts/scenes/game/game.gd
 +	if not multiplayer.is_server():
 +		return
 +	# A mixed room leaves the gate as the game does.
-+	if not NetworkManager.mp8_room_extended():
++	if not NetworkManager.mp8_room_all_extended():
 +		return
 +	if not is_instance_valid(minigame):
 +		return
@@ -292,7 +292,23 @@ diff --git a/scripts/scenes/game/game.gd b/scripts/scenes/game/game.gd
  func _on_minigame_pick_finished(minigame_index: int):
  	if debug_no_shuffle:
  		minigame_index = 0
-@@ -707,12 +938,68 @@ func _on_host_overlay_minigame_selected(minigame_identifier: Globals.MinigameIde
+@@ -675,6 +906,7 @@ func _on_minigame_loaded(_network_id: int):
+ 
+ 	if _network_id == 1:
+ 		minigame_players_loaded.append(1)
++		NetworkManager.mp8_send_room_rules()  # [MP8] before the load call, so each client latches the host's
+ 		_host_minigame_loaded_rpc.rpc(GameManager.current_minigame_identifier)
+ 	else:
+ 		_client_minigame_loaded_rpc.rpc(_network_id)
+@@ -690,6 +922,7 @@ func _on_minigame_ready(_network_id: int):
+ 		)
+ 
+ func _on_host_minigame_loaded():
++	NetworkManager.mp8_send_room_rules()  # [MP8]
+ 	_host_minigame_loaded_rpc.rpc(GameManager.current_minigame_identifier)
+ 
+ func _on_player_added_to_join_queue(network_id: int):
+@@ -707,12 +940,68 @@ func _on_host_overlay_minigame_selected(minigame_identifier: Globals.MinigameIde
  
  	load_minigame(minigame_identifier, false, 1)
  
@@ -362,7 +378,7 @@ diff --git a/scripts/scenes/game/game.gd b/scripts/scenes/game/game.gd
  	for network_id in player_scores.keys():
  		if round_score_by_network_id.has(network_id):
  			round_score_by_network_id[network_id] += player_scores[network_id] * score_multiplier
-@@ -774,3 +1061,53 @@ func _viewport_size_changed():
+@@ -774,3 +1063,53 @@ func _viewport_size_changed():
  	for cr in effect_rects:
  		cr.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
  		cr.set_deferred("size", vp_size)

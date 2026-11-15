@@ -15,10 +15,14 @@ diff --git a/minigames/burn_recycle/scripts/burn_recycle_local_handler.gd b/mini
  
  func _process(_delta: float) -> void :
  	pass
-@@ -53,36 +60,98 @@ func show_all_tags():
- 		o.fade_in_name_label(1.0)
+@@ -54,6 +61,35 @@ func show_all_tags():
  
  func set_players(players: Array[BurnRecyclePlayer]):
+ 
++	# [MP8] 1-4 players get the game's tiles.
++	if not NetworkManager.mp8_room_extended():
++		_mp8_game_set_players(players)
++		return
 +	_mp8_clear_views()
 +	_mp8_players.assign(players)
 +	_mp8_players.sort_custom(func(a, b): return _mp8_seat(a) < _mp8_seat(b))
@@ -40,6 +44,17 @@ diff --git a/minigames/burn_recycle/scripts/burn_recycle_local_handler.gd b/mini
 +		player.local_camera.h_offset = MP8_NARROW_TILE_SHIFT if n >= 5 else 0.0
 +		player.local_camera.keep_aspect = Camera3D.KEEP_WIDTH if n == 5 or n == 6 else Camera3D.KEEP_HEIGHT
 +	_mp8_relayout()
++
++# The game's set_players, for 1-4 players.
++func _mp8_game_set_players(players: Array[BurnRecyclePlayer]):
++
+ 	var player_count = players.size()
+ 	var layout = Layouts[player_count]
+ 	var viewport_rect: Rect2 = local_canvas_root.get_viewport_rect()
+@@ -86,3 +122,77 @@ func set_players(players: Array[BurnRecyclePlayer]):
+ 		overlay_template.size = viewport_rect.end * values[1]
+ 
+ 		overlay_templates[player] = overlay_template
 +
 +
 +# One normalized layout drives textures, HUD and viewport sizes.
@@ -113,36 +128,4 @@ diff --git a/minigames/burn_recycle/scripts/burn_recycle_local_handler.gd b/mini
 +			overlay.queue_free()
 +	overlay_templates.clear()
 +	_mp8_players.clear()
- 
--	var player_count = players.size()
--	var layout = Layouts[player_count]
--	var viewport_rect: Rect2 = local_canvas_root.get_viewport_rect()
--
--	for i in players.size():
--		var player: BurnRecyclePlayer = players[i]
--		var values = layout[i]
--
--		player.local_viewport.size = Vector2i(
--			viewport_rect.end.x * values[1].x, 
--			viewport_rect.end.y * values[1].y, 
--		)
--		var texture = player.local_viewport.get_texture()
--		var texture_rect: = TextureRect.new()
--		texture_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
--		texture_rect.texture = texture
--		texture_rect.clip_children = CanvasItem.CLIP_CHILDREN_AND_DRAW
--
--		local_canvas_root.add_child(texture_rect)
--		texture_rect.position = viewport_rect.end * values[0]
--		texture_rect.size = viewport_rect.end * values[1]
--
--
--
--		var overlay_template = LOCAL_OVERLAY_TEMPLATE.instantiate()
--		overlay_template.name_label.text = player.player_presence.network_name
--
--		local_after_post_processing_root.add_child(overlay_template)
--		overlay_template.position = viewport_rect.end * values[0]
--		overlay_template.size = viewport_rect.end * values[1]
--
--		overlay_templates[player] = overlay_template
++

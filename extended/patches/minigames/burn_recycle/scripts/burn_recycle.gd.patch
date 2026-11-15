@@ -383,7 +383,7 @@ diff --git a/minigames/burn_recycle/scripts/burn_recycle.gd b/minigames/burn_rec
  func player_disconnected(_network_id: int):
 +	# [MP8] The room is read before the await, which can outlast this minigame's latch. A mixed room
 +	# keeps the game's own end check.
-+	var mp8_ext: bool = NetworkManager.mp8_room_extended()
++	var mp8_ext: bool = NetworkManager.mp8_room_all_extended()
  
  	if active_players.has(_network_id):
  		active_players.erase(_network_id)
