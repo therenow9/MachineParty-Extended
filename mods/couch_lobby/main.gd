@@ -31,6 +31,8 @@ var _picker_script: GDScript
 var _layer_sync_script: GDScript
 var _name_panel_script: GDScript
 var _options_script: GDScript
+var _ready_back_script: GDScript
+var _rejoin_outfit_script: GDScript
 var _names
 var _pencil: Texture2D
 var _icon_path: String
@@ -56,6 +58,12 @@ func _mod_init(loader) -> void:
 	_buttons_script = loader.compile(dir.path_join("lobby_buttons.gd"))
 	if _buttons_script == null:
 		loader.note("couch_lobby: lobby_buttons.gd failed to load; the lobby's buttons take any pad's A")
+	_ready_back_script = loader.compile(dir.path_join("ready_back.gd"))
+	if _ready_back_script == null:
+		loader.note("couch_lobby: ready_back.gd failed to load; back from ready goes to the name screen (the game's)")
+	_rejoin_outfit_script = loader.compile(dir.path_join("rejoin_outfit.gd"))
+	if _rejoin_outfit_script == null:
+		loader.note("couch_lobby: rejoin_outfit.gd failed to load; a pad joining again starts on the game's outfit")
 	_load_names(dir, reg)
 	var mods_dir := dir.get_base_dir().get_base_dir() if hosted else dir.get_base_dir()
 	var retired := installed_folder(mods_dir, RETIRED_ID)
@@ -76,7 +84,7 @@ func _mod_init(loader) -> void:
 	if _picker_script:
 		loader.on_scene_script(LOCAL_GAME_PATH, _apply_to_presences)
 		loader.on_scene_script(ASSIGNER_PATH, _attach_layer_sync)
-	loader.note("couch_lobby: close-ups %s, glasses row %s, lobby buttons %s, saved names %s" % ["on" if _close_ups_script else "off", "on" if _picker_script else "off", "host only" if _buttons_script else "off", "on" if _name_panel_script else "off"])
+	loader.note("couch_lobby: close-ups %s, glasses row %s, lobby buttons %s, saved names %s, back from ready %s, rejoin outfit %s" % ["on" if _close_ups_script else "off", "on" if _picker_script else "off", "host only" if _buttons_script else "off", "on" if _name_panel_script else "off", "unreadies" if _ready_back_script else "off", "kept" if _rejoin_outfit_script else "off"])
 
 # The saved names are shared by every seat: registry(MOD_ID)["names"] holds the store.
 func _load_names(dir: String, reg: Dictionary) -> void:
@@ -108,6 +116,10 @@ func _on_controls(controls: Node) -> void:
 		_attach_picker(controls)
 	if _name_panel_script:
 		_attach_name_panel(controls)
+	if _ready_back_script:
+		_attach_ready_back(controls)
+	if _rejoin_outfit_script:
+		_attach_rejoin_outfit(controls)
 	_attach_seat_order.call_deferred(controls)
 
 # The lobby's own script may be another mod's subclass, so the panels are the
@@ -186,6 +198,16 @@ func _attach_name_panel(controls: Node) -> void:
 	panel.note = _loader.note
 	panel.registry = _loader.registry
 	controls.add_child.call_deferred(panel)
+
+func _attach_ready_back(controls: Node) -> void:
+	var back: Node = _ready_back_script.new()
+	back.name = "CouchLobbyReadyBack"
+	controls.add_child.call_deferred(back)
+
+func _attach_rejoin_outfit(controls: Node) -> void:
+	var outfit: Node = _rejoin_outfit_script.new()
+	outfit.name = "CouchLobbyRejoinOutfit"
+	controls.add_child.call_deferred(outfit)
 
 func _attach_options(menu: Node) -> void:
 	if menu.get_node_or_null(OPTIONS_NAME) != null:

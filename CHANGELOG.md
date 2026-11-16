@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.2 (2026-11-16)
+
+- **Back after readying up in the couch lobby** (Better Couch Lobby 1.1.2): back now unreadies you and keeps you on your outfit, so A readies you again; back a second time goes to the name screen, as before.
+- **Drop out of the couch lobby and join again on the same pad, and you wear your outfit again** (Better Couch Lobby 1.1.2): the hat, glasses and suit colour it last wore in that lobby. A new lobby (after a match, or next time you play) starts fresh, so everyone can try something new.
+- **The version is `mp-extended-1.1.2`.** Players on 1.1.1 and 1.1.2 can't join each other; players without Extended still can, at 4 or fewer.
+
 ## 1.1.1 (2026-11-15)
 
 Extended 1.1.1 changes only Extended: Better Couch Lobby, More Cosmetics and GameCube Controller Support stay 1.1.0, in the bundles and on their own.

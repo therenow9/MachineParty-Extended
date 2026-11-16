@@ -6,7 +6,7 @@ extends Node
 # steps; with Overtime
 # installed too, that mp8_support refused and Overtime runs as itself.
 
-const TAG := "mp-extended-1.1.1"
+const TAG := "mp-extended-1.1.2"
 const HUNTER := "res://minigames/duck_hunt/components/hunter_player/hunter_player.tscn"
 const INTERMISSION := "res://minigames/intermission_new/intermission_new.tscn"
 const WHEAT_FIELD := "res://minigames/cutscene_test/cutscene_test.tscn"

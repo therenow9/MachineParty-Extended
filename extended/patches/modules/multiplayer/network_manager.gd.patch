@@ -13,7 +13,7 @@ diff --git a/modules/multiplayer/network_manager.gd b/modules/multiplayer/networ
 +# [MP8] The mod's tag. It travels as "mp8" in each player's join data (multiplayer_backend.gd), never in
 +# Globals.game_version, which stays vanilla's so vanilla players can join. Keep it short: the main menu
 +# corner shows mp8_full_version(), and the refusal texts cut a version past 18 characters.
-+const MP8_VERSION_TAG: String = "mp-extended-1.1.1"
++const MP8_VERSION_TAG: String = "mp-extended-1.1.2"
 +# [MP8] build_mpml_mod.ps1 -TestBuild compiles this line as true; the shipped build reads no dev switch.
 +const MP8_TEST_BUILD: bool = false
 +

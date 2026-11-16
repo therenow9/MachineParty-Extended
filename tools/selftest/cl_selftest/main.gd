@@ -88,6 +88,8 @@ func _run() -> void:
 	await _name_list(lobby)
 	await _name_saved_paths(lobby)
 	await _name_back(lobby)
+	await _ready_back(lobby)
+	await _rejoin_outfit(lobby)
 
 	say("step: join + layout")
 	lobby.join(-1, false)
@@ -1164,6 +1166,94 @@ func _name_back(lobby) -> void:
 	MultiplayerInput._delete_actions_for_device(dev2)
 	store.names = kept_names
 	store.persist = kept_persist
+
+# The game's back on the outfit opens the name screen even from ready; with the mod, B from ready
+# unreadies (outfit kept) and B again opens the name screen. The host's B from LEAVE returns to the checkmark.
+func _ready_back(lobby) -> void:
+	say("step: back from ready")
+	var R: GDScript = load(_mod_dir("couch_lobby").path_join("ready_back.gd"))
+	ok("back unreadies only a ready, active, controllable seat off the main buttons", R.unreadies(true, true, false, true, true) and not R.unreadies(true, true, false, false, true) and not R.unreadies(false, true, false, true, true) and not R.unreadies(true, false, false, true, true) and not R.unreadies(true, true, true, true, true) and not R.unreadies(true, true, false, true, false))
+	var store = _loader.registry("couch_lobby").get("names")
+	if store == null or not MultiplayerInput.core_actions.has(&"right"):
+		say("INFO no saved names or no core actions, the presses are skipped")
+		return
+	var kept_names: Array = store.names.duplicate()
+	var kept_persist: bool = store.persist
+	store.persist = false
+	store.names = []
+	var dev := NAME_PAD + 7
+	lobby.join(dev, true)
+	await frames(4)
+	MultiplayerInput._create_actions_for_device(dev)
+	var c = lobby.local_lobby_player_controls[0]
+	var e = c.name_entry_selector
+	e.set_player_name("RB")
+	e.accept_name()
+	await frames(2)
+	c.change_hat(1)
+	var hat = c.customization_assigner.get_assigned_hat()
+	c.set_player_ready(true)
+	await frames(2)
+	await _tap(dev, JOY_BUTTON_B)
+	ok("B from ready: not ready, still on the outfit", not c.is_ready and c.active and c.can_control and not e.active, [c.is_ready, c.active, c.can_control, e.active])
+	ok("and the outfit kept", c.customization_assigner.get_assigned_hat() == hat and hat != "none", [hat, c.customization_assigner.get_assigned_hat()])
+	# Readied from the checkmark, as a player does; down from it is the host's way to LEAVE.
+	c.active_element.self_modulate.a = 0.5
+	c.active_element = c.ready_element
+	c.set_player_ready(true)
+	await frames(2)
+	await _tap(dev, JOY_BUTTON_DPAD_DOWN, 1)
+	var on_leave: bool = c.main_button_focused == c.leave_button
+	await _tap(dev, JOY_BUTTON_B)
+	ok("the host's B from LEAVE while ready: not ready, back on the checkmark, LEAVE let go", on_leave and not c.is_ready and c.main_button_focused == null and c.active_element == c.ready_element and not c.leave_button.has_focus(), [on_leave, c.is_ready, c.main_button_focused, c.active_element == c.ready_element])
+	await _tap(dev, JOY_BUTTON_B)
+	ok("B again: the name screen", e.active and not c.active, [e.active, c.active])
+	lobby.leave(0)
+	await frames(2)
+	MultiplayerInput._delete_actions_for_device(dev)
+	store.names = kept_names
+	store.persist = kept_persist
+
+# The game's join starts a seat on no hat, no glasses and its colour; with the mod, a pad that drops
+# out and joins again in the same lobby gets back what it last wore there. Another pad doesn't.
+func _rejoin_outfit(lobby) -> void:
+	say("step: a pad's outfit kept through a rejoin")
+	var store = _loader.registry("couch_lobby").get("names")
+	var kept_names: Array = store.names.duplicate() if store != null else []
+	var kept_persist: bool = store.persist if store != null else false
+	if store != null:
+		store.persist = false
+		store.names = []
+	var R: GDScript = load(_mod_dir("couch_lobby").path_join("rejoin_outfit.gd"))
+	var dev := NAME_PAD + 8
+	var other := NAME_PAD + 9
+	var c = lobby.local_lobby_player_controls[0]
+	var a = c.customization_assigner
+	var wear = func(): return [str(a.get_assigned_hat()), R.glasses_of(a.bone_attachment_glasses), a.assigned_suit_color]
+	lobby.join(dev, true)
+	await frames(4)
+	var fresh: Array = wear.call()
+	c.change_hat(1)
+	a.assign_glasses("sunglasses")
+	c.change_color(1)
+	await frames(2)
+	var worn: Array = wear.call()
+	ok("the outfit changed from the join's", worn != fresh and worn[1] == "sunglasses", [fresh, worn])
+	lobby.leave(0)
+	await frames(2)
+	lobby.join(dev, true)
+	await frames(4)
+	ok("the same pad joining again wears it again", wear.call() == worn, [worn, wear.call()])
+	lobby.leave(0)
+	await frames(2)
+	lobby.join(other, true)
+	await frames(4)
+	ok("another pad in that seat starts on the game's outfit", wear.call() == fresh, [fresh, wear.call()])
+	lobby.leave(0)
+	await frames(2)
+	if store != null:
+		store.names = kept_names
+		store.persist = kept_persist
 
 const MAIN_MENU_SCENE := "res://scenes/main_menu/main_menu.tscn"
 

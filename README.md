@@ -2,14 +2,14 @@
 
 [![Eight players in the wheat field, in More Cosmetics' hats and glasses, under the Machine Party: Extended logo](images/thumb_1280.jpg)](https://youtu.be/rwQyxxX0Bdo)
 
-### [⬇ Download Machine Party: Extended](https://github.com/therenow9/MachineParty-Extended/releases/download/v1.1.1/Machine-Party-Extended-1.1.1.zip) (6.4 MB)
-### [⬇ Download with GameCube Controller Support](https://github.com/therenow9/MachineParty-Extended/releases/download/v1.1.1/Machine-Party-Extended-1.1.1-with-GameCube.zip) (6.5 MB)
+### [⬇ Download Machine Party: Extended](https://github.com/therenow9/MachineParty-Extended/releases/download/v1.1.2/Machine-Party-Extended-1.1.2.zip) (6.4 MB)
+### [⬇ Download with GameCube Controller Support](https://github.com/therenow9/MachineParty-Extended/releases/download/v1.1.2/Machine-Party-Extended-1.1.2-with-GameCube.zip) (6.5 MB)
 
 **[▶ Watch the trailer](https://youtu.be/rwQyxxX0Bdo)**
 
 [All downloads](https://github.com/therenow9/MachineParty-Extended/releases/latest), including each mod on its own.
 
-Up to 8 players in Machine Party, on one couch or online, with fixes aimed at local split-screen play. **Version 1.1.1,** built for [MachinePartyModLoader](https://github.com/Krunk-theduck/MachinePartyModLoader) (MPML).
+Up to 8 players in Machine Party, on one couch or online, with fixes aimed at local split-screen play. **Version 1.1.2,** built for [MachinePartyModLoader](https://github.com/Krunk-theduck/MachinePartyModLoader) (MPML).
 
 It comes with [Better Couch Lobby](mods/README.md#better-couch-lobby) and [More Cosmetics](mods/README.md#more-cosmetics), so you don't need to install either one separately. Each is also on Nexus Mods on its own: [Better Couch Lobby](https://www.nexusmods.com/machineparty/mods/15), [More Cosmetics](https://www.nexusmods.com/machineparty/mods/16).
 
@@ -179,7 +179,7 @@ To check it loaded, look for `mp8_support: [READY]` in the game log. To uninstal
 
 ## Online play
 
-Machine Party: Extended players need the same version as each other. The main menu shows it after the game version in the bottom corner (`v2.1.2+mp-extended-1.1.1`); a player on another version, 1.0 and 1.1.0 included, is refused, and the game says which versions differ. Players on Overtime can't join.
+Machine Party: Extended players need the same version as each other. The main menu shows it after the game version in the bottom corner (`v2.1.2+mp-extended-1.1.2`); a player on another version, 1.0, 1.1.0 and 1.1.1 included, is refused, and the game says which versions differ. Players on Overtime can't join.
 
 Players without the mod can join a Machine Party: Extended room, and Extended players a room without it, while it has 4 players or fewer. Rooms of 5 to 8 need Extended for everyone. While anyone in the room lacks Extended, every minigame plays as the game's own (apart from Extended's fixes for four of the game's own bugs), the lobby has the game's 4 seats, and a 5th player is refused. A player joining or leaving counts from the next minigame.
 
